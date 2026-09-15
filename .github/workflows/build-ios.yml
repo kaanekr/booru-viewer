@@ -21,17 +21,36 @@ jobs:
           cache: 'npm'
 
       - name: 📦 Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: ⚙️ Expo Prebuild (iOS)
-        run: npx expo prebuild --platform ios --clean
+        run: npx expo prebuild --platform ios --clean --no-install
+
+      - name: 🔍 Verify iOS folder
+        run: |
+          echo "=== ios/ contents ==="
+          ls -la ios/ || echo "No ios/ folder found!"
+          WORKSPACE=$(find ios -name "*.xcworkspace" -maxdepth 2 | head -n 1)
+          echo "Found workspace: $WORKSPACE"
+          if [ -z "$WORKSPACE" ]; then
+            echo "ERROR: No .xcworkspace found!"
+            exit 1
+          fi
+
+      - name: 📦 Install CocoaPods
+        run: |
+          cd ios
+          pod install
+        env:
+          COCOAPODS_DISABLE_STATS: true
 
       - name: 🔨 Build iOS App (Unsigned Release)
         run: |
-          WORKSPACE=$(find ios -name "*.xcworkspace" -maxdepth 1 | head -n 1)
+          WORKSPACE=$(find ios -name "*.xcworkspace" -maxdepth 2 | head -n 1)
           SCHEME=$(basename "$WORKSPACE" .xcworkspace)
-          echo "Building scheme $SCHEME from $WORKSPACE..."
-          
+          echo "Building scheme: $SCHEME"
+          echo "Workspace: $WORKSPACE"
+
           xcodebuild \
             -workspace "$WORKSPACE" \
             -scheme "$SCHEME" \
@@ -41,15 +60,17 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            build
+            EXPANDED_CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tail -100
 
       - name: 📦 Package .ipa file
         run: |
           APP_PATH=$(find build/Build/Products/Release-iphoneos -name "*.app" -maxdepth 1 | head -n 1)
-          echo "Found app at: $APP_PATH"
+          echo "Found app: $APP_PATH"
           mkdir -p Payload
           cp -r "$APP_PATH" Payload/
           zip -r "BooruViewer.ipa" Payload
+          ls -lh BooruViewer.ipa
 
       - name: 🚀 Upload IPA Artifact
         uses: actions/upload-artifact@v4
