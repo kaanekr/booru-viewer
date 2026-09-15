@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "Booru Viewer",
+    "slug": "booru-viewer",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.booru.viewer",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#121214",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-image",
+      "expo-sharing",
+      "expo-video"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "61bce249-505d-48e8-b6fa-81eec48bb68c"
+      }
+    }
+  }
+}

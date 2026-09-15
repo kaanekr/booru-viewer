@@ -1,0 +1,1075 @@
+openapi: 3.0.3
+info:
+  title: OnlyHaven API
+  version: 1.0.0
+servers:
+  - url: /
+tags:
+  - name: content
+
+paths:
+
+  # ------------------------------------------------------------------
+  # Content - public feeds
+  # ------------------------------------------------------------------
+  /api/v1/creators:
+    get:
+      tags: [content]
+      summary: List creators
+      description: Public + cacheable.
+      parameters:
+        - $ref: '#/components/parameters/FeedOffset'
+        - $ref: '#/components/parameters/FeedLimit'
+        - name: q
+          in: query
+          required: false
+          description: search on username / display name.
+          schema: { type: string }
+        - $ref: '#/components/parameters/ServiceFilter'
+        - name: gender
+          in: query
+          required: false
+          description: Unknown values fall back to no filter.
+          schema:
+            type: string
+            enum: [woman, man, trans_woman, trans_man, nonbinary, group, all]
+            default: all
+        - name: content
+          in: query
+          required: false
+          description: Filter by imported content. Unknown/absent = no filter.
+          schema:
+            type: string
+            enum: [imported, empty]
+        - name: sort
+          in: query
+          required: false
+          description: Unknown values fall back to `bookmarked`.
+          schema:
+            type: string
+            enum: [bookmarked, indexed, updated, name, service, dm_count, post_count]
+            default: bookmarked
+      responses:
+        '200':
+          description: Feed page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, creators]
+                properties:
+                  total: { type: integer }
+                  creators:
+                    type: array
+                    items: { $ref: '#/components/schemas/CreatorRow' }
+  /api/v1/posts:
+    get:
+      tags: [content]
+      summary: List posts
+      parameters:
+        - $ref: '#/components/parameters/FeedOffset'
+        - $ref: '#/components/parameters/FeedLimit'
+        - name: q
+          in: query
+          required: false
+          description: search on caption / creator name.
+          schema: { type: string }
+        - $ref: '#/components/parameters/ServiceFilter'
+        - $ref: '#/components/parameters/GenderFilter'
+        - $ref: '#/components/parameters/TypeFilter'
+        - $ref: '#/components/parameters/TagFilter'
+        - $ref: '#/components/parameters/MinDuration'
+        - $ref: '#/components/parameters/FeedSort'
+      responses:
+        '200':
+          description: Feed page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, posts]
+                properties:
+                  total: { type: integer }
+                  posts:
+                    type: array
+                    items: { $ref: '#/components/schemas/PostRow' }
+  /api/v1/dms:
+    get:
+      tags: [content]
+      summary: List DMs
+      parameters:
+        - $ref: '#/components/parameters/FeedOffset'
+        - $ref: '#/components/parameters/FeedLimit'
+        - name: q
+          in: query
+          required: false
+          description: search on DM content / creator name.
+          schema: { type: string }
+        - $ref: '#/components/parameters/ServiceFilter'
+        - $ref: '#/components/parameters/GenderFilter'
+        - $ref: '#/components/parameters/TypeFilter'
+        - $ref: '#/components/parameters/MinDuration'
+        - $ref: '#/components/parameters/FeedSort'
+      responses:
+        '200':
+          description: Feed page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, dms]
+                properties:
+                  total: { type: integer }
+                  dms:
+                    type: array
+                    items: { $ref: '#/components/schemas/DmRow' }
+  /api/v1/media/lookup:
+    get:
+      tags: [content]
+      summary: Resolve a media sha256 to its owning content
+      parameters:
+        - name: sha256
+          in: query
+          required: true
+          description: 64 lowercase hex chars.
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{64}$'
+      responses:
+        '200':
+          description: Matches (empty array when none).
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/MediaMatch' }
+        '400':
+          description: Invalid/missing sha256.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/tags:
+    get:
+      tags: [content]
+      summary: Global tag directory
+      description: >
+        All tags, with the number of posts carrying it
+        and the number of distinct creators using it.
+      parameters:
+        - $ref: '#/components/parameters/ServiceFilter'
+      responses:
+        '200':
+          description: Tag directory, most-used first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tags]
+                properties:
+                  tags:
+                    type: array
+                    items: { $ref: '#/components/schemas/TagDirectoryEntry' }
+
+  # ------------------------------------------------------------------
+  # Content - per-creator
+  # ------------------------------------------------------------------
+  /api/v1/{service}/user/{id}/profile:
+    get:
+      tags: [content]
+      summary: Creator profile
+      parameters:
+        - $ref: '#/components/parameters/ServicePath'
+        - $ref: '#/components/parameters/ServiceIdPath'
+      responses:
+        '200':
+          description: Profile.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreatorProfile' }
+        '404':
+          description: Creator not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/{service}/user/{id}/posts:
+    get:
+      tags: [content]
+      summary: Creator post feed
+      parameters:
+        - $ref: '#/components/parameters/ServicePath'
+        - $ref: '#/components/parameters/ServiceIdPath'
+        - $ref: '#/components/parameters/FeedOffset'
+        - $ref: '#/components/parameters/FeedLimit'
+        - name: q
+          in: query
+          required: false
+          description: search on caption.
+          schema: { type: string }
+        - $ref: '#/components/parameters/TypeFilter'
+        - $ref: '#/components/parameters/TagFilter'
+        - $ref: '#/components/parameters/MinDuration'
+        - $ref: '#/components/parameters/FeedSort'
+      responses:
+        '200':
+          description: Feed page (order preserved, default postedAt DESC).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, posts]
+                properties:
+                  total: { type: integer }
+                  posts:
+                    type: array
+                    items: { $ref: '#/components/schemas/PostListItem' }
+        '404':
+          description: Creator not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/{service}/user/{id}/dms:
+    get:
+      tags: [content]
+      summary: Creator DM feed
+      parameters:
+        - $ref: '#/components/parameters/ServicePath'
+        - $ref: '#/components/parameters/ServiceIdPath'
+        - $ref: '#/components/parameters/FeedOffset'
+        - $ref: '#/components/parameters/FeedLimit'
+        - name: q
+          in: query
+          required: false
+          description: search on DM content.
+          schema: { type: string }
+        - $ref: '#/components/parameters/TypeFilter'
+        - $ref: '#/components/parameters/FeedSort'
+      responses:
+        '200':
+          description: Feed page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [total, dms]
+                properties:
+                  total: { type: integer }
+                  dms:
+                    type: array
+                    items: { $ref: '#/components/schemas/DmListItem' }
+        '404':
+          description: Creator not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/{service}/user/{id}/similar:
+    get:
+      tags: [content]
+      summary: Similar creators
+      description: Up to 12 similar creators, ordered by score.
+      parameters:
+        - $ref: '#/components/parameters/ServicePath'
+        - $ref: '#/components/parameters/ServiceIdPath'
+      responses:
+        '200':
+          description: Similar creators.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [creators]
+                properties:
+                  creators:
+                    type: array
+                    items: { $ref: '#/components/schemas/SimilarCreator' }
+        '404':
+          description: Creator not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/{service}/user/{id}/tags:
+    get:
+      tags: [content]
+      summary: Tags applied to a creator's posts
+      description: >
+        Tags on this creator's posts with per-creator post counts, most-used
+        first. Empty array (200) when the creator has no tagged posts.
+      parameters:
+        - $ref: '#/components/parameters/ServicePath'
+        - $ref: '#/components/parameters/ServiceIdPath'
+      responses:
+        '200':
+          description: Creator tags.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [tags]
+                properties:
+                  tags:
+                    type: array
+                    items: { $ref: '#/components/schemas/CreatorTagEntry' }
+        '404':
+          description: Creator not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/{service}/user/{id}/post/{postId}:
+    get:
+      tags: [content]
+      summary: Post detail
+      parameters:
+        - $ref: '#/components/parameters/ServicePath'
+        - $ref: '#/components/parameters/ServiceIdPath'
+        - name: postId
+          in: path
+          required: true
+          description: Post external id.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Post detail.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PostDetail' }
+        '404':
+          description: Creator or post not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/{service}/user/{id}/dm/{dmId}:
+    get:
+      tags: [content]
+      summary: DM detail
+      parameters:
+        - $ref: '#/components/parameters/ServicePath'
+        - $ref: '#/components/parameters/ServiceIdPath'
+        - name: dmId
+          in: path
+          required: true
+          description: DM external id.
+          schema: { type: string }
+      responses:
+        '200':
+          description: DM detail.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DmDetail' }
+        '404':
+          description: Creator or DM not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/{service}/user/{id}/post/{postId}/revisions:
+    get:
+      tags: [content]
+      summary: Post revision history
+      description: >
+        Snapshots of the post's prior state, captured when a re-import changed
+        its caption, title, or media set. The live state is not included - that
+        is the post itself. Empty array (200, not 404) when there are none.
+      parameters:
+        - $ref: '#/components/parameters/ServicePath'
+        - $ref: '#/components/parameters/ServiceIdPath'
+        - name: postId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Revisions, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revisions]
+                properties:
+                  revisions:
+                    type: array
+                    items: { $ref: '#/components/schemas/PostRevisionSummary' }
+        '404':
+          description: Creator or post not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/{service}/user/{id}/post/{postId}/revisions/{rev}:
+    get:
+      tags: [content]
+      summary: Single post revision
+      description: >
+        One superseded version of the post. Mirrors the post detail shape for
+        the fields a revision carries; omits data that does not vary by version
+        (prev/next, links, comments, tags).
+      parameters:
+        - $ref: '#/components/parameters/ServicePath'
+        - $ref: '#/components/parameters/ServiceIdPath'
+        - name: postId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: rev
+          in: path
+          required: true
+          description: Revision number (1-based).
+          schema: { type: integer, minimum: 1 }
+      responses:
+        '200':
+          description: Revision snapshot.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PostRevisionDetail' }
+        '400':
+          description: Invalid revision number.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Creator, post, or revision not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/{service}/user/{id}/post/{postId}/dms:
+    get:
+      tags: [content]
+      summary: DMs linked to a post
+      description: Curated post→DM edge.
+      parameters:
+        - $ref: '#/components/parameters/ServicePath'
+        - $ref: '#/components/parameters/ServiceIdPath'
+        - name: postId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Linked DMs, newest link first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [dms]
+                properties:
+                  dms:
+                    type: array
+                    items: { $ref: '#/components/schemas/DmLinkItem' }
+        '404':
+          description: Creator or post not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/{service}/user/{id}/dm/{dmId}/posts:
+    get:
+      tags: [content]
+      summary: Posts linked to a DM
+      description: Curated DM→post edge.
+      parameters:
+        - $ref: '#/components/parameters/ServicePath'
+        - $ref: '#/components/parameters/ServiceIdPath'
+        - name: dmId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Linked posts, newest link first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [posts]
+                properties:
+                  posts:
+                    type: array
+                    items: { $ref: '#/components/schemas/PostLinkItem' }
+        '404':
+          description: Creator or DM not found.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/posts/popular:
+    get:
+      tags: [content]
+      summary: Popular posts leaderboard
+      description: >
+        Date-anchored post leaderboard ranked by bookmarks earned in the
+        period. Result set = posts with ≥1 bookmark, capped at 500.
+      parameters:
+        - $ref: '#/components/parameters/PeriodParam'
+        - $ref: '#/components/parameters/DateParam'
+        - $ref: '#/components/parameters/FeedOffset'
+        - $ref: '#/components/parameters/FeedLimit'
+      responses:
+        '200':
+          description: Leaderboard page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostLeaderboard'
+  /api/v1/dms/popular:
+    get:
+      tags: [content]
+      summary: Popular DMs leaderboard
+      description: >
+        Date-anchored DM leaderboard ranked by bookmarks earned in the
+        period. Result set = DMs with ≥1 bookmark, capped at 500.
+      parameters:
+        - $ref: '#/components/parameters/PeriodParam'
+        - $ref: '#/components/parameters/DateParam'
+        - $ref: '#/components/parameters/FeedOffset'
+        - $ref: '#/components/parameters/FeedLimit'
+      responses:
+        '200':
+          description: Leaderboard page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DmLeaderboard'
+
+components:
+  parameters:
+    ServicePath:
+      name: service
+      in: path
+      required: true
+      description: Platform key.
+      schema: { $ref: '#/components/schemas/Service' }
+    ServiceIdPath:
+      name: id
+      in: path
+      required: true
+      description: Creator external id (service-native, opaque).
+      schema: { type: string }
+    FeedOffset:
+      name: o
+      in: query
+      required: false
+      description: Offset. Non-numeric coerces to 0.
+      schema: { type: integer, default: 0 }
+    FeedLimit:
+      name: n
+      in: query
+      required: false
+      schema: { type: integer, default: 50, minimum: 1, maximum: 50 }
+    ServiceFilter:
+      name: service
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [onlyfans, fansly, all]
+        default: all
+        description: All or absent = no filter.
+    GenderFilter:
+      name: gender
+      in: query
+      required: false
+      description: Comma-separated allowlist of crowdsourced creator-gender labels (e.g. woman,man). Unknown values ignored; absent = no filter. Unlabeled creators are excluded when a filter is set.
+      schema:
+        type: string
+        example: woman,man
+    TypeFilter:
+      name: type
+      in: query
+      required: false
+      description: Media-type filter. Unknown/absent = no filter.
+      schema:
+        type: string
+        enum: [photos, videos, audio, text, media]
+    TagFilter:
+      name: tag
+      in: query
+      required: false
+      description: Restrict to posts carrying this tag slug. Absent = no filter.
+      schema: { type: string }
+    MinDuration:
+      name: min_duration
+      in: query
+      required: false
+      description: Minimum video duration in seconds. Only applied when `type=videos`.
+      schema: { type: integer, minimum: 0 }
+    FeedSort:
+      name: sort
+      in: query
+      required: false
+      description: >
+        Unknown → `relevance` when `q` is set, otherwise `recent`.
+      schema:
+        type: string
+        enum: [recent, oldest, popular, attachments, videos, imported, relevance]
+    PeriodParam:
+      name: period
+      in: query
+      required: false
+      description: Calendar period for the leaderboard. Unknown → day.
+      schema:
+        type: string
+        enum: [day, week, month]
+        default: day
+    DateParam:
+      name: date
+      in: query
+      required: false
+      description: 'Anchor date (YYYY-MM-DD, UTC). Invalid or absent → today.'
+      schema:
+        type: string
+        pattern: '^\d{4}-\d{2}-\d{2}$'
+        example: '2026-08-18'
+  responses:
+    NotFound:
+      description: Not found.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+    Service:
+      type: string
+      enum: [onlyfans, fansly]
+    Gender:
+      type: string
+      enum: [woman, man, trans_woman, trans_man, nonbinary, group]
+    MediaKind:
+      type: string
+      enum: [image, video, audio, gif]
+    Variant:
+      type: object
+      required: [name, bytes]
+      properties:
+        name: { type: string, description: 'e.g. original.mp4, 720p.mp4' }
+        bytes: { type: integer }
+
+    # --- shared attachment leaves ---
+    UnlockedAttachment:
+      description: Imported, decrypted media the user can view.
+      type: object
+      required: [locked, position, id, sha256, kind, mimeType, width, height, durationMs, bytes, storageKey, variants, previewThumbhash]
+      properties:
+        locked: { type: boolean, example: false }
+        position: { type: integer }
+        id: { type: string, format: uuid }
+        sha256: { type: string, description: 64 hex - media content hash. }
+        kind: { $ref: '#/components/schemas/MediaKind' }
+        mimeType: { type: string }
+        width: { type: integer, nullable: true }
+        height: { type: integer, nullable: true }
+        durationMs: { type: integer, nullable: true }
+        bytes: { type: integer }
+        storageKey: { type: string }
+        variants: { type: array, nullable: true, items: { $ref: '#/components/schemas/Variant' }, description: null for single-file media. }
+        previewThumbhash: { type: string, nullable: true }
+    LockedAttachment:
+      description: Paywalled media - metadata only.
+      type: object
+      required: [locked, position, externalId, type, priceCents]
+      properties:
+        locked: { type: boolean, example: true }
+        position: { type: integer }
+        externalId:
+          type: string
+          description: Service-native media id.
+        type: { type: string, nullable: true, description: "best-effort kind: photo|video|audio|gif" }
+        priceCents: { type: integer, nullable: true }
+    MediaGridItem:
+      description: Merged post/dm attachment, sorted by position. Distinguish by the `locked` flag.
+      oneOf:
+        - $ref: '#/components/schemas/UnlockedAttachment'
+        - $ref: '#/components/schemas/LockedAttachment'
+
+    # --- feed list rows ---
+    CreatorRow:
+      type: object
+      required: [id, name, displayName, service, indexed, updated, bookmarked, dmCount, postCount, videoCount, imageCount, avatarThumbhash, headerThumbhash, gender]
+      properties:
+        id: { type: string, description: creator external id }
+        name: { type: string, description: username }
+        displayName: { type: string, nullable: true }
+        service: { $ref: '#/components/schemas/Service' }
+        indexed: { type: integer, description: unix first_seen_at }
+        updated:
+          type: integer
+          description: 'unix last_imported_at; 0 when never.'
+        bookmarked:
+          type: integer
+          description: 'bookmark count (not boolean)'
+        dmCount: { type: integer, description: 'DM count' }
+        postCount: { type: integer, description: 'post count' }
+        videoCount: { type: integer, description: 'media items of kind video' }
+        imageCount: { type: integer, description: 'media items of kind image or gif' }
+        avatarThumbhash: { type: string, nullable: true }
+        headerThumbhash: { type: string, nullable: true }
+        gender: { $ref: '#/components/schemas/Gender', nullable: true }
+    PostRow:
+      type: object
+      required: [id, service, creatorId, creatorName, title, captionHtml, added, published, bookmarked, attachments]
+      properties:
+        id: { type: string, description: post external id }
+        service: { $ref: '#/components/schemas/Service' }
+        creatorId: { type: string }
+        creatorName: { type: string }
+        title: { type: string, nullable: true }
+        captionHtml: { type: string, nullable: true, description: rendered markdown HTML }
+        added: { type: integer, description: unix importedAt }
+        published: { type: integer, description: unix postedAt }
+        bookmarked: { type: integer }
+        attachments:
+          type: array
+          items: { $ref: '#/components/schemas/MediaGridItem' }
+    PostListItem:
+      type: object
+      required: [id, service, title, captionHtml, added, published, bookmarked, attachments]
+      properties:
+        id: { type: string }
+        service: { $ref: '#/components/schemas/Service' }
+        title: { type: string, nullable: true }
+        captionHtml: { type: string, nullable: true }
+        added: { type: integer }
+        published: { type: integer }
+        bookmarked: { type: integer }
+        attachments:
+          type: array
+          items: { $ref: '#/components/schemas/MediaGridItem' }
+    DmRow:
+      type: object
+      required: [id, service, creatorId, creatorName, contentHtml, bookmarked, attachments]
+      properties:
+        id: { type: string, description: dm external id }
+        service: { $ref: '#/components/schemas/Service' }
+        creatorId: { type: string }
+        creatorName: { type: string }
+        contentHtml: { type: string, nullable: true }
+        bookmarked: { type: integer }
+        attachments:
+          type: array
+          items: { $ref: '#/components/schemas/MediaGridItem' }
+    DmListItem:
+      type: object
+      required: [id, service, contentHtml, bookmarked, attachments]
+      properties:
+        id: { type: string }
+        service: { $ref: '#/components/schemas/Service' }
+        contentHtml: { type: string, nullable: true }
+        bookmarked: { type: integer }
+        attachments:
+          type: array
+          items: { $ref: '#/components/schemas/MediaGridItem' }
+
+    # --- detail pages ---
+    MediaPlainDetail:
+      type: object
+      required: [id, sha256, kind, mimeType, width, height, durationMs, bytes, storageKey, variants, originalFilename]
+      properties:
+        id: { type: string, format: uuid }
+        sha256: { type: string }
+        kind: { $ref: '#/components/schemas/MediaKind' }
+        mimeType: { type: string }
+        width: { type: integer, nullable: true }
+        height: { type: integer, nullable: true }
+        durationMs: { type: integer, nullable: true }
+        bytes: { type: integer }
+        storageKey: { type: string }
+        variants: { type: array, nullable: true, items: { $ref: '#/components/schemas/Variant' } }
+        originalFilename: { type: string, nullable: true }
+    PostAttachment:
+      description: Post detail attachment, unlocked rows include originalFilename, no previewThumbhash.
+      oneOf:
+        - type: object
+          required: [locked, position, id, sha256, kind, mimeType, width, height, durationMs, bytes, storageKey, variants, originalFilename]
+          properties:
+            locked: { type: boolean, example: false }
+            position: { type: integer }
+            id: { type: string, format: uuid }
+            sha256: { type: string }
+            kind: { $ref: '#/components/schemas/MediaKind' }
+            mimeType: { type: string }
+            width: { type: integer, nullable: true }
+            height: { type: integer, nullable: true }
+            durationMs: { type: integer, nullable: true }
+            bytes: { type: integer }
+            storageKey: { type: string }
+            variants: { type: array, nullable: true, items: { $ref: '#/components/schemas/Variant' } }
+            originalFilename: { type: string, nullable: true }
+        - $ref: '#/components/schemas/LockedAttachment'
+    PostLinkItem:
+      description: Curated post→DM edge row.
+      type: object
+      required: [id, service, creatorId, caption, captionHtml, added, published, linkedAt, bookmarked, attachments]
+      properties:
+        id: { type: string, description: post external id }
+        service: { $ref: '#/components/schemas/Service' }
+        creatorId: { type: string, description: owning creator external id (cross-creator) }
+        caption: { type: string, nullable: true }
+        captionHtml: { type: string, nullable: true }
+        added: { type: integer }
+        published: { type: integer }
+        linkedAt: { type: integer, description: unix post_dm.createdAt }
+        bookmarked: { type: integer }
+        attachments:
+          description: MediaPlain rows - no locked/position wrapper on this route.
+          type: array
+          items: { $ref: '#/components/schemas/MediaPlainDetail' }
+    DmLinkItem:
+      type: object
+      required: [id, service, creatorId, caption, added, published, linkedAt, attachments]
+      properties:
+        id: { type: string, description: dm external id }
+        service: { $ref: '#/components/schemas/Service' }
+        creatorId: { type: string }
+        caption: { type: string, nullable: true }
+        added: { type: integer }
+        published: { type: integer }
+        linkedAt: { type: integer }
+        attachments:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/MediaPlainDetail'
+              - type: object
+                required: [previewThumbhash]
+                properties:
+                  previewThumbhash: { type: string, nullable: true }
+    PostDetail:
+      type: object
+      required: [id, service, caption, title, added, published, attachments, links, tags, comments, prev, next]
+      properties:
+        id: { type: string }
+        service: { $ref: '#/components/schemas/Service' }
+        caption: { type: string, nullable: true, description: raw caption (not HTML) }
+        title: { type: string, nullable: true }
+        added: { type: integer, description: unix importedAt }
+        published: { type: integer, description: unix postedAt }
+        attachments:
+          type: array
+          items: { $ref: '#/components/schemas/PostAttachment' }
+        links:
+          type: array
+          description: Outbound caption links (post_link rows), position order.
+          items: { $ref: '#/components/schemas/ResolvedLink' }
+        tags:
+          type: array
+          description: Creator-applied tags in source order.
+          items: { $ref: '#/components/schemas/Tag' }
+        comments:
+          type: array
+          description: >
+            Comments imported from the source platform, in source order.
+            Author and body are untrusted plain text from that platform -
+            never a site user, and never safe to render as HTML.
+          items: { $ref: '#/components/schemas/PostComment' }
+        mediaPending:
+          type: integer
+          description: 'Optional, present only when media > 0: importer still filling the gallery.'
+        prev: { $ref: '#/components/schemas/SiblingNav' }
+        next: { $ref: '#/components/schemas/SiblingNav' }
+    DmDetail:
+      type: object
+      required: [id, service, caption, added, published, attachments, prev, next]
+      properties:
+        id: { type: string, description: dm external id }
+        service: { $ref: '#/components/schemas/Service' }
+        caption: { type: string, nullable: true, description: raw dm content }
+        added: { type: integer, description: unix importedAt }
+        published: { type: integer, description: equals added }
+        attachments:
+          type: array
+          items: { $ref: '#/components/schemas/MediaPlainDetail' }
+        mediaPending:
+          type: integer
+          description: 'Optional, present only when media > 0: importer still filling the gallery.'
+        prev: { $ref: '#/components/schemas/SiblingNav' }
+        next: { $ref: '#/components/schemas/SiblingNav' }
+    SiblingNav:
+      type: object
+      nullable: true
+      properties:
+        id: { type: string, description: adjacent sibling external id }
+    ResolvedLink:
+      description: Outbound caption link resolution.
+      type: object
+      required: [rawUrl, resolved]
+      properties:
+        rawUrl: { type: string }
+        resolved: { type: boolean }
+        service:
+          $ref: '#/components/schemas/Service'
+        postExternalId: { type: string, description: present when resolved }
+        creatorExternalId: { type: string, description: present when resolved }
+        posted: { type: integer, nullable: true, description: unix }
+        caption: { type: string, nullable: true }
+        opened: { type: boolean }
+        thumb:
+          type: object
+          nullable: true
+          properties:
+            sha256: { type: string }
+            kind: { $ref: '#/components/schemas/MediaKind' }
+            previewThumbhash: { type: string, nullable: true }
+        attachmentCount: { type: integer }
+
+    CreatorProfile:
+      type: object
+      required: [id, name, service, displayName, avatarThumbhash, headerThumbhash, indexed, updated, bookmarked, hasTags, gender]
+      properties:
+        id: { type: string }
+        name: { type: string, description: username }
+        service: { $ref: '#/components/schemas/Service' }
+        displayName: { type: string, nullable: true }
+        avatarThumbhash: { type: string, nullable: true }
+        headerThumbhash: { type: string, nullable: true }
+        indexed: { type: integer, description: unix first_seen_at }
+        updated: { type: integer, description: unix last_imported_at }
+        bookmarked: { type: integer }
+        hasTags: { type: boolean, description: whether any of the creator's posts carry tags }
+        gender: { $ref: '#/components/schemas/Gender', nullable: true }
+    SimilarCreator:
+      type: object
+      required: [id, name, displayName, service, avatarThumbhash, headerThumbhash, bookmarked, postCount, dmCount, videoCount, imageCount, updated, score]
+      properties:
+        id: { type: string }
+        name: { type: string, description: username }
+        displayName: { type: string, nullable: true }
+        service: { $ref: '#/components/schemas/Service' }
+        avatarThumbhash: { type: string, nullable: true }
+        headerThumbhash: { type: string, nullable: true }
+        bookmarked: { type: integer }
+        postCount: { type: integer, description: 'post count' }
+        dmCount: { type: integer, description: 'DM count' }
+        videoCount: { type: integer, description: 'media items of kind video' }
+        imageCount: { type: integer, description: 'media items of kind image or gif' }
+        updated: { type: integer }
+        score:
+          type: number
+          description: "Weighted similarity score (higher = more similar)."
+    PostLeaderboard:
+      type: object
+      required: [total, uncapped, period, date, start, end, bounds, posts]
+      properties:
+        total: { type: integer, description: 'Capped count (max 500)' }
+        uncapped: { type: integer, description: 'True distinct count of posts with ≥1 bookmark in the period' }
+        period: { type: string, enum: [day, week, month] }
+        date: { type: string, description: 'Normalised anchor (period start, YYYY-MM-DD)' }
+        start: { type: integer, description: 'Period start unix' }
+        end: { type: integer, description: 'Period end unix' }
+        bounds:
+          type: object
+          required: [min, max]
+          properties:
+            min: { type: string, description: 'Earliest bookmark date (YYYY-MM-DD)' }
+            max: { type: string, description: 'Latest bookmark date (today)' }
+        posts:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/PostRow'
+              - type: object
+                required: [score]
+                properties:
+                  score: { type: integer, description: 'Bookmarks earned in the period' }
+    DmLeaderboard:
+      type: object
+      required: [total, uncapped, period, date, start, end, bounds, dms]
+      properties:
+        total: { type: integer, description: 'Capped count (max 500)' }
+        uncapped: { type: integer, description: 'True distinct count of DMs with ≥1 bookmark in the period' }
+        period: { type: string, enum: [day, week, month] }
+        date: { type: string, description: 'Normalised anchor (period start, YYYY-MM-DD)' }
+        start: { type: integer, description: 'Period start unix' }
+        end: { type: integer, description: 'Period end unix' }
+        bounds:
+          type: object
+          required: [min, max]
+          properties:
+            min: { type: string, description: 'Earliest bookmark date (YYYY-MM-DD)' }
+            max: { type: string, description: 'Latest bookmark date (today)' }
+        dms:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/DmRow'
+              - type: object
+                required: [score]
+                properties:
+                  score: { type: integer, description: 'Bookmarks earned in the period' }
+    Tag:
+      type: object
+      required: [slug, label]
+      properties:
+        slug: { type: string, description: url-safe tag key }
+        label: { type: string, description: display form }
+    TagDirectoryEntry:
+      allOf:
+        - $ref: '#/components/schemas/Tag'
+        - type: object
+          required: [posts, creators]
+          properties:
+            posts: { type: integer, description: posts carrying this tag }
+            creators:
+              type: integer
+              description: >
+                Distinct creators using it - what separates a shared vocabulary
+                term from one creator's private label.
+    CreatorTagEntry:
+      allOf:
+        - $ref: '#/components/schemas/Tag'
+        - type: object
+          required: [count]
+          properties:
+            count: { type: integer, description: this creator's posts carrying the tag }
+    PostComment:
+      description: Comment imported from the source platform. Untrusted plain text - render escaped.
+      type: object
+      required: [id, parentId, author, body, posted]
+      properties:
+        id: { type: string, description: comment external id }
+        parentId: { type: string, nullable: true, description: parent comment external id, for threading }
+        author: { type: string, nullable: true, description: source-platform author name, not a site user }
+        body: { type: string, nullable: true }
+        posted: { type: integer, description: unix }
+    PostRevisionSummary:
+      type: object
+      required: [revision, capturedAt, attachmentCount, isOpened]
+      properties:
+        revision: { type: integer, description: 1-based revision number }
+        capturedAt: { type: integer, description: unix - when this prior state was superseded }
+        attachmentCount: { type: integer, description: media ids in the snapshot }
+        isOpened: { type: boolean }
+    PostRevisionDetail:
+      type: object
+      required: [revision, capturedAt, caption, captionHtml, isOpened, attachments]
+      properties:
+        revision: { type: integer }
+        capturedAt: { type: integer, description: unix }
+        caption: { type: string, nullable: true, description: raw caption at this revision }
+        captionHtml: { type: string, nullable: true, description: rendered markdown HTML }
+        isOpened: { type: boolean }
+        attachments:
+          description: >
+            Snapshot media in recorded order. Always unlocked rows, a media id
+            that no longer resolves is dropped and counted in `missingMedia`.
+          type: array
+          items:
+            allOf:
+              - type: object
+                required: [locked, position]
+                properties:
+                  locked: { type: boolean, example: false }
+                  position: { type: integer }
+              - $ref: '#/components/schemas/MediaPlainDetail'
+        missingMedia:
+          type: integer
+          description: >
+            Optional, present only when media > 0: snapshot media ids that no longer
+            resolve (purged).
+    MediaMatch:
+      type: object
+      required: [kind, service, creatorId, ownerId]
+      properties:
+        kind:
+          type: string
+          enum: [post, dm]
+        service: { $ref: '#/components/schemas/Service' }
+        creatorId: { type: string, description: creator external id }
+        ownerId: { type: string, description: post/dm external id }
