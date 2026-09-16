@@ -37,7 +37,7 @@ import { BackupService } from '../services/backupService';
 import { AVAILABLE_SOURCES } from '../services/sources';
 import { BooruPost, TagCategory } from '../types/booru';
 import { PostCard } from '../components/PostCard';
-import { ImageViewerModal } from '../components/ImageViewerModal';
+import { pushViewer } from '../navigation/rootNavigation';
 import { Colors, TagColors } from '../theme/colors';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -385,7 +385,9 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
 
   const handleCardPress = (post: BooruPost) => {
     const idx = filteredFavorites.findIndex((p) => p.id === post.id);
-    setSelectedPostIndex(idx >= 0 ? idx : 0);
+    if (idx >= 0) {
+      pushViewer(filteredFavorites, idx);
+    }
   };
 
   return (
@@ -1063,25 +1065,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
         </TouchableOpacity>
       </Modal>
 
-      {/* Full Detail Gallery Viewer Modal */}
-      <ImageViewerModal
-        posts={filteredFavorites}
-        initialIndex={selectedPostIndex ?? 0}
-        visible={selectedPostIndex !== null}
-        onClose={() => setSelectedPostIndex(null)}
-        onTagPress={(tag) => {
-          setSelectedPostIndex(null);
-          onSelectTag?.(tag, 'replace');
-        }}
-        onAddTagToSearch={(tag) => {
-          setSelectedPostIndex(null);
-          onSelectTag?.(tag, 'add');
-        }}
-        onExcludeTagFromSearch={(tag) => {
-          setSelectedPostIndex(null);
-          onSelectTag?.(tag, 'exclude');
-        }}
-      />
+
     </View>
   );
 };

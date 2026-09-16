@@ -42,7 +42,7 @@ import {
 import { StorageService } from '../services/storage';
 import { PostCard } from '../components/PostCard';
 import { TagChip } from '../components/TagChip';
-import { ImageViewerModal } from '../components/ImageViewerModal';
+import { pushViewer, pushSearchDetail } from '../navigation/rootNavigation';
 import { SearchFilterModal } from '../components/SearchFilterModal';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders } from '../utils/media';
@@ -84,9 +84,11 @@ interface SearchHistoryEntry {
 export const SearchScreen: React.FC<SearchScreenProps> = ({
   initialTag,
   initialMode,
+  initialFilter,
   activeSource,
   onClearInitialTag,
   onOpenSourcePicker,
+  onBackPress,
 }) => {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
@@ -127,11 +129,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   }, [isSearchActive]);
 
   useEffect(() => {
-    if (initialTag) {
+    if (initialFilter) {
+      setFilterConfig(initialFilter);
+      executeSearchWithConfig(initialFilter);
+    } else if (initialTag) {
       executeSearch(initialTag, initialMode || 'replace');
       if (onClearInitialTag) onClearInitialTag();
     }
-  }, [initialTag, initialMode]);
+  }, [initialFilter, initialTag, initialMode]);
 
   // Reset search state and cancel ongoing requests when active source changes
   useEffect(() => {
@@ -922,9 +927,21 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         {/* Top Header with Active Source Badge (when search is not active) */}
         {!isSearchActive && (
           <View style={styles.topHeader}>
-            <View>
-              <Text style={styles.topHeaderTitle}>Arama</Text>
-              <Text style={styles.topHeaderSubtitle}>Etiket veya görsel keşfet</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              {onBackPress && (
+                <TouchableOpacity
+                  style={[styles.backButton, { position: 'relative', left: 0, top: 0, marginRight: 12 }]}
+                  onPress={onBackPress}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  activeOpacity={0.7}
+                >
+                  <ArrowLeft size={20} color="#FFFFFF" />
+                </TouchableOpacity>
+              )}
+              <View>
+                <Text style={styles.topHeaderTitle}>Arama</Text>
+                <Text style={styles.topHeaderSubtitle}>Etiket veya görsel keşfet</Text>
+              </View>
             </View>
 
             {onOpenSourcePicker && (
@@ -1428,8 +1445,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       post={post}
                       onPress={(p) => {
                         const idx = results.findIndex((item) => item.id === p.id);
-                        setViewerEnterAnim('slide');
-                        setSelectedPostIndex(idx >= 0 ? idx : 0);
+                        if (idx >= 0) {
+                          pushViewer(results, idx, filterConfig.tags, filterConfig);
+                        }
                       }}
                     />
                   ))}
@@ -1441,8 +1459,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       post={post}
                       onPress={(p) => {
                         const idx = results.findIndex((item) => item.id === p.id);
-                        setViewerEnterAnim('slide');
-                        setSelectedPostIndex(idx >= 0 ? idx : 0);
+                        if (idx >= 0) {
+                          pushViewer(results, idx, filterConfig.tags, filterConfig);
+                        }
                       }}
                     />
                   ))}
@@ -1542,37 +1561,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         onApply={handleApplyFilterModal}
       />
 
-      {/* Detail & Swipeable Gallery Viewer Modal */}
-      <ImageViewerModal
-        posts={results}
-        initialIndex={selectedPostIndex ?? 0}
-        visible={selectedPostIndex !== null}
-        enterAnimation={viewerEnterAnim}
-        onClose={() => setSelectedPostIndex(null)}
-        onTagPress={(tag) => {
-          const originIdx = selectedPostIndex;
-          setSelectedPostIndex(null);
-          executeSearch(tag, 'replace', true, originIdx);
-        }}
-        onAddTagToSearch={(tag) => {
-          const originIdx = selectedPostIndex;
-          setSelectedPostIndex(null);
-          executeSearch(tag, 'add', true, originIdx);
-        }}
-        onExcludeTagFromSearch={(tag) => {
-          const originIdx = selectedPostIndex;
-          setSelectedPostIndex(null);
-          executeSearch(tag, 'exclude', true, originIdx);
-        }}
-      />
 
-      {/* Interactive Left Edge Swipe To Go Back */}
-      {isSearchActive && (
-        <View
-          style={styles.leftEdgeGestureArea}
-          {...edgePanResponder.panHandlers}
-        />
-      )}
     </View>
   );
 };
