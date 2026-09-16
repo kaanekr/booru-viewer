@@ -247,8 +247,9 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             },
           ]}
         >
-          {/* Left Edge Pan Strip (Isolated from top header so back button always clicks cleanly) */}
-          <View style={styles.leftEdgeGestureArea} {...edgePanResponder.panHandlers} />
+          {!asScreen && (
+            <View style={styles.leftEdgeGestureArea} {...edgePanResponder.panHandlers} />
+          )}
 
           {/* 1. HORIZONTAL MEDIA PAGER */}
           <FlatList
@@ -364,31 +365,25 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             onSearchTag={(tag) => {
               setShowDetailsSheet(false);
               onClose();
-              setTimeout(() => {
-                onTagPress(tag);
-              }, 80);
+              onTagPress(tag);
             }}
             onAddTagToSearch={(tag) => {
               setShowDetailsSheet(false);
               onClose();
-              setTimeout(() => {
-                if (onAddTagToSearch) {
-                  onAddTagToSearch(tag);
-                } else {
-                  onTagPress(tag);
-                }
-              }, 80);
+              if (onAddTagToSearch) {
+                onAddTagToSearch(tag);
+              } else {
+                onTagPress(tag);
+              }
             }}
             onExcludeTagFromSearch={(tag) => {
               setShowDetailsSheet(false);
               onClose();
-              setTimeout(() => {
-                if (onExcludeTagFromSearch) {
-                  onExcludeTagFromSearch(tag);
-                } else {
-                  onTagPress(`-${tag}`);
-                }
-              }, 80);
+              if (onExcludeTagFromSearch) {
+                onExcludeTagFromSearch(tag);
+              } else {
+                onTagPress(`-${tag}`);
+              }
             }}
           />
         </Animated.View>

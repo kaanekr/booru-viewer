@@ -186,35 +186,29 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     Haptics.selectionAsync();
     setSelectedTag(null);
     onClose();
-    setTimeout(() => {
-      onSearchTag(tag);
-    }, 60);
+    onSearchTag(tag);
   };
 
   const handleTagAddToSearch = (tag: string) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
     onClose();
-    setTimeout(() => {
-      if (onAddTagToSearch) {
-        onAddTagToSearch(tag);
-      } else {
-        onSearchTag(tag);
-      }
-    }, 60);
+    if (onAddTagToSearch) {
+      onAddTagToSearch(tag);
+    } else {
+      onSearchTag(tag);
+    }
   };
 
   const handleTagExcludeFromSearch = (tag: string) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
     onClose();
-    setTimeout(() => {
-      if (onExcludeTagFromSearch) {
-        onExcludeTagFromSearch(tag);
-      } else {
-        onSearchTag(`-${tag}`);
-      }
-    }, 60);
+    if (onExcludeTagFromSearch) {
+      onExcludeTagFromSearch(tag);
+    } else {
+      onSearchTag(`-${tag}`);
+    }
   };
 
   const handleToggleTagFavorite = async (tag: string) => {

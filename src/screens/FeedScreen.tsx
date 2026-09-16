@@ -16,7 +16,7 @@ import { Image } from 'expo-image';
 import { booruApi } from '../services/booruApi';
 import { BooruPost, BooruSource } from '../types/booru';
 import { PostCard } from '../components/PostCard';
-import { ImageViewerModal } from '../components/ImageViewerModal';
+import { pushViewer } from '../navigation/rootNavigation';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders } from '../utils/media';
 
@@ -41,7 +41,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [selectedPostIndex, setSelectedPostIndex] = useState<number | null>(null);
+  const [selectedPostIndex, setSelectedPostIndex] = useState<number | null>(null); // Keep or remove? Let's clean it up completely.
 
   const loadPosts = useCallback(
     async (pageNum: number, isRefresh: boolean = false) => {
@@ -117,7 +117,9 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
   const handleCardPress = (post: BooruPost) => {
     const idx = posts.findIndex((p) => p.id === post.id);
-    setSelectedPostIndex(idx >= 0 ? idx : 0);
+    if (idx >= 0) {
+      pushViewer(posts, idx);
+    }
   };
 
   return (
@@ -248,25 +250,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
         </ScrollView>
       )}
 
-      {/* Detail & Swipeable Gallery Viewer Modal */}
-      <ImageViewerModal
-        posts={posts}
-        initialIndex={selectedPostIndex ?? 0}
-        visible={selectedPostIndex !== null}
-        onClose={() => setSelectedPostIndex(null)}
-        onTagPress={(tag) => {
-          setSelectedPostIndex(null);
-          if (onSelectTag) onSelectTag(tag, 'replace');
-        }}
-        onAddTagToSearch={(tag) => {
-          setSelectedPostIndex(null);
-          if (onSelectTag) onSelectTag(tag, 'add');
-        }}
-        onExcludeTagFromSearch={(tag) => {
-          setSelectedPostIndex(null);
-          if (onSelectTag) onSelectTag(tag, 'exclude');
-        }}
-      />
+
     </View>
   );
 };
