@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
@@ -6,11 +6,12 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Heart, ImageOff, Tag, Pin, Trash2, Search } from 'lucide-react-native';
+import { Heart, ImageOff, Tag, Pin, Trash2, Search, X } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { StorageService } from '../services/storage';
 import { BackupService } from '../services/backupService';
@@ -33,6 +34,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
   const [activeSegment, setActiveSegment] = useState<'posts' | 'tags'>('posts');
   const [favorites, setFavorites] = useState<BooruPost[]>([]);
   const [favoriteTags, setFavoriteTags] = useState<string[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [displayLimit, setDisplayLimit] = useState(40);
@@ -79,8 +81,40 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
     setFavoriteTags((prev) => prev.filter((t) => t !== tag));
   };
 
+  const trimmedQuery = searchQuery.trim().toLowerCase();
+
+  // Filtered favorites by tags, post ID, or booru source
+  const filteredFavorites = useMemo(() => {
+    if (!trimmedQuery) return favorites;
+    const terms = trimmedQuery.split(/\s+/).filter(Boolean);
+
+    return favorites.filter((post) => {
+      const idStr = String(post.id).toLowerCase();
+      const sourceNameStr = (post.sourceName || '').toLowerCase();
+      const sourceIdStr = (post.sourceId || '').toLowerCase();
+      const allTags = (post.allTags || []).map((t) => t.toLowerCase());
+
+      return terms.every((term) => {
+        if (idStr.includes(term)) return true;
+        if (sourceNameStr.includes(term) || sourceIdStr.includes(term)) return true;
+        return allTags.some((tag) => tag.includes(term));
+      });
+    });
+  }, [favorites, trimmedQuery]);
+
+  // Filtered favorite tags
+  const filteredFavoriteTags = useMemo(() => {
+    if (!trimmedQuery) return favoriteTags;
+    const terms = trimmedQuery.split(/\s+/).filter(Boolean);
+
+    return favoriteTags.filter((tag) => {
+      const tagLower = tag.toLowerCase();
+      return terms.every((term) => tagLower.includes(term));
+    });
+  }, [favoriteTags, trimmedQuery]);
+
   // 2-column masonry distribution with pagination limit
-  const visibleFavorites = favorites.slice(0, displayLimit);
+  const visibleFavorites = filteredFavorites.slice(0, displayLimit);
   const leftColumn: BooruPost[] = [];
   const rightColumn: BooruPost[] = [];
   visibleFavorites.forEach((post, index) => {
@@ -92,7 +126,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
   });
 
   const handleCardPress = (post: BooruPost) => {
-    const idx = favorites.findIndex((p) => p.id === post.id);
+    const idx = filteredFavorites.findIndex((p) => p.id === post.id);
     setSelectedPostIndex(idx >= 0 ? idx : 0);
   };
 
@@ -104,8 +138,12 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
           <Text style={styles.headerTitle}>Favoriler</Text>
           <Text style={styles.headerSubtitle}>
             {activeSegment === 'posts'
-              ? `Kaydedilen görseller (${favorites.length})`
-              : `Favori etiketler (${favoriteTags.length})`}
+              ? trimmedQuery
+                ? `${filteredFavorites.length} / ${favorites.length} görsel`
+                : `Kaydedilen görseller (${favorites.length})`
+              : trimmedQuery
+                ? `${filteredFavoriteTags.length} / ${favoriteTags.length} etiket`
+                : `Favori etiketler (${favoriteTags.length})`}
           </Text>
         </View>
 
@@ -162,6 +200,44 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
         </View>
       </View>
 
+      {/* Search Bar */}
+      <View style={styles.searchContainer}>
+        <View style={styles.searchBar}>
+          <Search size={16} color={searchQuery ? GOLD_ACCENT : Colors.dark.textMuted} />
+          <TextInput
+            style={styles.searchInput}
+            placeholder={
+              activeSegment === 'posts'
+                ? 'Favorilerde ara... (etiket veya ID)'
+                : 'Favori etiketlerde ara...'
+            }
+            placeholderTextColor={Colors.dark.textMuted}
+            value={searchQuery}
+            onChangeText={(text) => {
+              setSearchQuery(text);
+              setDisplayLimit(40);
+            }}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="search"
+            clearButtonMode="never"
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity
+              style={styles.clearBtn}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setSearchQuery('');
+                setDisplayLimit(40);
+              }}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <X size={16} color={Colors.dark.textMuted} />
+            </TouchableOpacity>
+          )}
+        </View>
+      </View>
+
       {loading ? (
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color={Colors.dark.primary} />
@@ -178,6 +254,25 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
               Görsel detayından veya arama ekranından etiketleri favorileyebilirsiniz.
             </Text>
           </View>
+        ) : filteredFavoriteTags.length === 0 ? (
+          <View style={styles.centerContainer}>
+            <View style={styles.emptyIconCircle}>
+              <Search size={36} color={GOLD_ACCENT} />
+            </View>
+            <Text style={styles.emptyTitle}>Etiket Bulunamadı</Text>
+            <Text style={styles.emptyText}>
+              "{searchQuery}" aramasıyla eşleşen favori etiket bulunamadı.
+            </Text>
+            <TouchableOpacity
+              style={styles.clearFilterBtn}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setSearchQuery('');
+              }}
+            >
+              <Text style={styles.clearFilterBtnText}>Aramayı Temizle</Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           <ScrollView
             style={styles.scrollView}
@@ -191,7 +286,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
             }
           >
             <View style={styles.tagsGridCard}>
-              {favoriteTags.map((tag, idx) => (
+              {filteredFavoriteTags.map((tag, idx) => (
                 <View key={`fav-tag-list-${tag}-${idx}`} style={styles.favTagRow}>
                   <TouchableOpacity
                     style={styles.favTagLeft}
@@ -225,6 +320,25 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
               Beğendiğin görselleri kalp ikonuna basarak buraya kaydedebilirsin.
             </Text>
           </View>
+        ) : filteredFavorites.length === 0 ? (
+          <View style={styles.centerContainer}>
+            <View style={styles.emptyIconCircle}>
+              <Search size={36} color={Colors.dark.textMuted} />
+            </View>
+            <Text style={styles.emptyTitle}>Eşleşen Favori Bulunamadı</Text>
+            <Text style={styles.emptyText}>
+              "{searchQuery}" aramasıyla eşleşen favori görsel bulunamadı. Farklı bir etiket veya ID deneyin.
+            </Text>
+            <TouchableOpacity
+              style={styles.clearFilterBtn}
+              onPress={() => {
+                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+                setSearchQuery('');
+              }}
+            >
+              <Text style={styles.clearFilterBtnText}>Aramayı Temizle</Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           <ScrollView
             style={styles.scrollView}
@@ -239,7 +353,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
             onScroll={({ nativeEvent }) => {
               const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
               if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 400) {
-                if (displayLimit < favorites.length) {
+                if (displayLimit < filteredFavorites.length) {
                   setDisplayLimit((prev) => prev + 40);
                 }
               }
@@ -272,7 +386,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
 
       {/* Full Detail Gallery Viewer Modal */}
       <ImageViewerModal
-        posts={favorites}
+        posts={filteredFavorites}
         initialIndex={selectedPostIndex ?? 0}
         visible={selectedPostIndex !== null}
         onClose={() => setSelectedPostIndex(null)}
@@ -433,5 +547,43 @@ const styles = StyleSheet.create({
   },
   favTagRemoveBtn: {
     padding: 6,
+  },
+  searchContainer: {
+    paddingHorizontal: 16,
+    paddingTop: 8,
+    paddingBottom: 4,
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#181A22',
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    height: 42,
+    borderWidth: 1,
+    borderColor: '#292D3B',
+  },
+  searchInput: {
+    flex: 1,
+    marginLeft: 8,
+    color: Colors.dark.text,
+    fontSize: 13,
+  },
+  clearBtn: {
+    padding: 4,
+  },
+  clearFilterBtn: {
+    marginTop: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.15)',
+  },
+  clearFilterBtnText: {
+    color: Colors.dark.text,
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

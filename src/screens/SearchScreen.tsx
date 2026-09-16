@@ -27,6 +27,7 @@ import {
   ShieldCheck,
   Star,
   Pin,
+  Layers,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
@@ -67,6 +68,7 @@ interface SearchScreenProps {
   initialMode?: 'replace' | 'add' | 'exclude';
   activeSource: BooruSource;
   onClearInitialTag?: () => void;
+  onOpenSourcePicker?: () => void;
 }
 
 interface SearchHistoryEntry {
@@ -82,6 +84,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   initialMode,
   activeSource,
   onClearInitialTag,
+  onOpenSourcePicker,
 }) => {
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
@@ -105,6 +108,10 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   // Browser-like History Stack for deep tag navigation and returning to viewed posts
   const [navHistory, setNavHistory] = useState<SearchHistoryEntry[]>([]);
 
+  // Source Tracking & Race Condition Prevention Refs
+  const lastActiveSourceIdRef = useRef(activeSource.id);
+  const searchRequestIdRef = useRef(0);
+
   useEffect(() => {
     StorageService.getSearchHistory().then(setHistory);
     StorageService.getFavoriteTags().then(setFavoriteTags);
@@ -117,25 +124,56 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     }
   }, [initialTag, initialMode]);
 
-  // Autocomplete debounce - only triggers when search input is focused
+  // Reset search state and cancel ongoing requests when active source changes
+  useEffect(() => {
+    if (lastActiveSourceIdRef.current !== activeSource.id) {
+      lastActiveSourceIdRef.current = activeSource.id;
+      // Invalidate any ongoing asynchronous search or tag suggestion requests
+      searchRequestIdRef.current += 1;
+
+      setSuggestions([]);
+      setResults([]);
+      setIsSearchActive(false);
+      setLoading(false);
+      setLoadingMore(false);
+      setPage(1);
+      setSelectedPostIndex(null);
+      setNavHistory([]);
+      setFilterConfig({
+        ...DEFAULT_FILTER_CONFIG,
+        tags: query.trim() ? parseQueryToTags(query) : [],
+      });
+    }
+  }, [activeSource.id, query]);
+
+  // Autocomplete debounce - only triggers when search input is focused and guards for source match
   useEffect(() => {
     if (!isInputFocused || !filterConfig.autocompleteFromServer || !query || query.trim().length < 2) {
       setSuggestions([]);
       return;
     }
 
+    const currentSourceId = activeSource.id;
     const timer = setTimeout(async () => {
       const cleanQ = query.trim().replace(/^-+/, '');
       if (cleanQ.length < 2) {
         setSuggestions([]);
         return;
       }
-      const list = await booruApi.searchTags(cleanQ);
-      setSuggestions(list);
+      try {
+        const list = await booruApi.searchTags(cleanQ);
+        if (currentSourceId === lastActiveSourceIdRef.current) {
+          setSuggestions(list);
+        }
+      } catch (e) {
+        if (currentSourceId === lastActiveSourceIdRef.current) {
+          setSuggestions([]);
+        }
+      }
     }, 250);
 
     return () => clearTimeout(timer);
-  }, [query, isInputFocused, filterConfig.autocompleteFromServer]);
+  }, [query, isInputFocused, filterConfig.autocompleteFromServer, activeSource.id]);
 
   const executeSearchWithConfig = async (config: SearchFilterConfig) => {
     Keyboard.dismiss();
@@ -144,6 +182,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     setSuggestions([]);
     setIsSearchActive(true);
     setLoading(true);
+
+    const requestId = ++searchRequestIdRef.current;
+    const expectedSourceId = activeSource.id;
 
     const startPage = config.jumpToPage > 1 ? config.jumpToPage : 1;
     setPage(startPage);
@@ -158,16 +199,26 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
     try {
       const posts = await booruApi.fetchPostsWithFilter(config, startPage, 24);
+      // Guard: Ignore response if source changed or newer search request was triggered
+      if (requestId !== searchRequestIdRef.current || expectedSourceId !== lastActiveSourceIdRef.current) {
+        return;
+      }
+
       posts.slice(0, 10).forEach((p) => {
         const u = p.previewUrl || p.sampleUrl;
         if (u) Image.prefetch(u, { headers: getMediaHeaders(u) });
       });
       setResults(posts);
     } catch (e) {
+      if (requestId !== searchRequestIdRef.current || expectedSourceId !== lastActiveSourceIdRef.current) {
+        return;
+      }
       console.warn('Search with config error:', e);
       setResults([]);
     } finally {
-      setLoading(false);
+      if (requestId === searchRequestIdRef.current && expectedSourceId === lastActiveSourceIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -245,12 +296,19 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
   const loadMoreResults = async () => {
     if (!isSearchActive || loadingMore || loading) return;
+    const requestId = searchRequestIdRef.current;
+    const expectedSourceId = activeSource.id;
+
     setLoadingMore(true);
     const nextPage = page + 1;
     setPage(nextPage);
 
     try {
       const newPosts = await booruApi.fetchPostsWithFilter(filterConfig, nextPage, 24);
+      if (requestId !== searchRequestIdRef.current || expectedSourceId !== lastActiveSourceIdRef.current) {
+        return;
+      }
+
       newPosts.slice(0, 8).forEach((p) => {
         const u = p.previewUrl || p.sampleUrl;
         if (u) Image.prefetch(u, { headers: getMediaHeaders(u) });
@@ -261,9 +319,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         return [...prev, ...unique];
       });
     } catch (e) {
+      if (requestId !== searchRequestIdRef.current || expectedSourceId !== lastActiveSourceIdRef.current) {
+        return;
+      }
       console.warn('Load more search error:', e);
     } finally {
-      setLoadingMore(false);
+      if (requestId === searchRequestIdRef.current && expectedSourceId === lastActiveSourceIdRef.current) {
+        setLoadingMore(false);
+      }
     }
   };
 
@@ -623,6 +686,32 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
           },
         ]}
       >
+        {/* Top Header with Active Source Badge (when search is not active) */}
+        {!isSearchActive && (
+          <View style={styles.topHeader}>
+            <View>
+              <Text style={styles.topHeaderTitle}>Arama</Text>
+              <Text style={styles.topHeaderSubtitle}>Etiket veya görsel keşfet</Text>
+            </View>
+
+            {onOpenSourcePicker && (
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  onOpenSourcePicker();
+                }}
+                style={styles.sourcePill}
+              >
+                <Layers size={14} color={Colors.dark.primaryLight} />
+                <Text style={styles.sourceText} numberOfLines={1}>
+                  {activeSource.name.split(' ')[0]}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
+
         {/* Search Bar & Filter Header */}
         <View style={styles.searchBarWrapper}>
           {isSearchActive && (
@@ -702,6 +791,23 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.quickFiltersContent}
           >
+            {/* Active Source Quick Badge */}
+            {onOpenSourcePicker && (
+              <TouchableOpacity
+                style={styles.sourceQuickChip}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  onOpenSourcePicker();
+                }}
+                activeOpacity={0.7}
+              >
+                <Layers size={13} color={Colors.dark.primaryLight} />
+                <Text style={styles.sourceQuickChipText} numberOfLines={1}>
+                  {activeSource.name.split(' ')[0]}
+                </Text>
+              </TouchableOpacity>
+            )}
+
             {/* Main Filter Modal Quick Chip */}
             <TouchableOpacity
               style={[styles.quickChip, hasCustomFilters && styles.quickChipActive]}
@@ -1529,6 +1635,58 @@ const styles = StyleSheet.create({
   footerText: {
     color: Colors.dark.textMuted,
     fontSize: 13,
+  },
+  topHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 4,
+  },
+  topHeaderTitle: {
+    fontSize: 26,
+    fontWeight: '800',
+    color: Colors.dark.text,
+    letterSpacing: -0.5,
+  },
+  topHeaderSubtitle: {
+    fontSize: 12,
+    color: Colors.dark.textMuted,
+    marginTop: 2,
+  },
+  sourcePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
+    backgroundColor: '#181A22',
+    borderWidth: 1,
+    borderColor: '#292D3B',
+  },
+  sourceText: {
+    color: Colors.dark.text,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  sourceQuickChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#181A22',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(245, 166, 35, 0.4)',
+    gap: 6,
+  },
+  sourceQuickChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: GOLD_ACCENT,
+    maxWidth: 90,
   },
 });
 
