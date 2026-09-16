@@ -144,6 +144,7 @@ function MainApp() {
             initialMode={searchTarget?.mode}
             activeSource={activeSource}
             onClearInitialTag={() => setSearchTarget(undefined)}
+            onOpenSourcePicker={() => setActiveTab('settings')}
           />
         </View>
 
