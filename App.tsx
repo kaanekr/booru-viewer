@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   StyleSheet,
   Text,
@@ -22,10 +22,20 @@ import { proxyService } from './src/services/proxyService';
 import { LockScreen } from './src/components/LockScreen';
 import { Colors } from './src/theme/colors';
 
+import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { navigationRef } from './src/navigation/rootNavigation';
+import type { RootStackParamList } from './src/navigation/types';
+import { SourceProvider } from './src/context/SourceContext';
+import { ViewerScreen } from './src/screens/ViewerScreen';
+import { SearchDetailScreen } from './src/screens/SearchDetailScreen';
+
 import { FeedScreen } from './src/screens/FeedScreen';
 import { SearchScreen } from './src/screens/SearchScreen';
 import { FavoritesScreen } from './src/screens/FavoritesScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
+
+const RootStack = createNativeStackNavigator<RootStackParamList>();
 
 type TabType = 'feed' | 'search' | 'favorites' | 'settings';
 
@@ -39,7 +49,6 @@ export default function App() {
 }
 
 function MainApp() {
-  const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState<TabType>('feed');
   const [activeSource, setActiveSource] = useState<BooruSource>(DEFAULT_SOURCE);
   const [searchTarget, setSearchTarget] = useState<{
@@ -118,6 +127,87 @@ function MainApp() {
 
   return (
     <View style={styles.container}>
+      <SourceProvider initialSource={activeSource}>
+        <NavigationContainer ref={navigationRef}>
+          <RootStack.Navigator
+            screenOptions={{
+              headerShown: false,
+              animation: 'slide_from_right',
+              gestureEnabled: true,
+            }}
+          >
+            <RootStack.Screen name="MainTabs">
+              {() => (
+                <MainTabsView
+                  activeTab={activeTab}
+                  activeSource={activeSource}
+                  searchTarget={searchTarget}
+                  onTabPress={handleTabPress}
+                  onSelectTag={handleNavigateToSearchWithTag}
+                  onClearSearchTarget={() => setSearchTarget(undefined)}
+                  onSelectSource={handleSelectSource}
+                />
+              )}
+            </RootStack.Screen>
+            <RootStack.Screen
+              name="Viewer"
+              component={ViewerScreen}
+              options={{
+                headerShown: false,
+                animation: 'slide_from_right',
+                gestureEnabled: true,
+                fullScreenGestureEnabled: true,
+              }}
+            />
+            <RootStack.Screen
+              name="SearchDetail"
+              component={SearchDetailScreen}
+              options={{
+                headerShown: false,
+                animation: 'slide_from_right',
+                gestureEnabled: true,
+                fullScreenGestureEnabled: true,
+              }}
+            />
+          </RootStack.Navigator>
+        </NavigationContainer>
+      </SourceProvider>
+
+      {/* App Lock Screen Overlay */}
+      {isLocked && (
+        <View style={styles.lockOverlay}>
+          <LockScreen
+            mode="unlock"
+            onSuccess={() => {
+              setIsLocked(false);
+            }}
+          />
+        </View>
+      )}
+    </View>
+  );
+}
+
+function MainTabsView({
+  activeTab,
+  activeSource,
+  searchTarget,
+  onTabPress,
+  onSelectTag,
+  onClearSearchTarget,
+  onSelectSource,
+}: {
+  activeTab: TabType;
+  activeSource: BooruSource;
+  searchTarget: { tag: string; mode: 'replace' | 'add' | 'exclude' } | undefined;
+  onTabPress: (tab: TabType) => void;
+  onSelectTag: (tag: string, mode?: 'replace' | 'add' | 'exclude') => void;
+  onClearSearchTarget: () => void;
+  onSelectSource: (source: BooruSource) => void;
+}) {
+  const insets = useSafeAreaInsets();
+  return (
+    <View style={styles.container}>
       {/* Screen Views (Keep-Alive) */}
       <View style={styles.contentArea}>
         <View
@@ -128,8 +218,8 @@ function MainApp() {
         >
           <FeedScreen
             activeSource={activeSource}
-            onSelectTag={handleNavigateToSearchWithTag}
-            onOpenSourcePicker={() => setActiveTab('settings')}
+            onSelectTag={onSelectTag}
+            onOpenSourcePicker={() => onTabPress('settings')}
           />
         </View>
 
@@ -143,8 +233,8 @@ function MainApp() {
             initialTag={searchTarget?.tag}
             initialMode={searchTarget?.mode}
             activeSource={activeSource}
-            onClearInitialTag={() => setSearchTarget(undefined)}
-            onOpenSourcePicker={() => setActiveTab('settings')}
+            onClearInitialTag={onClearSearchTarget}
+            onOpenSourcePicker={() => onTabPress('settings')}
           />
         </View>
 
@@ -156,7 +246,7 @@ function MainApp() {
         >
           <FavoritesScreen
             isActive={activeTab === 'favorites'}
-            onSelectTag={handleNavigateToSearchWithTag}
+            onSelectTag={onSelectTag}
           />
         </View>
 
@@ -168,7 +258,7 @@ function MainApp() {
         >
           <SettingsScreen
             activeSource={activeSource}
-            onSelectSource={handleSelectSource}
+            onSelectSource={onSelectSource}
           />
         </View>
       </View>
@@ -177,7 +267,7 @@ function MainApp() {
       <View style={[styles.tabBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => handleTabPress('feed')}
+          onPress={() => onTabPress('feed')}
           activeOpacity={0.7}
         >
           <Compass
@@ -196,7 +286,7 @@ function MainApp() {
 
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => handleTabPress('search')}
+          onPress={() => onTabPress('search')}
           activeOpacity={0.7}
         >
           <Search
@@ -215,7 +305,7 @@ function MainApp() {
 
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => handleTabPress('favorites')}
+          onPress={() => onTabPress('favorites')}
           activeOpacity={0.7}
         >
           <Heart
@@ -235,7 +325,7 @@ function MainApp() {
 
         <TouchableOpacity
           style={styles.tabItem}
-          onPress={() => handleTabPress('settings')}
+          onPress={() => onTabPress('settings')}
           activeOpacity={0.7}
         >
           <SlidersHorizontal
@@ -252,18 +342,6 @@ function MainApp() {
           </Text>
         </TouchableOpacity>
       </View>
-
-      {/* App Lock Screen Overlay */}
-      {isLocked && (
-        <View style={styles.lockOverlay}>
-          <LockScreen
-            mode="unlock"
-            onSuccess={() => {
-              setIsLocked(false);
-            }}
-          />
-        </View>
-      )}
     </View>
   );
 }
@@ -325,5 +403,3 @@ const styles = StyleSheet.create({
     color: Colors.dark.primaryLight,
   },
 });
-
-

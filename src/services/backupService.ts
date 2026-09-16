@@ -129,6 +129,19 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
   };
 }
 
+function inferSourceFromHaystack(haystack: string): { id: string; name: string } | null {
+  if (!haystack) return null;
+  if (haystack.includes('safebooru')) return { id: 'safebooru', name: 'Safebooru' };
+  if (haystack.includes('gelbooru')) return { id: 'gelbooru', name: 'Gelbooru' };
+  if (haystack.includes('realbooru')) return { id: 'realbooru', name: 'Realbooru' };
+  if (haystack.includes('rule34')) return { id: 'rule34', name: 'Rule34.xxx' };
+  if (haystack.includes('danbooru') || haystack.includes('donmai')) return { id: 'danbooru', name: 'Danbooru' };
+  if (haystack.includes('yande.re')) return { id: 'yandere', name: 'Yande.re' };
+  if (haystack.includes('konachan')) return { id: 'konachan', name: 'Konachan' };
+  if (haystack.includes('cum.st') || haystack.includes('coomer')) return { id: 'cumst', name: 'Cum.st' };
+  return null;
+}
+
 export const BackupService = {
   /**
    * Parse AnimeBoxes backup and extract posts, starred tags, search history, banned tags
@@ -312,10 +325,24 @@ export const BackupService = {
           const sampUrl = normalizeBooruMediaUrl(post.sampleUrl);
           const origUrl = normalizeBooruMediaUrl(post.originalUrl);
 
+          // Eski kayıtlarda eksik sourceId/sourceName'i URL'lerden geri çıkar
+          let nextSourceId = post.sourceId;
+          let nextSourceName = post.sourceName;
+          if (!nextSourceId || !nextSourceName) {
+            const haystack = `${prevUrl} ${sampUrl} ${origUrl} ${post.sourceLink || ''} ${post.id || ''}`.toLowerCase();
+            const inferred = inferSourceFromHaystack(haystack);
+            if (inferred) {
+              if (!nextSourceId) nextSourceId = inferred.id;
+              if (!nextSourceName) nextSourceName = inferred.name;
+            }
+          }
+
           if (
             prevUrl !== post.previewUrl ||
             sampUrl !== post.sampleUrl ||
-            origUrl !== post.originalUrl
+            origUrl !== post.originalUrl ||
+            nextSourceId !== post.sourceId ||
+            nextSourceName !== post.sourceName
           ) {
             changedCount++;
             return {
@@ -323,6 +350,8 @@ export const BackupService = {
               previewUrl: prevUrl,
               sampleUrl: sampUrl,
               originalUrl: origUrl,
+              sourceId: nextSourceId,
+              sourceName: nextSourceName,
             };
           }
           return post;
