@@ -66,9 +66,11 @@ const POPULAR_TAGS = [
 interface SearchScreenProps {
   initialTag?: string;
   initialMode?: 'replace' | 'add' | 'exclude';
+  initialFilter?: SearchFilterConfig;
   activeSource: BooruSource;
   onClearInitialTag?: () => void;
   onOpenSourcePicker?: () => void;
+  onBackPress?: () => void;
 }
 
 interface SearchHistoryEntry {
@@ -107,6 +109,13 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
   // Browser-like History Stack for deep tag navigation and returning to viewed posts
   const [navHistory, setNavHistory] = useState<SearchHistoryEntry[]>([]);
+  // Görüntüleyici açılış animasyonu: normal açışta kayarak, geri dönüşte anında.
+  const [viewerEnterAnim, setViewerEnterAnim] = useState<'slide' | 'none'>('slide');
+  // Geri animasyonu boyunca underlay'in hedef karede donmuş kalması için:
+  // pop anında previousState bir derinliğe kayar, dondurulmuş hedef korunur.
+  const [backPreview, setBackPreview] = useState<SearchHistoryEntry | null>(null);
+  const navHistoryRef = useRef<SearchHistoryEntry[]>([]);
+  navHistoryRef.current = navHistory;
 
   // Source Tracking & Race Condition Prevention Refs
   const lastActiveSourceIdRef = useRef(activeSource.id);
@@ -243,8 +252,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     const incomingTags = parseQueryToTags(tagOrQuery);
     if (incomingTags.length === 0) return;
 
-    // Push previous state to browser navigation stack if transitioning
+    // Push previous state to browser navigation stack if transitioning.
+    // Hiyerarşik geri dönüş: viewer'dan "add to search" ile gelindiyse
+    // çıkılan içeriğin index'i saklanır, geri gidince önce o içeriğe dönülür.
     if (shouldPushHistory || (isSearchActive && results.length > 0)) {
+      const originIdx =
+        originPostIndex !== undefined && originPostIndex !== null
+          ? originPostIndex
+          : selectedPostIndex;
       setNavHistory((prev) => [
         ...prev,
         {
@@ -252,7 +267,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
           results: [...results],
           query,
           page,
-          selectedPostIndex: originPostIndex !== undefined ? originPostIndex : selectedPostIndex,
+          selectedPostIndex: typeof originIdx === 'number' ? originIdx : null,
         },
       ]);
     }
@@ -339,17 +354,35 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const handleGoBack = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (navHistory.length > 0) {
-      // Pop last history state and restore exactly as user left it
+      // Pop last history state and restore exactly as user left it.
+      // Görüntüleyici animasyonsuz geri gelir: sağdan kayma "ileri"
+      // hissi verdiği için enterAnimation kapatılır.
       const lastEntry = navHistory[navHistory.length - 1];
       setNavHistory((prev) => prev.slice(0, -1));
+      // Underlay'i hedef karede dondur: pop anında previousState bir
+      // derinliğe kayar, backPreview animasyon bitene kadar hedefi korur.
+      setBackPreview(lastEntry);
 
+      setViewerEnterAnim('none');
+      // Foreground commit anında hâlâ ekran dışında (translateX = WIDTH):
+      // önce kaydırma konumunu sıfırla, sonra state'i takas et. Böylece
+      // underlay (her zaman liste başı) ile final karesi aynı offset'te olur.
+      // Hiyerarşik geri dönüş: kayıtlı viewer index'i geri açılır, önce
+      // çıkılan içeriğe dönülür; underlay aynı içeriğin snapshot'ını gösterir.
+      resultsScrollRef.current?.scrollTo({ y: 0, animated: false });
+      const targetIndex =
+        typeof lastEntry.selectedPostIndex === 'number' &&
+        lastEntry.results[lastEntry.selectedPostIndex]
+          ? lastEntry.selectedPostIndex
+          : null;
       setFilterConfig(lastEntry.filterConfig);
       setResults(lastEntry.results);
       setQuery(lastEntry.query);
       setPage(lastEntry.page);
       setIsSearchActive(true);
-      setSelectedPostIndex(lastEntry.selectedPostIndex);
+      setSelectedPostIndex(targetIndex);
     } else {
+      setSelectedPostIndex(null);
       handleExitSearch();
     }
   };
@@ -365,6 +398,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   // Smooth slide animation value for screen navigation
   const screenTranslateX = useRef(new Animated.Value(0)).current;
   const isAnimatingBack = useRef(false);
+  const resultsScrollRef = useRef<ScrollView>(null);
 
   // Use a ref to always access the latest handleGoBack without stale closures
   const handleGoBackRef = useRef(handleGoBack);
@@ -373,12 +407,19 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const commitGoBack = () => {
     if (isAnimatingBack.current) return;
     isAnimatingBack.current = true;
-    // Reset position to 0 FIRST, then update state synchronously.
-    // The underlay already shows the previous content, so the foreground
-    // at position 0 will render the same content seamlessly.
-    screenTranslateX.setValue(0);
+    // Önce state'i değiştir: foreground hâlâ ekran dışında park etmişken
+    // görünmez alanda takas olur. Reset'i sonraki frame'lere bırak ki
+    // React commit'i bitmeden foreground 0'a dönüp yeni içeriği
+    // bir kare bile göstermesin (göz kırpma buydu).
     handleGoBackRef.current();
-    isAnimatingBack.current = false;
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        screenTranslateX.setValue(0);
+        // Dondurulmuş önizlemeyi temizle: artık foreground hedefin kendisi.
+        setBackPreview(null);
+        isAnimatingBack.current = false;
+      });
+    });
   };
 
   const handleGoBackWithSlide = () => {
@@ -430,6 +471,17 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
   // Previous state for underlay live preview
   const previousState = navHistory.length > 0 ? navHistory[navHistory.length - 1] : null;
+  // Animasyon boyunca underlay hedef karede donmuş kalır: pop anında
+  // previousState bir derinliğe kayar, backPreview hedefi korur.
+  const underlayEntry = backPreview ?? previousState;
+  // Hedef kare viewer'lıysa underlay grid üstüne aynı içeriğin statik
+  // snapshot'ını çizer: final kare (grid + animasyonsuz modal) ile birebir.
+  const underlayViewerPost =
+    underlayEntry != null &&
+    typeof underlayEntry.selectedPostIndex === 'number' &&
+    underlayEntry.results[underlayEntry.selectedPostIndex]
+      ? underlayEntry.results[underlayEntry.selectedPostIndex]
+      : null;
 
   // Parallax Underlay Interpolations
   const underlayTranslateX = screenTranslateX.interpolate({
@@ -489,14 +541,89 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     }
   };
 
-  const hasCustomFilters =
-    filterConfig.sortBy !== 'default' ||
-    filterConfig.timeRange !== 'all' ||
-    filterConfig.rating !== 'all' ||
-    filterConfig.minScore !== undefined ||
-    (filterConfig.cumstService && filterConfig.cumstService !== 'all') ||
-    (filterConfig.cumstMediaType && filterConfig.cumstMediaType !== 'all') ||
-    filterConfig.jumpToPage > 1;
+  const hasCustomFiltersFor = (fc: SearchFilterConfig) =>
+    fc.sortBy !== 'default' ||
+    fc.timeRange !== 'all' ||
+    fc.rating !== 'all' ||
+    fc.minScore !== undefined ||
+    (fc.cumstService && fc.cumstService !== 'all') ||
+    (fc.cumstMediaType && fc.cumstMediaType !== 'all') ||
+    fc.jumpToPage > 1;
+
+  const hasCustomFilters = hasCustomFiltersFor(filterConfig);
+
+  // Underlay önizlemesi foreground ile piksel-piksel aynı olmalı:
+  // hızlı filtre çipleri interaktif olmayan kopyalarla birebir yansıtılır.
+  const renderStaticPresetChips = (fc: SearchFilterConfig) => {
+    if (activeSource.type === 'cumst') {
+      return (
+        <>
+          <View style={[styles.quickChip, fc.sortBy === 'score' && fc.timeRange === '1d' && styles.quickChipActive]}>
+            <Flame size={13} color={fc.sortBy === 'score' && fc.timeRange === '1d' ? '#111216' : '#FF7B72'} />
+            <Text style={[styles.quickChipText, fc.sortBy === 'score' && fc.timeRange === '1d' && styles.quickChipTextActive]}>
+              Günün Lideri
+            </Text>
+          </View>
+          <View style={[styles.quickChip, fc.sortBy === 'score' && fc.timeRange === '1w' && styles.quickChipActive]}>
+            <Calendar size={13} color={fc.sortBy === 'score' && fc.timeRange === '1w' ? '#111216' : '#58A6FF'} />
+            <Text style={[styles.quickChipText, fc.sortBy === 'score' && fc.timeRange === '1w' && styles.quickChipTextActive]}>
+              Haftanın Lideri
+            </Text>
+          </View>
+          <View style={[styles.quickChip, fc.sortBy === 'score' && fc.timeRange === '1m' && styles.quickChipActive]}>
+            <Star size={13} color={fc.sortBy === 'score' && fc.timeRange === '1m' ? '#111216' : '#FCC419'} />
+            <Text style={[styles.quickChipText, fc.sortBy === 'score' && fc.timeRange === '1m' && styles.quickChipTextActive]}>
+              Ayın Lideri
+            </Text>
+          </View>
+          <View style={[styles.quickChip, fc.cumstMediaType === 'videos' && styles.quickChipActive]}>
+            <Sparkles size={13} color={fc.cumstMediaType === 'videos' ? '#111216' : '#A371F7'} />
+            <Text style={[styles.quickChipText, fc.cumstMediaType === 'videos' && styles.quickChipTextActive]}>
+              Videolar
+            </Text>
+          </View>
+          <View style={[styles.quickChip, fc.cumstService === 'onlyfans' && styles.quickChipActive]}>
+            <Text style={[styles.quickChipText, fc.cumstService === 'onlyfans' && styles.quickChipTextActive]}>
+              OnlyFans
+            </Text>
+          </View>
+          <View style={[styles.quickChip, fc.cumstService === 'fansly' && styles.quickChipActive]}>
+            <Text style={[styles.quickChipText, fc.cumstService === 'fansly' && styles.quickChipTextActive]}>
+              Fansly
+            </Text>
+          </View>
+        </>
+      );
+    }
+    return (
+      <>
+        <View style={[styles.quickChip, fc.sortBy === 'score' && fc.timeRange === '1w' && styles.quickChipActive]}>
+          <Flame size={13} color={fc.sortBy === 'score' && fc.timeRange === '1w' ? '#111216' : '#FF7B72'} />
+          <Text style={[styles.quickChipText, fc.sortBy === 'score' && fc.timeRange === '1w' && styles.quickChipTextActive]}>
+            Popüler (Hafta)
+          </Text>
+        </View>
+        <View style={[styles.quickChip, fc.sortBy === 'score' && fc.timeRange === '1m' && styles.quickChipActive]}>
+          <Calendar size={13} color={fc.sortBy === 'score' && fc.timeRange === '1m' ? '#111216' : '#58A6FF'} />
+          <Text style={[styles.quickChipText, fc.sortBy === 'score' && fc.timeRange === '1m' && styles.quickChipTextActive]}>
+            Popüler (Ay)
+          </Text>
+        </View>
+        <View style={[styles.quickChip, fc.rating === 'safe' && styles.quickChipActive]}>
+          <ShieldCheck size={13} color={fc.rating === 'safe' ? '#111216' : '#51CF66'} />
+          <Text style={[styles.quickChipText, fc.rating === 'safe' && styles.quickChipTextActive]}>
+            Safe (Güvenli)
+          </Text>
+        </View>
+        <View style={[styles.quickChip, fc.minScore === 50 && styles.quickChipActive]}>
+          <Star size={13} color={fc.minScore === 50 ? '#111216' : '#FCC419'} />
+          <Text style={[styles.quickChipText, fc.minScore === 50 && styles.quickChipTextActive]}>
+            50+ Puan
+          </Text>
+        </View>
+      </>
+    );
+  };
 
   // Masonry distribution for results
   const leftColumn: BooruPost[] = [];
@@ -523,49 +650,121 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
           ]}
           pointerEvents="none"
         >
-          {previousState ? (
+          {underlayEntry ? (
             <View style={styles.underlayContentWrapper}>
-              {/* Previous Search Bar */}
+              {/* Previous Search Bar — final ekranla piksel-piksel aynı:
+                  previousState varken foreground'da (isSearchActive) her zaman
+                  back butonu görünür, underlay de aynısını gösterir. */}
               <View style={styles.searchBarWrapper}>
-                {navHistory.length > 1 && (
-                  <View style={styles.backButton}>
-                    <ArrowLeft size={20} color="#FFFFFF" />
-                  </View>
-                )}
+                <View style={styles.backButton}>
+                  <ArrowLeft size={20} color="#FFFFFF" />
+                </View>
                 <View style={styles.searchInputContainer}>
                   <Search size={18} color={Colors.dark.textMuted} />
-                  <Text style={styles.underlaySearchText} numberOfLines={1}>
-                    {previousState.query ||
-                      (previousState.filterConfig.tags.length > 0
-                        ? previousState.filterConfig.tags.join(' ')
-                        : 'Tüm Gönderiler')}
-                  </Text>
+                  {underlayEntry.query || underlayEntry.filterConfig.tags.length > 0 ? (
+                    <Text style={styles.underlaySearchText} numberOfLines={1}>
+                      {underlayEntry.query || underlayEntry.filterConfig.tags.join(' ')}
+                    </Text>
+                  ) : (
+                    <Text style={styles.underlaySearchPlaceholder} numberOfLines={1}>
+                      Etiket veya içerik üretici ara...
+                    </Text>
+                  )}
+                  {underlayEntry.query.length > 0 && (
+                    <View style={styles.clearIcon}>
+                      <X size={16} color={Colors.dark.textMuted} />
+                    </View>
+                  )}
                 </View>
                 <View style={styles.filterButton}>
-                  <SlidersHorizontal size={18} color="#FFFFFF" />
+                  <SlidersHorizontal
+                    size={18}
+                    color={hasCustomFiltersFor(underlayEntry.filterConfig) ? GOLD_ACCENT : '#FFFFFF'}
+                  />
+                  {hasCustomFiltersFor(underlayEntry.filterConfig) && (
+                    <View style={styles.activeFilterDot} />
+                  )}
                 </View>
               </View>
 
-              {/* Previous Results Grid Preview */}
+              {/* Previous Results Grid Preview — foreground ile birebir aynı
+                  yapı: hızlı filtre satırı + banner pill'leri + tam grid.
+                  Herhangi biri eksik olursa commit sonrası ekran sıçrar. */}
+              <View style={styles.quickFiltersContainer}>
+                <View style={[styles.quickFiltersContent, { flexDirection: 'row' }]}>
+                  {onOpenSourcePicker && (
+                    <View style={styles.sourceQuickChip}>
+                      <Layers size={13} color={Colors.dark.primaryLight} />
+                      <Text style={styles.sourceQuickChipText} numberOfLines={1}>
+                        {activeSource.name.split(' ')[0]}
+                      </Text>
+                    </View>
+                  )}
+                  <View
+                    style={[
+                      styles.quickChip,
+                      hasCustomFiltersFor(underlayEntry.filterConfig) && styles.quickChipActive,
+                    ]}
+                  >
+                    <SlidersHorizontal
+                      size={13}
+                      color={hasCustomFiltersFor(underlayEntry.filterConfig) ? '#111216' : GOLD_ACCENT}
+                    />
+                    <Text
+                      style={[
+                        styles.quickChipText,
+                        hasCustomFiltersFor(underlayEntry.filterConfig) && styles.quickChipTextActive,
+                      ]}
+                    >
+                      Filtreler {hasCustomFiltersFor(underlayEntry.filterConfig) ? '• Açık' : ''}
+                    </Text>
+                  </View>
+                  {renderStaticPresetChips(underlayEntry.filterConfig)}
+                </View>
+              </View>
               <View style={styles.underlayResultsArea}>
                 <View style={styles.activeTagBanner}>
                   <View style={styles.activeTagInfo}>
                     <Text style={styles.activeTagName}>
-                      {previousState.filterConfig.tags.length > 0
-                        ? `#${previousState.filterConfig.tags.join(' #')}`
+                      {underlayEntry.filterConfig.tags.length > 0
+                        ? `#${underlayEntry.filterConfig.tags.join(' #')}`
                         : 'Tüm Gönderiler'}
                     </Text>
                     <Text style={styles.activeTagCount}>
-                      ({previousState.results.length}+ sonuç)
+                      ({underlayEntry.results.length}+ sonuç)
                     </Text>
                   </View>
+                  {hasCustomFiltersFor(underlayEntry.filterConfig) && (
+                    <View style={styles.activeFiltersPillRow}>
+                      {underlayEntry.filterConfig.sortBy === 'score' && (
+                        <View style={styles.smallFilterPill}>
+                          <Text style={styles.smallFilterPillText}>
+                            🔥 Popüler ({underlayEntry.filterConfig.timeRange})
+                          </Text>
+                        </View>
+                      )}
+                      {underlayEntry.filterConfig.rating !== 'all' && (
+                        <View style={styles.smallFilterPill}>
+                          <Text style={styles.smallFilterPillText}>
+                            🛡️ {underlayEntry.filterConfig.rating}
+                          </Text>
+                        </View>
+                      )}
+                      {underlayEntry.filterConfig.minScore && (
+                        <View style={styles.smallFilterPill}>
+                          <Text style={styles.smallFilterPillText}>
+                            ⭐ {underlayEntry.filterConfig.minScore}+
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                  )}
                 </View>
 
                 <View style={styles.gridContainer}>
                   <View style={styles.column}>
-                    {previousState.results
+                    {underlayEntry.results
                       .filter((_, i) => i % 2 === 0)
-                      .slice(0, 6)
                       .map((post, idx) => (
                         <PostCard
                           key={`underlay-l-${post.id}-${idx}`}
@@ -575,9 +774,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       ))}
                   </View>
                   <View style={styles.column}>
-                    {previousState.results
+                    {underlayEntry.results
                       .filter((_, i) => i % 2 !== 0)
-                      .slice(0, 6)
                       .map((post, idx) => (
                         <PostCard
                           key={`underlay-r-${post.id}-${idx}`}
@@ -591,7 +789,22 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             </View>
           ) : (
             <View style={styles.underlayContentWrapper}>
-              {/* Explore Screen Underlay Preview */}
+              {/* Explore Screen Underlay Preview — foreground ile aynı yapı:
+                  başlık + arama + hızlı filtre + tam listeler */}
+              <View style={styles.topHeader}>
+                <View>
+                  <Text style={styles.topHeaderTitle}>Arama</Text>
+                  <Text style={styles.topHeaderSubtitle}>Etiket veya görsel keşfet</Text>
+                </View>
+                {onOpenSourcePicker && (
+                  <View style={styles.sourcePill}>
+                    <Layers size={14} color={Colors.dark.primaryLight} />
+                    <Text style={styles.sourceText} numberOfLines={1}>
+                      {activeSource.name.split(' ')[0]}
+                    </Text>
+                  </View>
+                )}
+              </View>
               <View style={styles.searchBarWrapper}>
                 <View style={styles.searchInputContainer}>
                   <Search size={18} color={Colors.dark.textMuted} />
@@ -600,7 +813,27 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                   </Text>
                 </View>
                 <View style={styles.filterButton}>
-                  <SlidersHorizontal size={18} color="#FFFFFF" />
+                  <SlidersHorizontal size={18} color={hasCustomFilters ? GOLD_ACCENT : '#FFFFFF'} />
+                  {hasCustomFilters && <View style={styles.activeFilterDot} />}
+                </View>
+              </View>
+
+              <View style={styles.quickFiltersContainer}>
+                <View style={[styles.quickFiltersContent, { flexDirection: 'row' }]}>
+                  {onOpenSourcePicker && (
+                    <View style={styles.sourceQuickChip}>
+                      <Layers size={13} color={Colors.dark.primaryLight} />
+                      <Text style={styles.sourceQuickChipText} numberOfLines={1}>
+                        {activeSource.name.split(' ')[0]}
+                      </Text>
+                    </View>
+                  )}
+                  <View style={[styles.quickChip, hasCustomFilters && styles.quickChipActive]}>
+                    <SlidersHorizontal size={13} color={hasCustomFilters ? '#111216' : GOLD_ACCENT} />
+                    <Text style={[styles.quickChipText, hasCustomFilters && styles.quickChipTextActive]}>
+                      Filtreler {hasCustomFilters ? '• Açık' : ''}
+                    </Text>
+                  </View>
                 </View>
               </View>
 
@@ -614,7 +847,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       </View>
                     </View>
                     <View style={styles.tagWrap}>
-                      {history.slice(0, 8).map((tag, idx) => (
+                      {history.map((tag, idx) => (
                         <TagChip
                           key={`underlay-hist-${tag}-${idx}`}
                           name={tag}
@@ -634,7 +867,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       </View>
                     </View>
                     <View style={styles.tagWrap}>
-                      {favoriteTags.slice(0, 8).map((tag, idx) => (
+                      {favoriteTags.map((tag, idx) => (
                         <TagChip
                           key={`underlay-fav-${tag}-${idx}`}
                           name={tag}
@@ -653,7 +886,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                     </View>
                   </View>
                   <View style={styles.tagWrap}>
-                    {POPULAR_TAGS.slice(0, 8).map((tag, idx) => (
+                    {POPULAR_TAGS.map((tag, idx) => (
                       <TagChip
                         key={`underlay-pop-${tag}-${idx}`}
                         name={tag}
@@ -1132,6 +1365,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             </View>
           ) : (
             <ScrollView
+              ref={resultsScrollRef}
               style={styles.resultsScroll}
               contentContainerStyle={styles.resultsContent}
               showsVerticalScrollIndicator={false}
@@ -1194,6 +1428,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       post={post}
                       onPress={(p) => {
                         const idx = results.findIndex((item) => item.id === p.id);
+                        setViewerEnterAnim('slide');
                         setSelectedPostIndex(idx >= 0 ? idx : 0);
                       }}
                     />
@@ -1206,6 +1441,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       post={post}
                       onPress={(p) => {
                         const idx = results.findIndex((item) => item.id === p.id);
+                        setViewerEnterAnim('slide');
                         setSelectedPostIndex(idx >= 0 ? idx : 0);
                       }}
                     />
@@ -1311,6 +1547,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         posts={results}
         initialIndex={selectedPostIndex ?? 0}
         visible={selectedPostIndex !== null}
+        enterAnimation={viewerEnterAnim}
         onClose={() => setSelectedPostIndex(null)}
         onTagPress={(tag) => {
           const originIdx = selectedPostIndex;

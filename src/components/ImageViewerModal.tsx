@@ -52,6 +52,13 @@ interface ImageViewerModalProps {
   onTagPress: (tag: string) => void;
   onAddTagToSearch?: (tag: string) => void;
   onExcludeTagFromSearch?: (tag: string) => void;
+  /** 'none' ise açılışta sağdan kayma animasyonu oynatılmaz (geri dönüşte kullanılır). */
+  enterAnimation?: 'slide' | 'none';
+  /** Stack route olarak render ediliyorsa true: Modal sarmalayıcı yok,
+      açılış/kapanış ve kenar kaydırma native stack'e bırakılır. */
+  asScreen?: boolean;
+  suspended?: boolean;
+  dismissOnTagPress?: boolean;
 }
 
 export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
@@ -62,6 +69,10 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   onTagPress,
   onAddTagToSearch,
   onExcludeTagFromSearch,
+  enterAnimation = 'slide',
+  asScreen = false,
+  suspended = false,
+  dismissOnTagPress = true,
 }) => {
   const insets = useSafeAreaInsets();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
@@ -76,6 +87,12 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   const translateX = useRef(new Animated.Value(SCREEN_WIDTH)).current;
 
   useEffect(() => {
+    if (suspended) {
+      setIsPlayingSlideshow(false);
+    }
+  }, [suspended]);
+
+  useEffect(() => {
     if (visible) {
       setCurrentIndex(initialIndex);
       setShowControls(true);
@@ -83,17 +100,22 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       setIsPlayingSlideshow(false);
       setIsGalleryScrollEnabled(true);
 
-      // Slide in smoothly from right
-      translateX.setValue(SCREEN_WIDTH);
-      Animated.spring(translateX, {
-        toValue: 0,
-        damping: 28,
-        stiffness: 240,
-        mass: 0.9,
-        useNativeDriver: true,
-      }).start();
+      if (asScreen || enterAnimation === 'none') {
+        // Stack route: native stack owns the animation, stay put.
+        translateX.setValue(0);
+      } else {
+        // Slide in smoothly from right
+        translateX.setValue(SCREEN_WIDTH);
+        Animated.spring(translateX, {
+          toValue: 0,
+          damping: 28,
+          stiffness: 240,
+          mass: 0.9,
+          useNativeDriver: true,
+        }).start();
+      }
     }
-  }, [visible, initialIndex]);
+  }, [visible, initialIndex, enterAnimation]);
 
   const currentPost = posts[currentIndex] || posts[0];
 
@@ -138,9 +160,15 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     return () => clearInterval(timer);
   }, [isPlayingSlideshow, posts.length]);
 
-  // Animated smooth dismiss handler
+  // Stack route modunda native stack yönetir: kendi açılış animasyonu ve
+  // kenar kaydırma jesti devre dışı; translateX sabit 0'da durur.
+  const isStackScreen = asScreen === true;
   const handleDismissWithSlide = () => {
     Haptics.selectionAsync();
+    if (isStackScreen) {
+      onClose();
+      return;
+    }
     Animated.timing(translateX, {
       toValue: SCREEN_WIDTH,
       duration: 220,
@@ -208,14 +236,8 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     setIsPlayingSlideshow((prev) => !prev);
   };
 
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="none"
-      onRequestClose={handleDismissWithSlide}
-    >
-      <View style={styles.modalBackdrop}>
+  const viewerBody = (
+    <View style={asScreen ? styles.container : styles.modalBackdrop}>
         {/* Animated Container */}
         <Animated.View
           style={[
@@ -371,6 +393,20 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
           />
         </Animated.View>
       </View>
+  );
+
+  if (asScreen) {
+    return viewerBody;
+  }
+
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="none"
+      onRequestClose={handleDismissWithSlide}
+    >
+      {viewerBody}
     </Modal>
   );
 };
