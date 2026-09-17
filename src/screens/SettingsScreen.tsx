@@ -30,11 +30,12 @@ import {
   FolderUp,
   HardDrive,
   Share2,
+  Image as ImageIcon,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { BooruSource } from '../types/booru';
 import { AVAILABLE_SOURCES } from '../services/sources';
-import { StorageService } from '../services/storage';
+import { StorageService, ImageQuality } from '../services/storage';
 import { proxyService } from '../services/proxyService';
 import { BackupService } from '../services/backupService';
 import { SecurityService, BiometryType } from '../services/securityService';
@@ -42,6 +43,30 @@ import { PasscodeModal, PasscodeModalMode } from '../components/PasscodeModal';
 import { Colors } from '../theme/colors';
 
 const GOLD_ACCENT = '#F5A623';
+
+interface QualityOption {
+  id: ImageQuality;
+  title: string;
+  desc: string;
+}
+
+const QUALITY_OPTIONS: QualityOption[] = [
+  {
+    id: 'preview',
+    title: 'Hızlı Önizleme',
+    desc: 'Sample çözünürlük, az veri kullanımı',
+  },
+  {
+    id: 'auto',
+    title: 'Otomatik (Önerilen)',
+    desc: 'Normalde sample, zoom\'da tam çözünürlük',
+  },
+  {
+    id: 'full',
+    title: 'Tam Çözünürlük',
+    desc: 'Her zaman original, çok veri kullanımı',
+  },
+];
 
 interface SettingsScreenProps {
   activeSource: BooruSource;
@@ -57,6 +82,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [workerUrl, setWorkerUrl] = useState('');
   const [isTestingProxy, setIsTestingProxy] = useState(false);
   const [proxyTestResult, setProxyTestResult] = useState<string | null>(null);
+  const [imageQuality, setImageQuality] = useState<ImageQuality>('auto');
 
   // Security & Passcode State
   const [passcodeEnabled, setPasscodeEnabled] = useState(false);
@@ -81,12 +107,19 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       setWorkerUrl(config.workerUrl);
       proxyService.setConfig(config.enabled, config.workerUrl);
     });
+    StorageService.getImageQuality().then(setImageQuality);
     refreshSecurityConfig();
   }, []);
 
   const handleSourceChange = (source: BooruSource) => {
     Haptics.selectionAsync();
     onSelectSource(source);
+  };
+
+  const handleQualityChange = async (quality: ImageQuality) => {
+    Haptics.selectionAsync();
+    setImageQuality(quality);
+    await StorageService.setImageQuality(quality);
   };
 
   const handleToggleProxy = async (val: boolean) => {
@@ -281,7 +314,49 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </View>
         </View>
 
-        {/* 2. Security & Passcode Section */}
+        {/* 2. Image Quality Section */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <ImageIcon size={18} color={GOLD_ACCENT} />
+            <Text style={styles.sectionTitle}>Görsel Kalitesi</Text>
+          </View>
+          <Text style={styles.sectionDescription}>
+            Görüntüleyicide görsellerin açılış kalitesini ve yakınlaştırma (zoom) davranışını belirleyin.
+          </Text>
+
+          <View style={styles.card}>
+            {QUALITY_OPTIONS.map((opt, index) => {
+              const isSelected = imageQuality === opt.id;
+              return (
+                <TouchableOpacity
+                  key={opt.id}
+                  style={[
+                    styles.sourceRow,
+                    index !== QUALITY_OPTIONS.length - 1 && styles.borderBottom,
+                    isSelected && styles.sourceRowSelected,
+                  ]}
+                  onPress={() => handleQualityChange(opt.id)}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.sourceInfo}>
+                    <View style={styles.sourceNameRow}>
+                      <Text style={styles.sourceName}>{opt.title}</Text>
+                    </View>
+                    <Text style={styles.sourceDesc}>{opt.desc}</Text>
+                  </View>
+
+                  {isSelected && (
+                    <View style={styles.checkCircle}>
+                      <Check size={14} color="#FFFFFF" />
+                    </View>
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        </View>
+
+        {/* 3. Security & Passcode Section */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Shield size={18} color={GOLD_ACCENT} />

@@ -1,5 +1,36 @@
 import { Platform } from 'react-native';
 import { proxyService } from '../services/proxyService';
+import { ImageQuality } from '../services/storage';
+
+/**
+ * Resolves raw (unproxied) image URIs based on quality preference.
+ * - preview: display is sampleUrl (fast)
+ * - auto: display is sampleUrl (upgrades to full on zoom)
+ * - full: display is full originalUrl
+ * placeholder is always previewUrl.
+ * Returns raw unproxied URLs; component calls getMediaUrl.
+ */
+export function getImageUris(
+  post: { previewUrl?: string; sampleUrl?: string; originalUrl?: string; [key: string]: any } | null | undefined,
+  quality: ImageQuality = 'auto'
+): { displayUri: string; placeholderUri: string; fullUri: string } {
+  if (!post) {
+    return { displayUri: '', placeholderUri: '', fullUri: '' };
+  }
+
+  const preview = post.previewUrl || '';
+  const sample = post.sampleUrl || post.originalUrl || '';
+  const full = post.originalUrl || post.sampleUrl || '';
+
+  const display = quality === 'full' ? full : sample;
+  const placeholder = preview || sample;
+
+  return {
+    displayUri: display,
+    placeholderUri: placeholder,
+    fullUri: full,
+  };
+}
 
 /**
  * Normalizes booru media URLs (replaces deprecated CDN domains, repairs SSL issues).

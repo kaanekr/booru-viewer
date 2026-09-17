@@ -2,13 +2,37 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BooruPost } from '../types/booru';
 import { DEFAULT_SOURCE } from './sources';
 
+export type ImageQuality = 'preview' | 'auto' | 'full';
+
 const FAVORITES_KEY = '@booru_favorites_v2';
 const HISTORY_KEY = '@booru_search_history_v2';
 const SOURCE_KEY = '@booru_active_source_v2';
 const FAVORITE_TAGS_KEY = '@booru_favorite_tags_v2';
 const BLACKLISTED_TAGS_KEY = '@booru_blacklisted_tags_v2';
+const IMAGE_QUALITY_KEY = '@booru_image_quality_v2';
 
 export const StorageService = {
+  async getImageQuality(): Promise<ImageQuality> {
+    try {
+      const data = await AsyncStorage.getItem(IMAGE_QUALITY_KEY);
+      if (!data) return 'auto';
+      const parsed = JSON.parse(data);
+      if (parsed === 'preview' || parsed === 'auto' || parsed === 'full') {
+        return parsed;
+      }
+      return 'auto';
+    } catch {
+      return 'auto';
+    }
+  },
+
+  async setImageQuality(quality: ImageQuality): Promise<void> {
+    try {
+      await AsyncStorage.setItem(IMAGE_QUALITY_KEY, JSON.stringify(quality));
+    } catch (e) {
+      console.warn('Error saving image quality:', e);
+    }
+  },
   async getFavorites(): Promise<BooruPost[]> {
     try {
       const data = await AsyncStorage.getItem(FAVORITES_KEY);
