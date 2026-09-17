@@ -43,7 +43,13 @@ import { Colors } from '../theme/colors';
 import { StorageService } from '../services/storage';
 import { TagChip } from './TagChip';
 import { PostInfoModal } from './PostInfoModal';
-import { getMediaHeaders, getMediaUrl, getVideoCandidates, isUnsupportedOnIOS } from '../utils/media';
+import {
+  checkMp4UpgradeAvailable,
+  getMediaHeaders,
+  getMediaUrl,
+  getVideoCandidates,
+  isUnsupportedOnIOS,
+} from '../utils/media';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -442,6 +448,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const [imageLoading, setImageLoading] = useState(true);
   const [isDismissing, setIsDismissing] = useState(false);
   const [isScrubbingActive, setIsScrubbingActive] = useState(false);
+  const [upgradedMp4Url, setUpgradedMp4Url] = useState<string | null>(null);
+  const [isCheckingUpgrade, setIsCheckingUpgrade] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const lastTapRef = useRef<number>(0);
   const isZoomedRef = useRef<boolean>(false);
@@ -470,6 +478,45 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     (videoCandidates.length > 0
       ? videoCandidates.every(isUnsupportedOnIOS)
       : (post.fileExt?.toLowerCase() === 'webm' || isUnsupportedOnIOS(primaryCandidate)));
+
+  useEffect(() => {
+    setUpgradedMp4Url(null);
+  }, [primaryCandidate]);
+
+  useEffect(() => {
+    // Sadece iOS'ta dene (Platform.OS check)
+    if (Platform.OS !== 'ios' || !isWebmOnlyOnIOS || !primaryCandidate) {
+      setUpgradedMp4Url(null);
+      setIsCheckingUpgrade(false);
+      return;
+    }
+
+    if (!isActive) {
+      return;
+    }
+
+    let isMounted = true;
+    setIsCheckingUpgrade(true);
+
+    checkMp4UpgradeAvailable(primaryCandidate)
+      .then((mp4) => {
+        if (!isMounted) return;
+        setUpgradedMp4Url(mp4);
+        setIsCheckingUpgrade(false);
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setUpgradedMp4Url(null);
+        setIsCheckingUpgrade(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [isActive, isWebmOnlyOnIOS, primaryCandidate]);
+
+  const canPlayVideo = isVideo && (!isWebmOnlyOnIOS || Boolean(upgradedMp4Url));
+  const activeVideoUrl = upgradedMp4Url ? getMediaUrl(upgradedMp4Url) : mediaUrl;
 
   const mainImageUri = getMediaUrl(isVideo ? post.previewUrl : post.sampleUrl || post.originalUrl || post.previewUrl);
   const placeholderUri = getMediaUrl(post.previewUrl || post.sampleUrl);
@@ -540,7 +587,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
 
   // Double tap to zoom & single tap to toggle controls
   const handleImageTouch = (event: any) => {
-    if (isVideo && !isWebmOnlyOnIOS) {
+    if (canPlayVideo) {
       onToggleControls();
       return;
     }
@@ -606,7 +653,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       contentContainerStyle={styles.fullscreenImageViewport}
       showsVerticalScrollIndicator={false}
       showsHorizontalScrollIndicator={false}
-      maximumZoomScale={isVideo && !isWebmOnlyOnIOS ? 1 : 4.5}
+      maximumZoomScale={canPlayVideo ? 1 : 4.5}
       minimumZoomScale={1}
       bouncesZoom={true}
       centerContent={true}
@@ -617,9 +664,9 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     >
       <TouchableWithoutFeedback onPress={handleImageTouch}>
         <View style={styles.fullscreenImageViewport}>
-          {isVideo && isActive && !isWebmOnlyOnIOS ? (
+          {canPlayVideo && isActive ? (
             <VideoPlayerView
-              url={mediaUrl}
+              url={activeVideoUrl}
               suspended={suspended}
               onLoaded={() => setImageLoading(false)}
               onScrubbingChange={(scrubbing) => {
@@ -651,12 +698,19 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                 transition={150}
                 onLoadEnd={() => setImageLoading(false)}
               />
-              {isVideo && !isWebmOnlyOnIOS && (
+              {canPlayVideo && (
                 <View style={styles.videoPlayOverlay}>
                   <Play size={36} color="#FFFFFF" fill="#FFFFFF" />
                 </View>
               )}
-              {isWebmOnlyOnIOS && isActive && (
+              {isWebmOnlyOnIOS && isActive && isCheckingUpgrade && (
+                <View style={styles.upgradeLoadingContainer} pointerEvents="none">
+                  <View style={styles.upgradeLoadingBadge}>
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  </View>
+                </View>
+              )}
+              {isWebmOnlyOnIOS && isActive && !isCheckingUpgrade && !upgradedMp4Url && (
                 <View style={styles.unsupportedCardContainer} pointerEvents="box-none">
                   <View style={styles.unsupportedCard}>
                     <View style={styles.unsupportedHeader}>
@@ -1453,5 +1507,19 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '600',
+  },
+  upgradeLoadingContainer: {
+    ...StyleSheet.absoluteFill,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  upgradeLoadingBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });
