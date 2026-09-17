@@ -40,11 +40,12 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
-import { StorageService } from '../services/storage';
+import { StorageService, ImageQuality } from '../services/storage';
 import { TagChip } from './TagChip';
 import { PostInfoModal } from './PostInfoModal';
 import {
   checkMp4UpgradeAvailable,
+  getImageUris,
   getMediaHeaders,
   getMediaUrl,
   getVideoCandidates,
@@ -450,10 +451,32 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const [isScrubbingActive, setIsScrubbingActive] = useState(false);
   const [upgradedMp4Url, setUpgradedMp4Url] = useState<string | null>(null);
   const [isCheckingUpgrade, setIsCheckingUpgrade] = useState(false);
+  const [quality, setQuality] = useState<ImageQuality>('auto');
+  const [isZoomed, setIsZoomed] = useState(false);
+  const [hasUpgradedToFull, setHasUpgradedToFull] = useState(false);
+  const [fullLoaded, setFullLoaded] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const lastTapRef = useRef<number>(0);
   const isZoomedRef = useRef<boolean>(false);
   const singleTapTimerRef = useRef<any>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    StorageService.getImageQuality().then((q) => {
+      if (isMounted) setQuality(q);
+    });
+    return () => {
+      isMounted = false;
+    };
+  }, [isActive]);
+
+  useEffect(() => {
+    setIsZoomed(false);
+    isZoomedRef.current = false;
+    setHasUpgradedToFull(false);
+    setFullLoaded(false);
+    setImageLoading(true);
+  }, [post.id]);
 
   const videoCandidates = useMemo(() => getVideoCandidates(post), [post]);
   const primaryCandidate =
@@ -518,8 +541,22 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const canPlayVideo = isVideo && (!isWebmOnlyOnIOS || Boolean(upgradedMp4Url));
   const activeVideoUrl = upgradedMp4Url ? getMediaUrl(upgradedMp4Url) : mediaUrl;
 
-  const mainImageUri = getMediaUrl(isVideo ? post.previewUrl : post.sampleUrl || post.originalUrl || post.previewUrl);
-  const placeholderUri = getMediaUrl(post.previewUrl || post.sampleUrl);
+  const uris = useMemo(() => getImageUris(post, quality), [post, quality]);
+  const shouldUpgradeOnZoom = isZoomed || hasUpgradedToFull;
+  // URI seçimi: quality==='full' ? fullUri : (quality==='auto' && isZoomed ? fullUri : displayUri)
+  const selectedRawUri =
+    quality === 'full'
+      ? uris.fullUri
+      : quality === 'auto' && shouldUpgradeOnZoom
+      ? uris.fullUri
+      : uris.displayUri;
+
+  const baseImageRawUri = isVideo ? post.previewUrl : post.sampleUrl || uris.displayUri;
+  const sampleMediaUrl = getMediaUrl(baseImageRawUri);
+  const placeholderMediaUrl = getMediaUrl(uris.placeholderUri || post.previewUrl);
+  const fullMediaUrl = getMediaUrl(uris.fullUri);
+
+  const shouldMountFull = !isVideo && (quality === 'full' || (quality === 'auto' && shouldUpgradeOnZoom));
 
   const handleOpenSource = async () => {
     const targetUrl = post.sourceLink || post.originalUrl || post.sampleUrl;
@@ -546,6 +583,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         animated: false,
       });
       isZoomedRef.current = false;
+      setIsZoomed(false);
       onZoomChange?.(false);
     }
   }, [isActive, onZoomChange]);
@@ -553,13 +591,17 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   // Swipe Down to Dismiss tracking (only active when not zoomed)
   const handleScroll = (e: any) => {
     const zoomScale = e.nativeEvent.zoomScale || 1;
-    const isZoomed = zoomScale > 1.05;
-    if (isZoomed !== isZoomedRef.current) {
-      isZoomedRef.current = isZoomed;
-      onZoomChange?.(isZoomed);
+    const zoomed = zoomScale > 1.05;
+    if (zoomed !== isZoomedRef.current) {
+      isZoomedRef.current = zoomed;
+      setIsZoomed(zoomed);
+      if (zoomed) {
+        setHasUpgradedToFull(true);
+      }
+      onZoomChange?.(zoomed);
     }
 
-    if (!isZoomed) {
+    if (!zoomed) {
       const offsetY = e.nativeEvent.contentOffset.y;
       if (offsetY < -80 && !isDismissing) {
         setIsDismissing(true);
@@ -616,6 +658,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           animated: true,
         });
         isZoomedRef.current = false;
+        setIsZoomed(false);
         onZoomChange?.(false);
       } else {
         // Zoom in to 3x centered around touched location
@@ -633,6 +676,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           animated: true,
         });
         isZoomedRef.current = true;
+        setIsZoomed(true);
+        setHasUpgradedToFull(true);
         onZoomChange?.(true);
       }
     } else {
@@ -681,14 +726,15 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                   <ActivityIndicator size="large" color={Colors.dark.primary} />
                 </View>
               )}
+              {/* Altta her zaman sample/placeholder Image */}
               <Image
                 source={{
-                  uri: mainImageUri,
-                  headers: getMediaHeaders(mainImageUri),
+                  uri: sampleMediaUrl,
+                  headers: getMediaHeaders(sampleMediaUrl),
                 }}
                 placeholder={{
-                  uri: placeholderUri,
-                  headers: getMediaHeaders(placeholderUri),
+                  uri: placeholderMediaUrl,
+                  headers: getMediaHeaders(placeholderMediaUrl),
                 }}
                 placeholderContentFit="contain"
                 style={styles.fullImage}
@@ -698,6 +744,28 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                 transition={150}
                 onLoadEnd={() => setImageLoading(false)}
               />
+              {/* Üstte full Image SADECE (quality==='full' || (auto && isZoomed)) iken mount et */}
+              {shouldMountFull && (
+                <Image
+                  source={{
+                    uri: fullMediaUrl,
+                    headers: getMediaHeaders(fullMediaUrl),
+                  }}
+                  style={[
+                    styles.fullImage,
+                    styles.fullImageLayer,
+                    { opacity: fullLoaded ? 1 : 0 },
+                  ]}
+                  contentFit="contain"
+                  priority="high"
+                  cachePolicy="memory-disk"
+                  transition={150}
+                  onLoadEnd={() => {
+                    setFullLoaded(true);
+                    setImageLoading(false);
+                  }}
+                />
+              )}
               {canPlayVideo && (
                 <View style={styles.videoPlayOverlay}>
                   <Play size={36} color="#FFFFFF" fill="#FFFFFF" />
@@ -1209,6 +1277,11 @@ const styles = StyleSheet.create({
   fullImage: {
     width: SCREEN_WIDTH,
     height: SCREEN_HEIGHT,
+  },
+  fullImageLayer: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
   },
   videoWrapper: {
     width: SCREEN_WIDTH,
