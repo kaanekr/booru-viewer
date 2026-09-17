@@ -134,6 +134,7 @@ function MainApp() {
               headerShown: false,
               animation: 'slide_from_right',
               gestureEnabled: true,
+              contentStyle: { backgroundColor: Colors.dark.background },
             }}
           >
             <RootStack.Screen name="MainTabs">

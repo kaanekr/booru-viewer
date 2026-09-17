@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
@@ -41,8 +41,6 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [selectedPostIndex, setSelectedPostIndex] = useState<number | null>(null); // Keep or remove? Let's clean it up completely.
-
   const loadPosts = useCallback(
     async (pageNum: number, isRefresh: boolean = false) => {
       try {
@@ -76,15 +74,27 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
     []
   );
 
+  const scrollViewRef = useRef<ScrollView>(null);
+  const scrollOffsetRef = useRef(0);
+  const lastSourceIdRef = useRef<string | null>(null);
+
   useEffect(() => {
-    setPage(1);
-    loadPosts(1);
-  }, [activeSource, loadPosts]);
+    if (lastSourceIdRef.current === null) {
+      lastSourceIdRef.current = activeSource.id;
+      loadPosts(1);
+    } else if (lastSourceIdRef.current !== activeSource.id) {
+      lastSourceIdRef.current = activeSource.id;
+      setPage(1);
+      scrollOffsetRef.current = 0;
+      loadPosts(1);
+    }
+  }, [activeSource.id, loadPosts]);
 
   const handleRefresh = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRefreshing(true);
     setPage(1);
+    scrollOffsetRef.current = 0;
     await loadPosts(1, true);
   };
 
@@ -118,7 +128,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const handleCardPress = (post: BooruPost) => {
     const idx = posts.findIndex((p) => p.id === post.id);
     if (idx >= 0) {
-      pushViewer(posts, idx);
+      pushViewer(posts, idx, [], undefined);
     }
   };
 
@@ -200,9 +210,13 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
         </View>
       ) : (
         <ScrollView
+          ref={scrollViewRef}
           style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
+          maintainVisibleContentPosition={{
+            minIndexForVisible: 0,
+          }}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -211,11 +225,12 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
             />
           }
           onScroll={({ nativeEvent }) => {
+            scrollOffsetRef.current = nativeEvent.contentOffset.y;
             if (isCloseToBottom(nativeEvent)) {
               handleLoadMore();
             }
           }}
-          scrollEventThrottle={300}
+          scrollEventThrottle={16}
         >
           {/* 2-Column Masonry Grid */}
           <View style={styles.gridContainer}>
