@@ -125,3 +125,76 @@ export function getVideoCandidates(
 
   return videoUrls.sort((a, b) => getPriority(b) - getPriority(a));
 }
+
+/**
+ * Converts a .webm media URL to a corresponding .mp4 URL while preserving query strings and hashes.
+ * Returns null if the URL does not have a .webm extension or is invalid.
+ */
+export function getMp4UpgradeUrl(webmUrl: string | undefined): string | null {
+  if (!webmUrl || typeof webmUrl !== 'string') return null;
+  const trimmed = webmUrl.trim();
+  if (!trimmed) return null;
+
+  const match = trimmed.match(/^([^?#]+)\.webm([?#].*)?$/i);
+  if (!match) return null;
+
+  const base = match[1];
+  const queryOrHash = match[2] || '';
+  return `${base}.mp4${queryOrHash}`;
+}
+
+const mp4UpgradeCache = new Map<string, Promise<string | null>>();
+
+/**
+ * Checks via a HEAD request whether an .mp4 version of a .webm video is available.
+ * Attaches proxy headers via getMediaHeaders.
+ * Returns the mp4 URL if HTTP status is 200-299, otherwise null.
+ * Results are cached in memory so the same URL is never checked twice.
+ */
+export async function checkMp4UpgradeAvailable(
+  webmUrl: string | undefined,
+  timeoutMs: number = 6000
+): Promise<string | null> {
+  if (!webmUrl || typeof webmUrl !== 'string') return null;
+  const trimmed = webmUrl.trim();
+  if (!trimmed) return null;
+
+  const mp4Url = getMp4UpgradeUrl(trimmed);
+  if (!mp4Url) return null;
+
+  const cached = mp4UpgradeCache.get(trimmed);
+  if (cached) {
+    return cached;
+  }
+
+  const checkPromise = (async (): Promise<string | null> => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, timeoutMs);
+
+    try {
+      const targetUrl = getMediaUrl(mp4Url);
+      const headers = getMediaHeaders(mp4Url);
+
+      const response = await fetch(targetUrl, {
+        method: 'HEAD',
+        headers,
+        signal: controller.signal,
+      });
+
+      if (response.status >= 200 && response.status < 300) {
+        return mp4Url;
+      }
+      return null;
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  })();
+
+  mp4UpgradeCache.set(trimmed, checkPromise);
+  return checkPromise;
+}
+
