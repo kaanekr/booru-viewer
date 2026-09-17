@@ -65,7 +65,6 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [displayLimit, setDisplayLimit] = useState(40);
-  const [selectedPostIndex, setSelectedPostIndex] = useState<number | null>(null);
 
   const loadData = useCallback(async (silent: boolean = false) => {
     try {
@@ -386,7 +385,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
   const handleCardPress = (post: BooruPost) => {
     const idx = filteredFavorites.findIndex((p) => p.id === post.id);
     if (idx >= 0) {
-      pushViewer(filteredFavorites, idx);
+      pushViewer(filteredFavorites, idx, [], undefined);
     }
   };
 

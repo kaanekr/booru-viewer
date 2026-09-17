@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
 import { useSource } from '../context/SourceContext';
@@ -14,11 +14,15 @@ export const SearchDetailScreen: React.FC<Props> = ({ route, navigation }) => {
   const { activeSource } = useSource();
   const { tags, baseFilter } = route.params;
 
+  const initialFilter = useMemo(() => {
+    return baseFilter ? { ...baseFilter, tags, jumpToPage: 1 } : undefined;
+  }, [baseFilter, tags]);
+
   return (
     <SearchScreen
       initialTag={tags.join(' ')}
       initialMode="replace"
-      initialFilter={baseFilter ? { ...baseFilter, tags, jumpToPage: 1 } : undefined}
+      initialFilter={initialFilter}
       activeSource={activeSource}
       onBackPress={() => navigation.goBack()}
     />

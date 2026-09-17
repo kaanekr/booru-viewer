@@ -75,9 +75,10 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
   const isVideo =
     f.file?.ext === 'mp4' ||
     f.file?.ext === 'webm' ||
-    (f.file?.url && f.file.url.endsWith('.mp4')) ||
+    (f.file?.url && (f.file.url.endsWith('.mp4') || f.file.url.endsWith('.webm'))) ||
     rawTags.includes('video') ||
     rawTags.includes('mp4') ||
+    rawTags.includes('webm') ||
     rawTags.includes('animated');
 
   const rawPreview = f.preview?.url || f.sample?.url || f.file?.url || '';
@@ -108,6 +109,16 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
     meta: isVideo ? ['video'] : [],
   };
 
+  let detectedExt = f.file?.ext || f.jpeg?.ext;
+  if (!detectedExt && f.file?.url) {
+    const extMatch = f.file.url.split('?')[0].match(/\.([a-z0-9]+)$/i);
+    if (extMatch) detectedExt = extMatch[1].toLowerCase();
+  }
+  if (!detectedExt && isVideo) {
+    detectedExt = sourceId === 'realbooru' ? 'webm' : 'mp4';
+  }
+  const fileExt = detectedExt || (isVideo ? 'mp4' : 'jpg');
+
   return {
     id,
     sourceId,
@@ -124,7 +135,7 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
     tags,
     allTags: rawTags,
     sourceLink: f.source || f.ppostUrl || undefined,
-    fileExt: f.file?.ext || f.jpeg?.ext || (isVideo ? 'mp4' : 'jpg'),
+    fileExt,
     createdAt: f.dateAdded || new Date().toISOString(),
   };
 }
@@ -337,12 +348,29 @@ export const BackupService = {
             }
           }
 
+          // Realbooru ve diğer booru'lardaki .webm kayıtlarının fileExt'ini düzelt ('webm'), URL'leri bozma (.mp4'e çevirme)
+          let nextFileExt = post.fileExt;
+          const isRealbooru =
+            nextSourceId === 'realbooru' ||
+            origUrl.includes('realbooru.com') ||
+            sampUrl.includes('realbooru.com') ||
+            prevUrl.includes('realbooru.com');
+
+          const hasWebmUrl =
+            origUrl.split('?')[0].toLowerCase().endsWith('.webm') ||
+            sampUrl.split('?')[0].toLowerCase().endsWith('.webm');
+
+          if ((isRealbooru && hasWebmUrl) || (hasWebmUrl && nextFileExt !== 'webm')) {
+            nextFileExt = 'webm';
+          }
+
           if (
             prevUrl !== post.previewUrl ||
             sampUrl !== post.sampleUrl ||
             origUrl !== post.originalUrl ||
             nextSourceId !== post.sourceId ||
-            nextSourceName !== post.sourceName
+            nextSourceName !== post.sourceName ||
+            nextFileExt !== post.fileExt
           ) {
             changedCount++;
             return {
@@ -352,6 +380,7 @@ export const BackupService = {
               originalUrl: origUrl,
               sourceId: nextSourceId,
               sourceName: nextSourceName,
+              fileExt: nextFileExt,
             };
           }
           return post;

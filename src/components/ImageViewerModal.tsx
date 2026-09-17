@@ -5,8 +5,10 @@ import {
   Animated,
   Dimensions,
   FlatList,
+  Linking,
   Modal,
   PanResponder,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -32,6 +34,8 @@ import {
   Tag,
   Volume2,
   VolumeX,
+  AlertCircle,
+  ExternalLink,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BooruPost } from '../types/booru';
@@ -39,7 +43,7 @@ import { Colors } from '../theme/colors';
 import { StorageService } from '../services/storage';
 import { TagChip } from './TagChip';
 import { PostInfoModal } from './PostInfoModal';
-import { getMediaHeaders, getMediaUrl } from '../utils/media';
+import { getMediaHeaders, getMediaUrl, getVideoCandidates, isUnsupportedOnIOS } from '../utils/media';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -115,7 +119,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
         }).start();
       }
     }
-  }, [visible, initialIndex, enterAnimation]);
+  }, [visible, initialIndex, enterAnimation, asScreen]);
 
   const currentPost = posts[currentIndex] || posts[0];
 
@@ -243,7 +247,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
           style={[
             styles.container,
             {
-              transform: [{ translateX }],
+              transform: asScreen ? [] : [{ translateX }],
             },
           ]}
         >
@@ -280,6 +284,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
               <PostPageItem
                 post={item}
                 isActive={index === currentIndex}
+                suspended={suspended}
                 onToggleControls={handleToggleControls}
                 onOpenDetails={() => setShowDetailsSheet(true)}
                 onClose={handleDismissWithSlide}
@@ -364,12 +369,16 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             onClose={() => setShowDetailsSheet(false)}
             onSearchTag={(tag) => {
               setShowDetailsSheet(false);
-              onClose();
+              if (!asScreen && dismissOnTagPress) {
+                onClose();
+              }
               onTagPress(tag);
             }}
             onAddTagToSearch={(tag) => {
               setShowDetailsSheet(false);
-              onClose();
+              if (!asScreen && dismissOnTagPress) {
+                onClose();
+              }
               if (onAddTagToSearch) {
                 onAddTagToSearch(tag);
               } else {
@@ -378,7 +387,9 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             }}
             onExcludeTagFromSearch={(tag) => {
               setShowDetailsSheet(false);
-              onClose();
+              if (!asScreen && dismissOnTagPress) {
+                onClose();
+              }
               if (onExcludeTagFromSearch) {
                 onExcludeTagFromSearch(tag);
               } else {
@@ -409,6 +420,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 interface PostPageItemProps {
   post: BooruPost;
   isActive: boolean;
+  suspended?: boolean;
   onToggleControls: () => void;
   onOpenDetails: () => void;
   onClose: () => void;
@@ -420,6 +432,7 @@ interface PostPageItemProps {
 const PostPageItem: React.FC<PostPageItemProps> = ({
   post,
   isActive,
+  suspended = false,
   onToggleControls,
   onOpenDetails,
   onClose,
@@ -434,14 +447,46 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const isZoomedRef = useRef<boolean>(false);
   const singleTapTimerRef = useRef<any>(null);
 
-  const rawMedia = post.originalUrl || post.sampleUrl || post.previewUrl;
-  const mediaUrl = getMediaUrl(rawMedia);
+  const videoCandidates = useMemo(() => getVideoCandidates(post), [post]);
+  const primaryCandidate =
+    videoCandidates.length > 0 ? videoCandidates[0] : post.originalUrl || post.sampleUrl || post.previewUrl;
+  const mediaUrl = getMediaUrl(primaryCandidate);
+
+  const cleanMedia = primaryCandidate ? primaryCandidate.split('?')[0].toLowerCase() : '';
   const isVideo =
     Boolean(post.fileExt && ['mp4', 'webm', 'mov', 'm4v'].includes(post.fileExt.toLowerCase())) ||
-    Boolean(rawMedia && (rawMedia.endsWith('.mp4') || rawMedia.endsWith('.webm') || rawMedia.endsWith('.mov')));
+    Boolean(
+      cleanMedia &&
+        (cleanMedia.endsWith('.mp4') ||
+          cleanMedia.endsWith('.webm') ||
+          cleanMedia.endsWith('.mov') ||
+          cleanMedia.endsWith('.m4v'))
+    );
+
+  // iOS check: If on iOS and only .webm candidate is available, AVPlayer cannot play it
+  const isWebmOnlyOnIOS =
+    Platform.OS === 'ios' &&
+    isVideo &&
+    (videoCandidates.length > 0
+      ? videoCandidates.every(isUnsupportedOnIOS)
+      : (post.fileExt?.toLowerCase() === 'webm' || isUnsupportedOnIOS(primaryCandidate)));
 
   const mainImageUri = getMediaUrl(isVideo ? post.previewUrl : post.sampleUrl || post.originalUrl || post.previewUrl);
   const placeholderUri = getMediaUrl(post.previewUrl || post.sampleUrl);
+
+  const handleOpenSource = async () => {
+    const targetUrl = post.sourceLink || post.originalUrl || post.sampleUrl;
+    if (!targetUrl) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      const supported = await Linking.canOpenURL(targetUrl);
+      if (supported) {
+        await Linking.openURL(targetUrl);
+      }
+    } catch (err) {
+      console.warn('[ImageViewerModal] Failed to open source URL:', err);
+    }
+  };
 
   // Reset zoom when item becomes inactive
   useEffect(() => {
@@ -495,7 +540,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
 
   // Double tap to zoom & single tap to toggle controls
   const handleImageTouch = (event: any) => {
-    if (isVideo) {
+    if (isVideo && !isWebmOnlyOnIOS) {
       onToggleControls();
       return;
     }
@@ -561,7 +606,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       contentContainerStyle={styles.fullscreenImageViewport}
       showsVerticalScrollIndicator={false}
       showsHorizontalScrollIndicator={false}
-      maximumZoomScale={isVideo ? 1 : 4.5}
+      maximumZoomScale={isVideo && !isWebmOnlyOnIOS ? 1 : 4.5}
       minimumZoomScale={1}
       bouncesZoom={true}
       centerContent={true}
@@ -572,9 +617,10 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     >
       <TouchableWithoutFeedback onPress={handleImageTouch}>
         <View style={styles.fullscreenImageViewport}>
-          {isVideo && isActive ? (
+          {isVideo && isActive && !isWebmOnlyOnIOS ? (
             <VideoPlayerView
               url={mediaUrl}
+              suspended={suspended}
               onLoaded={() => setImageLoading(false)}
               onScrubbingChange={(scrubbing) => {
                 setIsScrubbingActive(scrubbing);
@@ -605,9 +651,30 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                 transition={150}
                 onLoadEnd={() => setImageLoading(false)}
               />
-              {isVideo && (
+              {isVideo && !isWebmOnlyOnIOS && (
                 <View style={styles.videoPlayOverlay}>
                   <Play size={36} color="#FFFFFF" fill="#FFFFFF" />
+                </View>
+              )}
+              {isWebmOnlyOnIOS && isActive && (
+                <View style={styles.unsupportedCardContainer} pointerEvents="box-none">
+                  <View style={styles.unsupportedCard}>
+                    <View style={styles.unsupportedHeader}>
+                      <AlertCircle size={22} color="#F5A623" />
+                      <Text style={styles.unsupportedTitle}>Bu video iOS'ta oynatılamıyor (WebM)</Text>
+                    </View>
+                    <Text style={styles.unsupportedDescription}>
+                      iOS yerel olarak WebM biçimini desteklemez. Videoyu tarayıcınızda veya kaynak sitede izleyebilirsiniz.
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.unsupportedButton}
+                      activeOpacity={0.8}
+                      onPress={handleOpenSource}
+                    >
+                      <ExternalLink size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.unsupportedButtonText}>Kaynakta Aç</Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
               )}
             </>
@@ -637,6 +704,7 @@ const setSessionVideoMuted = (muted: boolean) => {
 
 interface VideoPlayerViewProps {
   url: string;
+  suspended?: boolean;
   onLoaded?: () => void;
   onScrubbingChange?: (isScrubbing: boolean) => void;
 }
@@ -644,6 +712,7 @@ interface VideoPlayerViewProps {
 // Clean Video player component with expo-video and playback controls
 const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   url,
+  suspended = false,
   onLoaded,
   onScrubbingChange,
 }) => {
@@ -669,6 +738,12 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     p.timeUpdateEventInterval = 0.25;
     p.play();
   });
+
+  useEffect(() => {
+    if (suspended) {
+      player.pause();
+    }
+  }, [suspended, player]);
 
   // Sync mute state with session preference across videos
   useEffect(() => {
@@ -1322,5 +1397,61 @@ const styles = StyleSheet.create({
   tagWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
+  },
+  unsupportedCardContainer: {
+    ...StyleSheet.absoluteFill,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    zIndex: 10,
+  },
+  unsupportedCard: {
+    width: '100%',
+    maxWidth: 340,
+    backgroundColor: 'rgba(20, 24, 33, 0.94)',
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.12)',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  unsupportedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+    gap: 8,
+  },
+  unsupportedTitle: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+    textAlign: 'center',
+    flexShrink: 1,
+  },
+  unsupportedDescription: {
+    color: '#9BA3AF',
+    fontSize: 13,
+    lineHeight: 18,
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  unsupportedButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.dark.primary,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  unsupportedButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

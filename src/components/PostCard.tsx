@@ -1,9 +1,9 @@
 import React from 'react';
-import { Dimensions, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Dimensions, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Image } from 'expo-image';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
-import { getMediaHeaders, getMediaUrl } from '../utils/media';
+import { getMediaHeaders, getMediaUrl, isUnsupportedOnIOS } from '../utils/media';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const COLUMN_WIDTH = (SCREEN_WIDTH - 36) / 2;
@@ -32,15 +32,38 @@ export const PostCard: React.FC<PostCardProps> = ({ post, onPress }) => {
     }
   };
 
-  const primaryRaw = post.previewUrl || post.sampleUrl || post.originalUrl;
-  const fallbackRaw = post.sampleUrl || post.originalUrl || post.previewUrl;
+  const isWebm =
+    post.fileExt?.toLowerCase() === 'webm' ||
+    Boolean(post.originalUrl && post.originalUrl.split('?')[0].toLowerCase().endsWith('.webm')) ||
+    Boolean(post.sampleUrl && post.sampleUrl.split('?')[0].toLowerCase().endsWith('.webm'));
+
+  // Priority: previewUrl first to ensure safe image thumbnail (no webm passed to expo-image on iOS)
+  const isCandidateSafe = (u: string | undefined) => {
+    if (!u) return false;
+    if (Platform.OS === 'ios' && isUnsupportedOnIOS(u)) return false;
+    return true;
+  };
+
+  const primaryRaw =
+    (isCandidateSafe(post.previewUrl) ? post.previewUrl : undefined) ||
+    (isCandidateSafe(post.sampleUrl) ? post.sampleUrl : undefined) ||
+    (isCandidateSafe(post.originalUrl) ? post.originalUrl : undefined) ||
+    post.previewUrl ||
+    '';
+
+  const fallbackRaw =
+    (primaryRaw !== post.sampleUrl && isCandidateSafe(post.sampleUrl) ? post.sampleUrl : undefined) ||
+    (primaryRaw !== post.previewUrl && isCandidateSafe(post.previewUrl) ? post.previewUrl : undefined) ||
+    '';
+
   const [currentUri, setCurrentUri] = React.useState<string>(getMediaUrl(primaryRaw));
 
   React.useEffect(() => {
-    setCurrentUri(getMediaUrl(post.previewUrl || post.sampleUrl || post.originalUrl));
-  }, [post.previewUrl, post.sampleUrl, post.originalUrl]);
+    setCurrentUri(getMediaUrl(primaryRaw));
+  }, [primaryRaw]);
 
   const handleImageError = () => {
+    if (!fallbackRaw) return;
     const fallbackUrl = getMediaUrl(fallbackRaw);
     if (fallbackUrl && fallbackUrl !== currentUri) {
       setCurrentUri(fallbackUrl);
@@ -91,12 +114,16 @@ export const PostCard: React.FC<PostCardProps> = ({ post, onPress }) => {
         )}
       </View>
 
-      {/* File type badge if webm/gif */}
-      {post.fileExt && ['gif', 'mp4', 'webm', 'zip'].includes(post.fileExt.toLowerCase()) && (
+      {/* File type badge if webm/gif/mp4/zip */}
+      {isWebm ? (
+        <View style={[styles.mediaBadge, Platform.OS === 'ios' ? styles.mediaBadgeUnsupported : styles.mediaBadgeWebm]}>
+          <Text style={styles.mediaBadgeText}>WEBM</Text>
+        </View>
+      ) : post.fileExt && ['gif', 'mp4', 'zip'].includes(post.fileExt.toLowerCase()) ? (
         <View style={styles.mediaBadge}>
           <Text style={styles.mediaBadgeText}>{post.fileExt.toUpperCase()}</Text>
         </View>
-      )}
+      ) : null}
     </TouchableOpacity>
   );
 };
@@ -160,6 +187,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 5,
     paddingVertical: 2,
     borderRadius: 4,
+  },
+  mediaBadgeWebm: {
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+  },
+  mediaBadgeUnsupported: {
+    backgroundColor: 'rgba(230, 81, 0, 0.9)',
   },
   mediaBadgeText: {
     color: '#FFFFFF',

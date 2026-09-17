@@ -603,6 +603,7 @@ export class BooruApiService {
     let match;
     while ((match = postRegex.exec(html)) !== null) {
       const id = match[1];
+      const postHref = match[2];
       const thumbSrc = match[3];
       const imgAttrs = match[4];
 
@@ -638,28 +639,68 @@ export class BooruApiService {
 
       const isVideo =
         rawThumb.endsWith('.mp4') ||
+        rawThumb.endsWith('.webm') ||
         rawTags.some((t) => ['video', 'webm', 'mp4', 'sound', 'animated'].includes(t.toLowerCase()));
+
+      // Extract verified file URL / extension from HTML if available (a href, data attributes, etc.)
+      let verifiedExt: string | null = null;
+      let verifiedOriginalUrl: string | null = null;
+
+      const cleanHref = postHref ? postHref.replace(/&amp;/g, '&').trim() : '';
+      const hrefExtMatch = cleanHref.split('?')[0].match(/\.(mp4|webm|mov|m4v|png|jpe?g|gif)$/i);
+      if (hrefExtMatch) {
+        verifiedExt = hrefExtMatch[1].toLowerCase().replace('jpeg', 'jpg');
+        verifiedOriginalUrl = ensureAbsoluteUrl(cleanHref, source.baseUrl);
+      }
+
+      if (!verifiedExt) {
+        const dataUrlMatch = match[0].match(/data-(?:file|src|original|original-url|media)=["']([^"']+)["']/i);
+        if (dataUrlMatch) {
+          const dataUrl = dataUrlMatch[1].replace(/&amp;/g, '&').trim();
+          const extMatch = dataUrl.split('?')[0].match(/\.(mp4|webm|mov|m4v|png|jpe?g|gif)$/i);
+          if (extMatch) {
+            verifiedExt = extMatch[1].toLowerCase().replace('jpeg', 'jpg');
+            verifiedOriginalUrl = ensureAbsoluteUrl(dataUrl, source.baseUrl);
+          }
+        }
+      }
+
+      if (!verifiedExt) {
+        const dataExtMatch = match[0].match(/data-ext=["']([a-z0-9]+)["']/i);
+        if (dataExtMatch) {
+          verifiedExt = dataExtMatch[1].toLowerCase().replace('jpeg', 'jpg');
+        }
+      }
+
+      let fileExt = 'jpeg';
+      if (verifiedExt) {
+        fileExt = verifiedExt;
+      } else if (isVideo) {
+        // Realbooru hash yolunda video dosyalarını .mp4 olarak barındırır
+        fileExt = 'mp4';
+      } else {
+        fileExt = 'jpeg';
+      }
 
       let rawOriginal = rawThumb;
       let rawSample = rawThumb;
-      let fileExt = 'jpeg';
 
-      if (thumbMatch) {
+      if (verifiedOriginalUrl) {
+        rawOriginal = verifiedOriginalUrl;
+        rawSample = verifiedOriginalUrl;
+      } else if (thumbMatch) {
         const [, dir1, dir2, hash] = thumbMatch;
-        if (isVideo) {
-          rawOriginal = `${source.baseUrl}/images/${dir1}/${dir2}/${hash}.mp4`;
-          rawSample = rawOriginal;
-          fileExt = 'mp4';
-        } else {
-          rawOriginal = `${source.baseUrl}/images/${dir1}/${dir2}/${hash}.jpeg`;
-          rawSample = rawOriginal;
-          fileExt = 'jpeg';
-        }
+        rawOriginal = `${source.baseUrl}/images/${dir1}/${dir2}/${hash}.${fileExt}`;
+        rawSample = rawOriginal;
       }
 
       const previewUrl = ensureAbsoluteUrl(rawThumb, source.baseUrl);
       const sampleUrl = ensureAbsoluteUrl(rawSample, source.baseUrl);
       const originalUrl = ensureAbsoluteUrl(rawOriginal, source.baseUrl);
+
+      const sourceLink = cleanHref.includes('page=post')
+        ? ensureAbsoluteUrl(cleanHref, source.baseUrl)
+        : `${source.baseUrl}/index.php?page=post&s=view&id=${id}`;
 
       posts.push({
         id: `realbooru_${id}`,
@@ -682,7 +723,7 @@ export class BooruApiService {
           meta: isVideo ? ['video'] : [],
         },
         allTags: rawTags,
-        sourceLink: `${source.baseUrl}/index.php?page=post&s=view&id=${id}`,
+        sourceLink,
         fileExt,
         createdAt: new Date().toISOString(),
       });
