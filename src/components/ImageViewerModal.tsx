@@ -50,10 +50,20 @@ import {
   getMediaUrl,
   getVideoCandidates,
   isUnsupportedOnIOS,
+  resolveGelbooruOriginalUrl,
+  resolveRealDimensions,
 } from '../utils/media';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
+
+/** Bayt + toplamdan '1.2 / 4.5 MB' metni */
+function formatMediaBytes(loaded: number, total: number): string {
+  const fmt = (b: number) =>
+    b >= 1024 * 1024 ? `${(b / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
+  if (!total || total <= 0) return fmt(loaded);
+  return `${fmt(loaded)} / ${fmt(total)}`;
+}
 
 interface ImageViewerModalProps {
   posts: BooruPost[];
@@ -70,6 +80,7 @@ interface ImageViewerModalProps {
   asScreen?: boolean;
   suspended?: boolean;
   dismissOnTagPress?: boolean;
+  onIndexChange?: (index: number) => void;
 }
 
 export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
@@ -84,6 +95,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   asScreen = false,
   suspended = false,
   dismissOnTagPress = true,
+  onIndexChange,
 }) => {
   const insets = useSafeAreaInsets();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
@@ -92,10 +104,16 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   const [isFav, setIsFav] = useState(false);
   const [showDetailsSheet, setShowDetailsSheet] = useState(false);
   const [isGalleryScrollEnabled, setIsGalleryScrollEnabled] = useState(true);
+  // Info modalındaki Original satırından gelen tek seferlik full önizleme isteği
+  const [previewOriginalId, setPreviewOriginalId] = useState<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
 
   // Animated slide value for interactive edge swipe back
   const translateX = useRef(new Animated.Value(SCREEN_WIDTH)).current;
+
+  useEffect(() => {
+    onIndexChange?.(currentIndex);
+  }, [currentIndex, onIndexChange]);
 
   useEffect(() => {
     if (suspended) {
@@ -110,6 +128,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       setShowDetailsSheet(false);
       setIsPlayingSlideshow(false);
       setIsGalleryScrollEnabled(true);
+      setPreviewOriginalId(null);
 
       if (asScreen || enterAnimation === 'none') {
         // Stack route: native stack owns the animation, stay put.
@@ -135,7 +154,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       StorageService.isFavorite(currentPost.id).then(setIsFav);
     }
 
-    // Prefetch next 2 and previous 1 images into memory-disk cache for instant paging
+    // Prefetch next 2 and previous 1 images with sample resolution into disk cache to avoid OOM
     if (visible && posts.length > 0) {
       const neighbors = [
         posts[currentIndex + 1],
@@ -144,10 +163,14 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       ].filter(Boolean);
 
       neighbors.forEach((p) => {
-        const rawUrl = p.sampleUrl || p.originalUrl || p.previewUrl;
+        const rawUrl = p.sampleUrl || p.previewUrl;
+        if (!rawUrl) return;
         const url = getMediaUrl(rawUrl);
         if (url && !url.endsWith('.mp4') && !url.endsWith('.webm')) {
-          Image.prefetch(url, { headers: getMediaHeaders(url) });
+          Image.prefetch(url, {
+            headers: getMediaHeaders(url),
+            cachePolicy: 'disk',
+          });
         }
       });
     }
@@ -292,6 +315,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
                 post={item}
                 isActive={index === currentIndex}
                 suspended={suspended}
+                forceFull={previewOriginalId === item.id}
                 onToggleControls={handleToggleControls}
                 onOpenDetails={() => setShowDetailsSheet(true)}
                 onClose={handleDismissWithSlide}
@@ -374,6 +398,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             visible={showDetailsSheet}
             post={currentPost}
             onClose={() => setShowDetailsSheet(false)}
+            onPreviewOriginal={(p) => setPreviewOriginalId(p.id)}
             onSearchTag={(tag) => {
               setShowDetailsSheet(false);
               if (!asScreen && dismissOnTagPress) {
@@ -428,6 +453,8 @@ interface PostPageItemProps {
   post: BooruPost;
   isActive: boolean;
   suspended?: boolean;
+  /** Info modalındaki Original satırından tek seferlik full önizleme */
+  forceFull?: boolean;
   onToggleControls: () => void;
   onOpenDetails: () => void;
   onClose: () => void;
@@ -440,21 +467,29 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   post,
   isActive,
   suspended = false,
+  forceFull = false,
   onToggleControls,
   onOpenDetails,
   onClose,
   onZoomChange,
   onScrubbingChange,
 }) => {
-  const [imageLoading, setImageLoading] = useState(true);
+  const [sampleLoading, setSampleLoading] = useState(true);
+  const [sampleLoaded, setSampleLoaded] = useState(false);
+  const [fullLoading, setFullLoading] = useState(false);
+  const [fullLoaded, setFullLoaded] = useState(false);
+  const [fullProgress, setFullProgress] = useState<number | null>(null);
+  const [fullLoadedBytes, setFullLoadedBytes] = useState(0);
+  const [fullTotalBytes, setFullTotalBytes] = useState(0);
   const [isDismissing, setIsDismissing] = useState(false);
   const [isScrubbingActive, setIsScrubbingActive] = useState(false);
   const [upgradedMp4Url, setUpgradedMp4Url] = useState<string | null>(null);
   const [isCheckingUpgrade, setIsCheckingUpgrade] = useState(false);
   const [quality, setQuality] = useState<ImageQuality>('auto');
+  const [resolvedOriginalUrl, setResolvedOriginalUrl] = useState<string | null>(null);
+  const [realDims, setRealDims] = useState<{ w: number; h: number } | null>(null);
   const [isZoomed, setIsZoomed] = useState(false);
   const [hasUpgradedToFull, setHasUpgradedToFull] = useState(false);
-  const [fullLoaded, setFullLoaded] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
   const lastTapRef = useRef<number>(0);
   const isZoomedRef = useRef<boolean>(false);
@@ -471,12 +506,79 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   }, [isActive]);
 
   useEffect(() => {
+    let alive = true;
+    const abortCtrl = new AbortController();
+
+    setResolvedOriginalUrl(null);
+
+    // Eğer post zaten sample'dan farklı gerçek bir originalUrl'e sahipse fetch etme
+    if (post.originalUrl && post.originalUrl !== post.sampleUrl) {
+      setResolvedOriginalUrl(post.originalUrl);
+      return () => {
+        alive = false;
+        abortCtrl.abort();
+      };
+    }
+
+    // Gelbooru/Realbooru veya originalUrl eksik scrape gönderileri için post detayından çöz
+    if (post.sourceLink && (post.sourceId === 'gelbooru' || post.sourceId === 'realbooru' || !post.originalUrl)) {
+      resolveGelbooruOriginalUrl(post, abortCtrl.signal)
+        .then((url) => {
+          if (alive && url) {
+            setResolvedOriginalUrl(url);
+          }
+        })
+        .catch(() => {});
+    }
+
+    return () => {
+      alive = false;
+      abortCtrl.abort();
+    };
+  }, [post.id, post.sourceId, post.sourceLink, post.originalUrl, post.sampleUrl]);
+
+  useEffect(() => {
     setIsZoomed(false);
     isZoomedRef.current = false;
     setHasUpgradedToFull(false);
+    setSampleLoading(true);
+    setSampleLoaded(false);
+    setFullLoading(false);
     setFullLoaded(false);
-    setImageLoading(true);
+    setFullProgress(null);
+    setFullLoadedBytes(0);
+    setFullTotalBytes(0);
   }, [post.id]);
+
+  // Gerçek çözünürlük: zoom tavanı hesabı için (oturum cache'li, tek seferlik).
+  // Scrape placeholder (800x1000) yerine post sayfasındaki gerçek WxH.
+  useEffect(() => {
+    if (!isActive) return;
+    let alive = true;
+    setRealDims(null);
+    resolveRealDimensions(post)
+      .then((d) => {
+        if (alive && d) setRealDims({ w: d.w, h: d.h });
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [isActive, post.id, post.sourceLink, post.originalUrl, post.sampleUrl]);
+
+  /**
+   * Çözünürlüğe göre net zoom tavanı: contain-fit'te 1:1 piksele denk gelen
+   * oran = max(imgW/ekranW, imgH/ekranH). Üst sınır yok — ne kadar
+   * çözünürlük, o kadar zoom. Taban 2x (ekrandan küçük görselde bile
+   * biraz yakınlaşma). NOT: çok büyük görsel + derin zoom iOS'ta
+   * bellek baskısı yapar; limit aşımında fallback sample'dadır.
+   */
+  const maxZoom = useMemo(() => {
+    const w = realDims?.w || post.width || 0;
+    const h = realDims?.h || post.height || 0;
+    if (!w || !h) return 4.5;
+    return Math.max(2, Math.max(w / SCREEN_WIDTH, h / SCREEN_HEIGHT));
+  }, [realDims, post.width, post.height]);
 
   const videoCandidates = useMemo(() => getVideoCandidates(post), [post]);
   const primaryCandidate =
@@ -542,21 +644,22 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const activeVideoUrl = upgradedMp4Url ? getMediaUrl(upgradedMp4Url) : mediaUrl;
 
   const uris = useMemo(() => getImageUris(post, quality), [post, quality]);
-  const shouldUpgradeOnZoom = isZoomed || hasUpgradedToFull;
-  // URI seçimi: quality==='full' ? fullUri : (quality==='auto' && isZoomed ? fullUri : displayUri)
-  const selectedRawUri =
-    quality === 'full'
-      ? uris.fullUri
-      : quality === 'auto' && shouldUpgradeOnZoom
-      ? uris.fullUri
-      : uris.displayUri;
 
-  const baseImageRawUri = isVideo ? post.previewUrl : post.sampleUrl || uris.displayUri;
+  const baseImageRawUri = isVideo ? post.previewUrl : post.sampleUrl || uris.sampleUri;
   const sampleMediaUrl = getMediaUrl(baseImageRawUri);
   const placeholderMediaUrl = getMediaUrl(uris.placeholderUri || post.previewUrl);
-  const fullMediaUrl = getMediaUrl(uris.fullUri);
 
-  const shouldMountFull = !isVideo && (quality === 'full' || (quality === 'auto' && shouldUpgradeOnZoom));
+  const fullRawUri = resolvedOriginalUrl || post.originalUrl || uris.fullUri;
+  const fullMediaUrl = getMediaUrl(fullRawUri);
+
+  const isFullQuality = quality === 'full' || forceFull;
+  const isAutoZoomed = quality === 'auto' && (isZoomed || hasUpgradedToFull);
+  const shouldMountFull =
+    !isVideo &&
+    Boolean(fullMediaUrl) &&
+    fullMediaUrl !== sampleMediaUrl &&
+    (isFullQuality || isAutoZoomed);
+
 
   const handleOpenSource = async () => {
     const targetUrl = post.sourceLink || post.originalUrl || post.sampleUrl;
@@ -661,10 +764,11 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         setIsZoomed(false);
         onZoomChange?.(false);
       } else {
-        // Zoom in to 3x centered around touched location
+        // Double Tap: çözünürlüğe göre net zoom (3x'i geçmez, düşük çözünürlükte tavana uyar)
+        const tapZoom = Math.min(3, maxZoom);
         const { locationX, locationY } = event.nativeEvent;
-        const targetWidth = SCREEN_WIDTH / 3;
-        const targetHeight = SCREEN_HEIGHT / 3;
+        const targetWidth = SCREEN_WIDTH / tapZoom;
+        const targetHeight = SCREEN_HEIGHT / tapZoom;
         const targetX = Math.max(0, locationX - targetWidth / 2);
         const targetY = Math.max(0, locationY - targetHeight / 2);
 
@@ -698,7 +802,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       contentContainerStyle={styles.fullscreenImageViewport}
       showsVerticalScrollIndicator={false}
       showsHorizontalScrollIndicator={false}
-      maximumZoomScale={canPlayVideo ? 1 : 4.5}
+      maximumZoomScale={canPlayVideo ? 1 : maxZoom}
       minimumZoomScale={1}
       bouncesZoom={true}
       centerContent={true}
@@ -713,7 +817,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
             <VideoPlayerView
               url={activeVideoUrl}
               suspended={suspended}
-              onLoaded={() => setImageLoading(false)}
+              onLoaded={() => setSampleLoading(false)}
               onScrubbingChange={(scrubbing) => {
                 setIsScrubbingActive(scrubbing);
                 onScrubbingChange?.(scrubbing);
@@ -721,16 +825,38 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
             />
           ) : (
             <>
-              {imageLoading && (
-                <View style={styles.loaderCenter}>
+              {/* Sample ilk yükleme göstergesi: sample henüz boyanmamışken ve full yüklenmemişken */}
+              {sampleLoading && !sampleLoaded && !fullLoaded && (
+                <View style={styles.loaderCenter} pointerEvents="none">
                   <ActivityIndicator size="large" color={Colors.dark.primary} />
                 </View>
               )}
-              {/* Altta her zaman sample/placeholder Image */}
+
+              {/* Full original indirme göstergesi: altta sample zaten görünürken indirme yüzdesi/baytı */}
+              {shouldMountFull && fullLoading && !fullLoaded && (
+                <View style={styles.loaderCenter} pointerEvents="none">
+                  <ActivityIndicator size="large" color={Colors.dark.primary} />
+                  {fullProgress !== null ? (
+                    <Text style={styles.loaderProgressText}>
+                      %{Math.round(fullProgress * 100)}
+                      {(fullTotalBytes > 0 || post.fileSize)
+                        ? ` • ${formatMediaBytes(fullLoadedBytes, fullTotalBytes || post.fileSize || 0)}`
+                        : ''}
+                    </Text>
+                  ) : fullLoadedBytes > 0 ? (
+                    <Text style={styles.loaderProgressText}>
+                      {formatMediaBytes(fullLoadedBytes, fullTotalBytes || post.fileSize || 0)}
+                    </Text>
+                  ) : null}
+                </View>
+              )}
+
+              {/* Sample katmanı: hızlı ilk boya (düşük çözünürlüklü önizleme / sample) */}
               <Image
                 source={{
                   uri: sampleMediaUrl,
                   headers: getMediaHeaders(sampleMediaUrl),
+                  cacheKey: `${sampleMediaUrl}:sample`,
                 }}
                 placeholder={{
                   uri: placeholderMediaUrl,
@@ -739,17 +865,26 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                 placeholderContentFit="contain"
                 style={styles.fullImage}
                 contentFit="contain"
-                priority="high"
+                contentPosition="center"
+                priority={shouldMountFull ? 'normal' : 'high'}
                 cachePolicy="memory-disk"
+                allowDownscaling={!shouldMountFull && !(isFullQuality || isAutoZoomed)}
                 transition={150}
-                onLoadEnd={() => setImageLoading(false)}
+                onLoadStart={() => setSampleLoading(true)}
+                onLoadEnd={() => {
+                  setSampleLoading(false);
+                  setSampleLoaded(true);
+                }}
+                onError={() => setSampleLoading(false)}
               />
-              {/* Üstte full Image SADECE (quality==='full' || (auto && isZoomed)) iken mount et */}
+
+              {/* Otoriter Full Original katmanı: sadece full modunda veya auto+zoom durumunda mount edilir */}
               {shouldMountFull && (
                 <Image
                   source={{
                     uri: fullMediaUrl,
                     headers: getMediaHeaders(fullMediaUrl),
+                    cacheKey: `${fullMediaUrl}:full-original`,
                   }}
                   style={[
                     styles.fullImage,
@@ -757,12 +892,39 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                     { opacity: fullLoaded ? 1 : 0 },
                   ]}
                   contentFit="contain"
+                  contentPosition="center"
                   priority="high"
                   cachePolicy="memory-disk"
+                  allowDownscaling={false}
                   transition={150}
-                  onLoadEnd={() => {
+                  onLoadStart={() => {
+                    setFullLoading(true);
+                  }}
+                  onLoad={() => {
                     setFullLoaded(true);
-                    setImageLoading(false);
+                    setFullLoading(false);
+                  }}
+                  onLoadEnd={() => {
+                    setFullLoading(false);
+                  }}
+                  onError={() => {
+                    setFullLoading(false);
+                  }}
+                  onProgress={(e: any) => {
+                    const loaded = e?.loaded ?? e?.nativeEvent?.loaded;
+                    let total = e?.total ?? e?.nativeEvent?.total;
+                    if (typeof loaded === 'number' && loaded > 0) {
+                      setFullLoadedBytes(loaded);
+                    }
+                    if ((!total || total <= 0) && post.fileSize && post.fileSize > 0) {
+                      total = post.fileSize;
+                    }
+                    if (typeof total === 'number' && total > 0) {
+                      setFullTotalBytes(total);
+                    }
+                    if (typeof loaded === 'number' && typeof total === 'number' && total > 0) {
+                      setFullProgress(Math.min(1, Math.max(0, loaded / total)));
+                    }
                   }}
                 />
               )}
@@ -1429,6 +1591,17 @@ const styles = StyleSheet.create({
     bottom: 0,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  loaderProgressText: {
+    marginTop: 8,
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    overflow: 'hidden',
   },
   detailsSheetOverlay: {
     position: 'absolute',

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -31,6 +31,8 @@ import {
   HardDrive,
   Share2,
   Image as ImageIcon,
+  EyeOff,
+  X,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
@@ -43,6 +45,7 @@ import { SecurityService, BiometryType } from '../services/securityService';
 import { PasscodeModal, PasscodeModalMode } from '../components/PasscodeModal';
 import { clearCachedPosts } from '../navigation/postsCache';
 import { useSource } from '../context/SourceContext';
+import { useFocusEffect } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
 
 const GOLD_ACCENT = '#F5A623';
@@ -89,6 +92,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [isTestingProxy, setIsTestingProxy] = useState(false);
   const [proxyTestResult, setProxyTestResult] = useState<string | null>(null);
   const [imageQuality, setImageQuality] = useState<ImageQuality>('auto');
+  const [blacklistedTags, setBlacklistedTags] = useState<string[]>([]);
+  const [gelbooruUserId, setGelbooruUserId] = useState('');
+  const [gelbooruApiKey, setGelbooruApiKey] = useState('');
+  const [gelbooruAuthSaved, setGelbooruAuthSaved] = useState(false);
+  const [isBlacklistOpen, setIsBlacklistOpen] = useState(false);
 
   // Security & Passcode State
   const [passcodeEnabled, setPasscodeEnabled] = useState(false);
@@ -114,8 +122,45 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       proxyService.setConfig(config.enabled, config.workerUrl);
     });
     StorageService.getImageQuality().then(setImageQuality);
+    StorageService.getGelbooruAuth().then((auth) => {
+      setGelbooruUserId(auth.userId || '');
+      setGelbooruApiKey(auth.apiKey || '');
+      setGelbooruAuthSaved(!!(auth.userId && auth.apiKey));
+    });
     refreshSecurityConfig();
   }, []);
+
+  // Kara liste içerikten de değişebildiği için (PostInfoModal) her odakta tazele
+  useFocusEffect(
+    useCallback(() => {
+      StorageService.getBlacklistedTags().then(setBlacklistedTags);
+    }, [])
+  );
+
+  const handleRemoveBlacklistedTag = async (tag: string) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await StorageService.removeBlacklistedTag(tag);
+    setBlacklistedTags((prev) => prev.filter((t) => t !== tag));
+  };
+
+  const handleClearAllBlacklistedTags = () => {
+    Alert.alert(
+      'Kara Listeyi Temizle',
+      'Tüm engellenen etiketleri silmek istediğinizden emin misiniz?',
+      [
+        { text: 'İptal', style: 'cancel' },
+        {
+          text: 'Temizle',
+          style: 'destructive',
+          onPress: async () => {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            await StorageService.saveAllBlacklistedTags([]);
+            setBlacklistedTags([]);
+          },
+        },
+      ]
+    );
+  };
 
   const handleSourceChange = (source: BooruSource) => {
     Haptics.selectionAsync();
@@ -126,6 +171,22 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     Haptics.selectionAsync();
     setImageQuality(quality);
     await StorageService.setImageQuality(quality);
+  };
+
+  const handleSaveGelbooruAuth = async () => {
+    Haptics.selectionAsync();
+    const userId = gelbooruUserId.trim();
+    const apiKey = gelbooruApiKey.trim();
+    await StorageService.setGelbooruAuth({ userId, apiKey });
+    setGelbooruAuthSaved(!!(userId && apiKey));
+  };
+
+  const handleClearGelbooruAuth = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await StorageService.setGelbooruAuth({ userId: '', apiKey: '' });
+    setGelbooruUserId('');
+    setGelbooruApiKey('');
+    setGelbooruAuthSaved(false);
   };
 
   const handleToggleProxy = async (val: boolean) => {
@@ -387,7 +448,79 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </View>
         </View>
 
-        {/* 3. Security & Passcode Section */}
+        {/* 3. Kara Liste Section */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <EyeOff size={18} color={GOLD_ACCENT} />
+            <Text style={styles.sectionTitle}>Kara Liste</Text>
+          </View>
+          <Text style={styles.sectionDescription}>
+            Engellenen etiketleri içeren gönderiler arama ve akışlarda otomatik olarak gizlenir.
+          </Text>
+
+          <View style={styles.card}>
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={() => {
+                Haptics.selectionAsync();
+                setIsBlacklistOpen((v) => !v);
+              }}
+              activeOpacity={0.7}
+            >
+              <View style={styles.switchInfo}>
+                <Text style={styles.switchTitle}>
+                  Engellenen Etiketler{blacklistedTags.length > 0 ? ` (${blacklistedTags.length})` : ''}
+                </Text>
+                <Text style={styles.switchSub}>
+                  {blacklistedTags.length === 0 ? 'Kara liste boş' : 'Listeyi görüntüle ve düzenle'}
+                </Text>
+              </View>
+              <ChevronRight size={18} color={Colors.dark.textMuted} />
+            </TouchableOpacity>
+
+            {isBlacklistOpen && (
+              <>
+                {blacklistedTags.length === 0 ? (
+                  <View style={[styles.emptyCardContent, styles.borderTop]}>
+                    <Text style={styles.emptyCardText}>Kara liste boş</Text>
+                  </View>
+                ) : (
+                  <>
+                    {blacklistedTags.map((tag, index) => (
+                      <View
+                        key={`bl-tag-${tag}-${index}`}
+                        style={[styles.blacklistRow, styles.borderTop]}
+                      >
+                        <Text style={styles.blacklistTagText} numberOfLines={1}>
+                          {tag}
+                        </Text>
+                        <TouchableOpacity
+                          style={styles.blacklistRemoveBtn}
+                          onPress={() => handleRemoveBlacklistedTag(tag)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                          activeOpacity={0.7}
+                        >
+                          <X size={16} color={Colors.dark.danger} />
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+
+                    <TouchableOpacity
+                      style={[styles.actionRow, styles.borderTop]}
+                      onPress={handleClearAllBlacklistedTags}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={styles.actionRowText}>Tümünü Temizle</Text>
+                      <Text style={styles.actionRowSub}>Tüm engellenen etiketleri listeden kaldır</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+              </>
+            )}
+          </View>
+        </View>
+
+        {/* 4. Security & Passcode Section */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Shield size={18} color={GOLD_ACCENT} />
@@ -627,6 +760,53 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               </View>
             </View>
           </View>
+
+          {/* Gelbooru API Anahtarı */}
+          <View style={styles.workerInputWrapper}>
+            <Text style={styles.inputLabel}>Gelbooru API Anahtarı (DAPI & Rate Limit):</Text>
+            <Text style={styles.switchSub}>
+              gelbooru.com → Account Options / Profile sayfasından api_key ve user_id alın. DAPI erişimini açar ve istek kısıtlamalarını (rate limit) önler.
+            </Text>
+            <TextInput
+              style={styles.workerInput}
+              placeholder="user_id (örn: 123456)"
+              placeholderTextColor="#686E7D"
+              value={gelbooruUserId}
+              onChangeText={setGelbooruUserId}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="numeric"
+            />
+            <TextInput
+              style={[styles.workerInput, { marginTop: 8 }]}
+              placeholder="api_key"
+              placeholderTextColor="#686E7D"
+              value={gelbooruApiKey}
+              onChangeText={setGelbooruApiKey}
+              autoCapitalize="none"
+              autoCorrect={false}
+              secureTextEntry
+            />
+            <View style={styles.testBtnRow}>
+              <TouchableOpacity style={styles.testButton} onPress={handleSaveGelbooruAuth} activeOpacity={0.7}>
+                <Check size={15} color="#111216" />
+                <Text style={styles.testButtonText}>Kaydet</Text>
+              </TouchableOpacity>
+              {gelbooruAuthSaved && (
+                <Text style={styles.testResultText}>✅ Kayıtlı — Gelbooru istekleri anahtarla gidiyor</Text>
+              )}
+            </View>
+            {(gelbooruUserId.length > 0 || gelbooruApiKey.length > 0) && (
+              <TouchableOpacity
+                style={[styles.actionRow, { marginTop: 4 }]}
+                onPress={handleClearGelbooruAuth}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.actionRowText}>Anahtarı Sil</Text>
+                <Text style={styles.actionRowSub}>Anonim limitlere dön</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         {/* 6. About & iOS Build info */}
@@ -725,6 +905,35 @@ const styles = StyleSheet.create({
   borderBottom: {
     borderBottomWidth: 1,
     borderBottomColor: Colors.dark.divider,
+  },
+  borderTop: {
+    borderTopWidth: 1,
+    borderTopColor: Colors.dark.divider,
+  },
+  emptyCardContent: {
+    padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyCardText: {
+    fontSize: 14,
+    color: Colors.dark.textMuted,
+  },
+  blacklistRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+  },
+  blacklistTagText: {
+    fontSize: 14,
+    color: Colors.dark.text,
+    flex: 1,
+    marginRight: 12,
+  },
+  blacklistRemoveBtn: {
+    padding: 4,
   },
 
   /* Proxy Section Styles */

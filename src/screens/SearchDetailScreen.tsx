@@ -11,16 +11,20 @@ type Props = NativeStackScreenProps<RootStackParamList, 'SearchDetail'>;
  */
 export const SearchDetailScreen: React.FC<Props> = ({ route, navigation }) => {
   const { tags, baseFilter } = route.params;
+  const [clearedTag, setClearedTag] = React.useState(false);
 
   const initialFilter = useMemo(() => {
-    return baseFilter ? { ...baseFilter, tags, jumpToPage: 1 } : undefined;
+    return baseFilter
+      ? { ...baseFilter, tags, jumpToPage: 1 }
+      : undefined;
   }, [baseFilter, tags]);
 
   return (
     <SearchScreen
-      initialTag={tags.join(' ')}
+      initialTag={clearedTag ? undefined : tags.join(' ')}
       initialMode="replace"
-      initialFilter={initialFilter}
+      initialFilter={clearedTag ? undefined : initialFilter}
+      onClearInitialTag={() => setClearedTag(true)}
       onBackPress={() => navigation.goBack()}
     />
   );

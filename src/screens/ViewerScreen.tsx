@@ -1,10 +1,11 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useIsFocused } from '@react-navigation/native';
 import type { RootStackParamList } from '../navigation/types';
 import { getCachedPosts } from '../navigation/postsCache';
 import { pushSearchDetail } from '../navigation/rootNavigation';
 import { ImageViewerModal } from '../components/ImageViewerModal';
+import { StorageService } from '../services/storage';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Viewer'>;
 
@@ -18,12 +19,23 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   const { postsKey, initialIndex, originTags, originFilter } = route.params;
   const posts = getCachedPosts(postsKey);
   const isFocused = useIsFocused();
+  const [currentIndex, setCurrentIndex] = useState(initialIndex);
 
   useEffect(() => {
     if (posts.length === 0) {
       navigation.goBack();
     }
   }, [posts.length, navigation]);
+
+  useEffect(() => {
+    setCurrentIndex(initialIndex);
+  }, [initialIndex]);
+
+  useEffect(() => {
+    if (posts[currentIndex]) {
+      StorageService.addRecentView(posts[currentIndex]);
+    }
+  }, [currentIndex, posts]);
 
   if (posts.length === 0) return null;
 
@@ -35,6 +47,7 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
       visible
       posts={posts}
       initialIndex={initialIndex}
+      onIndexChange={setCurrentIndex}
       suspended={!isFocused}
       dismissOnTagPress={false}
       onClose={() => navigation.goBack()}

@@ -197,6 +197,24 @@ export const BackupService = {
   async importBackupData(backupData: any): Promise<ImportResult> {
     const { posts, starredTags, searchHistory, bannedTags } = this.parseAnimeBoxesBackup(backupData);
 
+    // 0. Merge Recent Views (favoriler tarihe göre en yeniden eskiye: dateAdded desc)
+    try {
+      const sortedByDate = [...posts].sort((a, b) => {
+        const ta = a.createdAt ? Date.parse(a.createdAt) : 0;
+        const tb = b.createdAt ? Date.parse(b.createdAt) : 0;
+        return tb - ta;
+      });
+      const currentRecent = await StorageService.getRecentViews();
+      const existingRecentIds = new Set(currentRecent.map((p) => p.id));
+      const freshViews = sortedByDate.filter((p) => !existingRecentIds.has(p.id));
+      if (freshViews.length > 0) {
+        const mergedRecent = [...currentRecent, ...freshViews].slice(-500);
+        await StorageService.saveAllRecentViews(mergedRecent);
+      }
+    } catch (e) {
+      console.warn('[BackupService] Recent views merge error:', e);
+    }
+
     // 1. Merge Favorites
     const currentFavs = await StorageService.getFavorites();
     const existingIds = new Set(currentFavs.map((p) => p.id));
@@ -281,6 +299,7 @@ export const BackupService = {
       const favoriteTags = await StorageService.getFavoriteTags();
       const searchHistory = await StorageService.getSearchHistory();
       const blacklistedTags = await StorageService.getBlacklistedTags();
+      const recentViews = await StorageService.getRecentViews();
 
       const backupObj = {
         creatorName: 'BooruViewer',
@@ -291,6 +310,7 @@ export const BackupService = {
         favoriteTags,
         searchHistory,
         blacklistedTags,
+        recentViews,
       };
 
       const jsonStr = JSON.stringify(backupObj, null, 2);

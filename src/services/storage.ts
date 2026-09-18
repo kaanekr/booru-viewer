@@ -10,6 +10,9 @@ const SOURCE_KEY = '@booru_active_source_v2';
 const FAVORITE_TAGS_KEY = '@booru_favorite_tags_v2';
 const BLACKLISTED_TAGS_KEY = '@booru_blacklisted_tags_v2';
 const IMAGE_QUALITY_KEY = '@booru_image_quality_v2';
+const RECENT_VIEWS_KEY = '@booru_recent_views_v2';
+
+let cachedRecentViews: BooruPost[] | null = null;
 
 export const StorageService = {
   async getImageQuality(): Promise<ImageQuality> {
@@ -224,6 +227,14 @@ export const StorageService = {
     }
   },
 
+  async clearBlacklistedTags(): Promise<void> {
+    try {
+      await AsyncStorage.removeItem(BLACKLISTED_TAGS_KEY);
+    } catch (e) {
+      console.warn('Error clearing blacklisted tags:', e);
+    }
+  },
+
   async getActiveSourceId(): Promise<string> {
     try {
       const id = await AsyncStorage.getItem(SOURCE_KEY);
@@ -250,11 +261,38 @@ export const StorageService = {
     }
   },
 
+  async getGelbooruAuth(): Promise<{ userId: string; apiKey: string }> {
+    try {
+      const data = await AsyncStorage.getItem('@booru_gelbooru_auth_v1');
+      return data ? JSON.parse(data) : { userId: '', apiKey: '' };
+    } catch {
+      return { userId: '', apiKey: '' };
+    }
+  },
+
+  async setGelbooruAuth(auth: { userId: string; apiKey: string }): Promise<void> {
+    try {
+      await AsyncStorage.setItem('@booru_gelbooru_auth_v1', JSON.stringify(auth));
+    } catch (e) {
+      console.warn('Error saving gelbooru auth:', e);
+    }
+  },
+
   async saveAllFavorites(favorites: BooruPost[]): Promise<void> {
     try {
       await AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(favorites));
     } catch (e) {
       console.warn('Error saving all favorites:', e);
+    }
+  },
+
+  async saveAllRecentViews(recent: BooruPost[]): Promise<void> {
+    try {
+      const sliced = recent.slice(-500);
+      cachedRecentViews = sliced;
+      await AsyncStorage.setItem(RECENT_VIEWS_KEY, JSON.stringify(sliced));
+    } catch (e) {
+      console.warn('Error saving all recent views:', e);
     }
   },
 
@@ -287,6 +325,60 @@ export const StorageService = {
       await AsyncStorage.setItem('@booru_proxy_config_v2', JSON.stringify(config));
     } catch (e) {
       console.warn('Error saving proxy config:', e);
+    }
+  },
+
+  /* RECENT VIEWS (Son Görüntülenenler) */
+  async getRecentViews(limit?: number, offset?: number): Promise<BooruPost[]> {
+    try {
+      if (cachedRecentViews === null) {
+        const data = await AsyncStorage.getItem(RECENT_VIEWS_KEY);
+        cachedRecentViews = data ? JSON.parse(data) : [];
+      }
+      if (limit !== undefined) {
+        const start = offset || 0;
+        return (cachedRecentViews || []).slice(start, start + limit);
+      }
+      return [...(cachedRecentViews || [])];
+    } catch {
+      return [];
+    }
+  },
+
+  async getRecentViewsCount(): Promise<number> {
+    try {
+      if (cachedRecentViews === null) {
+        const data = await AsyncStorage.getItem(RECENT_VIEWS_KEY);
+        cachedRecentViews = data ? JSON.parse(data) : [];
+      }
+      return (cachedRecentViews || []).length;
+    } catch {
+      return 0;
+    }
+  },
+
+  async addRecentView(post: BooruPost): Promise<void> {
+    try {
+      if (!post || !post.id) return;
+      if (cachedRecentViews === null) {
+        await this.getRecentViews();
+      }
+      const recent = cachedRecentViews || [];
+      const filtered = recent.filter((p) => p.id !== post.id);
+      const updated = [post, ...filtered].slice(0, 500);
+      cachedRecentViews = updated;
+      await AsyncStorage.setItem(RECENT_VIEWS_KEY, JSON.stringify(updated));
+    } catch (e) {
+      console.warn('Error saving recent view:', e);
+    }
+  },
+
+  async clearRecentViews(): Promise<void> {
+    try {
+      cachedRecentViews = [];
+      await AsyncStorage.removeItem(RECENT_VIEWS_KEY);
+    } catch (e) {
+      console.warn('Error clearing recent views:', e);
     }
   },
 };

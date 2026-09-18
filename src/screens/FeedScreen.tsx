@@ -17,10 +17,11 @@ import { booruApi } from '../services/booruApi';
 import { BooruPost, BooruSource } from '../types/booru';
 import { PostCard } from '../components/PostCard';
 import { pushViewer } from '../navigation/rootNavigation';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders } from '../utils/media';
 import { useSource } from '../context/SourceContext';
+import { StorageService } from '../services/storage';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -58,6 +59,17 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const [loadingMore, setLoadingMore] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+  const isFocused = useIsFocused();
+
+  // Kapağa dönünce fav setini tazele — viewer'da favlanan anında rozetlenir
+  useEffect(() => {
+    if (isFocused) {
+      StorageService.getFavorites().then((favs) => {
+        setFavoriteIds(new Set(favs.map((p) => p.id)));
+      });
+    }
+  }, [isFocused]);
 
   const loadPosts = useCallback(
     async (pageNum: number, isRefresh: boolean = false) => {
@@ -66,6 +78,12 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
         setError(null);
 
         const newPosts = await booruApi.fetchPosts(pageNum, 24);
+
+        // 429/boş sayfada sessizce dur: footer loader takılı kalmasın
+        if (newPosts.length === 0 && pageNum > 1) {
+          setPage(pageNum - 1);
+          return;
+        }
 
         // Pre-warm memory/disk cache with thumbnails
         newPosts.slice(0, 10).forEach((p) => {
@@ -79,10 +97,20 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           if (pageNum === 1) return newPosts;
           const existingIds = new Set(prev.map((p) => p.id));
           const uniqueNew = newPosts.filter((p) => !existingIds.has(p.id));
+          // API aynı sayfayı döndürdüyse sayacı geri al
+          if (uniqueNew.length === 0) {
+            setPage(pageNum - 1);
+            return prev;
+          }
           return [...prev, ...uniqueNew];
         });
       } catch (err: any) {
-        setError(err?.message || 'Görseller yüklenirken bir hata oluştu.');
+        // Yükleme hatasında sayacı geri al ki sonraki kaydırma aynı sayfayı denesin
+        if (pageNum > 1) {
+          setPage(pageNum - 1);
+        } else {
+          setError(err?.message || 'Görseller yüklenirken bir hata oluştu.');
+        }
       } finally {
         setLoading(false);
         setLoadingMore(false);
@@ -95,6 +123,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const scrollViewRef = useRef<ScrollView>(null);
   const scrollOffsetRef = useRef(0);
   const lastSourceIdRef = useRef<string | null>(null);
+  const loadMoreGuardRef = useRef(0);
 
   useEffect(() => {
     if (lastSourceIdRef.current === null) {
@@ -117,11 +146,19 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   };
 
   const handleLoadMore = () => {
-    if (loadingMore || loading) return;
+    if (loadingMore || loading || refreshing) return;
+    // Stale page guard: rapid scroll ateşlerinde çift yükleme olmasın
+    loadMoreGuardRef.current += 1;
+    if (loadMoreGuardRef.current > 1) {
+      loadMoreGuardRef.current -= 1;
+      return;
+    }
     setLoadingMore(true);
     const nextPage = page + 1;
     setPage(nextPage);
-    loadPosts(nextPage);
+    loadPosts(nextPage).finally(() => {
+      loadMoreGuardRef.current = 0;
+    });
   };
 
   const isCloseToBottom = ({
@@ -253,7 +290,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
               handleLoadMore();
             }
           }}
-          scrollEventThrottle={16}
+          scrollEventThrottle={100}
         >
           {/* 2-Column Masonry Grid */}
           <View style={styles.gridContainer}>
@@ -263,6 +300,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                   key={`feed-left-${post.id}-${index}`}
                   post={post}
                   onPress={handleCardPress}
+                  favoriteIds={favoriteIds}
                 />
               ))}
             </View>
@@ -273,6 +311,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                   key={`feed-right-${post.id}-${index}`}
                   post={post}
                   onPress={handleCardPress}
+                  favoriteIds={favoriteIds}
                 />
               ))}
             </View>

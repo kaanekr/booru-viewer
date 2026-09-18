@@ -1,6 +1,7 @@
 import { BooruPost, BooruSource, BooruTagGroups, BooruTagSuggestion, TagCategory, SearchFilterConfig } from '../types/booru';
 import { DEFAULT_SOURCE } from './sources';
 import { proxyService } from './proxyService';
+import { StorageService } from './storage';
 
 const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 BooruViewer/1.0';
 
@@ -26,15 +27,14 @@ function mapDanbooruCategory(catNum: number): TagCategory {
 
 function ensureAbsoluteUrl(url: string | undefined, baseUrl: string): string {
   if (!url) return '';
-  let target = url;
-  if (url.startsWith('http://') || url.startsWith('https://')) {
-    target = url;
-  } else if (url.startsWith('//')) {
-    target = `https:${url}`;
+  const trimmed = url.trim();
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return trimmed;
+  } else if (trimmed.startsWith('//')) {
+    return `https:${trimmed}`;
   } else {
-    target = `${baseUrl.replace(/\/$/, '')}/${url.replace(/^\//, '')}`;
+    return `${baseUrl.replace(/\/$/, '')}/${trimmed.replace(/^\//, '')}`;
   }
-  return proxyService.proxyUrl(target);
 }
 
 function normalizeRating(rawRating: string | undefined): 's' | 'q' | 'e' | 'g' {
@@ -48,6 +48,7 @@ function normalizeRating(rawRating: string | undefined): 's' | 'q' | 'e' | 'g' {
 
 export class BooruApiService {
   private currentSource: BooruSource = DEFAULT_SOURCE;
+  private lastRequestAt = 0;
 
   setSource(source: BooruSource) {
     this.currentSource = source;
@@ -55,6 +56,27 @@ export class BooruApiService {
 
   getSource(): BooruSource {
     return this.currentSource;
+  }
+
+  /**
+   * Rate-limit koruması + 429/5xx retry: Gelbooru scrape'i banlamasın diye
+   * istekler arası min 800ms boşluk, 429/503'te tek seferlik bekleyip tekrar dener.
+   */
+  private async fetchWithRetry(url: string, init?: RequestInit, retries = 1): Promise<Response> {
+    const now = Date.now();
+    const wait = 800 - (now - this.lastRequestAt);
+    if (wait > 0) {
+      await new Promise((r) => setTimeout(r, wait));
+    }
+    this.lastRequestAt = Date.now();
+    const res = await fetchBooru(url, init);
+    if ((res.status === 429 || res.status >= 500) && retries > 0) {
+      const retryAfter = Number(res.headers.get('retry-after')) || 2;
+      await new Promise((r) => setTimeout(r, Math.min(retryAfter, 5) * 1000));
+      this.lastRequestAt = Date.now();
+      return await fetchBooru(url, init);
+    }
+    return res;
   }
 
   buildQueryTags(filter: SearchFilterConfig, source?: BooruSource): string {
@@ -177,31 +199,112 @@ export class BooruApiService {
     return parts.join(' ').trim();
   }
 
+  private async filterBlacklistedPosts(
+    posts: BooruPost[],
+    includeBlacklisted: boolean = false
+  ): Promise<BooruPost[]> {
+    if (includeBlacklisted || !posts || posts.length === 0) {
+      return posts;
+    }
+
+    let blacklistedTags: string[] = [];
+    try {
+      blacklistedTags = await StorageService.getBlacklistedTags();
+    } catch {
+      blacklistedTags = [];
+    }
+
+    if (!blacklistedTags || blacklistedTags.length === 0) {
+      return posts;
+    }
+
+    const blacklistSet = new Set<string>();
+    for (const tag of blacklistedTags) {
+      const lower = tag.trim().toLowerCase();
+      if (lower) {
+        blacklistSet.add(lower);
+        blacklistSet.add(lower.replace(/\s+/g, '_'));
+        blacklistSet.add(lower.replace(/_/g, ' '));
+      }
+    }
+
+    const checkTag = (t: string | undefined): boolean => {
+      if (!t) return false;
+      const lower = t.trim().toLowerCase();
+      return (
+        blacklistSet.has(lower) ||
+        blacklistSet.has(lower.replace(/\s+/g, '_')) ||
+        blacklistSet.has(lower.replace(/_/g, ' '))
+      );
+    };
+
+    return posts.filter((post) => {
+      // 1. post.allTags
+      if (post.allTags) {
+        for (let i = 0; i < post.allTags.length; i++) {
+          if (checkTag(post.allTags[i])) return false;
+        }
+      }
+
+      // 2. tags.artist, character, copyright, general, meta
+      const tg = post.tags;
+      if (tg) {
+        const groups = [tg.artist, tg.character, tg.copyright, tg.general, tg.meta];
+        for (let g = 0; g < groups.length; g++) {
+          const grp = groups[g];
+          if (Array.isArray(grp)) {
+            for (let i = 0; i < grp.length; i++) {
+              if (checkTag(grp[i])) return false;
+            }
+          }
+        }
+      }
+
+      return true;
+    });
+  }
+
   async fetchPostsWithFilter(
     filter: SearchFilterConfig,
     page: number = 1,
     limit: number = 20
   ): Promise<BooruPost[]> {
     const queryTags = this.buildQueryTags(filter);
-    return await this.fetchPosts(page, limit, queryTags);
+    return await this.fetchPosts(page, limit, queryTags, filter);
   }
 
-  async fetchPosts(page: number = 1, limit: number = 20, tags: string = ''): Promise<BooruPost[]> {
+  async fetchPosts(
+    page: number = 1,
+    limit: number = 20,
+    tags: string = '',
+    filter?: SearchFilterConfig
+  ): Promise<BooruPost[]> {
     const source = this.currentSource;
+    const includeBlacklisted = filter?.includeBlacklisted ?? false;
 
     try {
       if (source.id === 'gelbooru') {
-        return await this.fetchGelbooruScrapedPosts(source, page, limit, tags);
+        // Anahtarlı DAPI 401 verirse (yanlış/eksik anahtar) scrape'e düşme:
+        // kullanıcıya anahtarın geçersiz olduğunu göster ki düzeltebilsin
+        const { userId, apiKey } = await StorageService.getGelbooruAuth().catch(() => ({ userId: '', apiKey: '' }));
+        if (userId.trim() && apiKey.trim()) {
+          return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted);
+        }
+        try {
+          return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted);
+        } catch {
+          return await this.fetchGelbooruScrapedPosts(source, page, limit, tags, includeBlacklisted);
+        }
       } else if (source.type === 'gelbooru') {
-        return await this.fetchGelbooruPosts(source, page, limit, tags);
+        return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'moebooru') {
-        return await this.fetchMoebooruPosts(source, page, limit, tags);
+        return await this.fetchMoebooruPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'realbooru') {
-        return await this.fetchRealbooruPosts(source, page, limit, tags);
+        return await this.fetchRealbooruPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'cumst') {
-        return await this.fetchCumStPosts(source, page, limit, tags);
+        return await this.fetchCumStPosts(source, page, limit, tags, includeBlacklisted);
       } else {
-        return await this.fetchDanbooruPosts(source, page, limit, tags);
+        return await this.fetchDanbooruPosts(source, page, limit, tags, includeBlacklisted);
       }
     } catch (error) {
       console.warn(`[BooruAPI] Error fetching posts from ${source.name}:`, error);
@@ -213,7 +316,8 @@ export class BooruApiService {
     source: BooruSource,
     page: number,
     limit: number,
-    tags: string
+    tags: string,
+    includeBlacklisted: boolean = false
   ): Promise<BooruPost[]> {
     const cleanTags = tags.trim();
     const pid = Math.max(0, (page - 1) * 42);
@@ -221,13 +325,11 @@ export class BooruApiService {
       page: 'post',
       s: 'list',
       pid: String(pid),
+      tags: cleanTags || 'all',
     });
-    if (cleanTags) {
-      queryParams.append('tags', cleanTags);
-    }
 
     const url = `${source.baseUrl}/index.php?${queryParams.toString()}`;
-    const response = await fetchBooru(url, {
+    const response = await this.fetchWithRetry(url, {
       headers: {
         'User-Agent': USER_AGENT,
         Referer: `${source.baseUrl}/`,
@@ -236,7 +338,13 @@ export class BooruApiService {
     });
 
     if (!response.ok) {
-      throw new Error(`Gelbooru error: ${response.status} ${response.statusText}`);
+      if (response.status === 429) {
+        throw new Error('Gelbooru web istek sınırı aşıldı (429 Too Many Requests). Lütfen bir süre bekleyin.');
+      }
+      if (response.status >= 500) {
+        throw new Error(`Gelbooru web sunucusu aşırı yüklendi (${response.status} ${response.statusText}).`);
+      }
+      throw new Error(`Gelbooru hatası: ${response.status} ${response.statusText}`);
     }
 
     const html = await response.text();
@@ -274,6 +382,12 @@ export class BooruApiService {
         thumbSrc.endsWith('.mp4') ||
         rawTags.some((t) => ['video', 'webm', 'mp4', 'sound', 'animated'].includes(t.toLowerCase()));
 
+      // Liste HTML'inde boyut yok; gerçek ölçüler post sayfasındadır.
+      // width/height placeholder (800x1000) bırakılır, Info modalı açıldığında
+      // gerçek değerler doldurulur (resolveRealDimensions).
+      const width = 800;
+      const height = 1000;
+
       let rawOriginal = thumbSrc;
       let rawSample = thumbSrc;
       let fileExt = 'jpg';
@@ -282,21 +396,26 @@ export class BooruApiService {
       const imgMatch = thumbSrc.match(imgPattern);
 
       if (imgMatch) {
-        const [, sub, dir1, dir2, hash, ext] = imgMatch;
-        fileExt = ext;
+        const [, sub, dir1, dir2, hash, thumbnailExt] = imgMatch;
+        // Thumbnail uzantısı original ile aynı değildir. Gelbooru özellikle
+        // JPEG original'ları thumbnail/sample için .jpg, original için .jpeg
+        // verir; .jpg tahmini 404/hotlink redirect ile sonuçlanır.
+        // Scrape yolunda gerçek uzantıyı post sayfasından çözene dek sample
+        // güvenilir fallback'tir; original'i ancak DAPI gerçek file_url ile verir.
+        fileExt = thumbnailExt;
         if (isVideo) {
           rawOriginal = `https://${sub}.gelbooru.com/images/${dir1}/${dir2}/${hash}.mp4`;
           rawSample = rawOriginal;
           fileExt = 'mp4';
         } else {
-          rawSample = `https://${sub}.gelbooru.com/samples/${dir1}/${dir2}/sample_${hash}.${ext}`;
-          rawOriginal = `https://${sub}.gelbooru.com/images/${dir1}/${dir2}/${hash}.${ext}`;
+          rawSample = `https://${sub}.gelbooru.com/samples/${dir1}/${dir2}/sample_${hash}.${thumbnailExt}`;
+          rawOriginal = '';
         }
       }
 
       const previewUrl = ensureAbsoluteUrl(thumbSrc, source.baseUrl);
       const sampleUrl = ensureAbsoluteUrl(rawSample, source.baseUrl);
-      const originalUrl = ensureAbsoluteUrl(rawOriginal, source.baseUrl);
+      const originalUrl = rawOriginal ? ensureAbsoluteUrl(rawOriginal, source.baseUrl) : '';
 
       posts.push({
         id: `gelbooru_${id}`,
@@ -305,9 +424,9 @@ export class BooruApiService {
         previewUrl,
         sampleUrl,
         originalUrl,
-        width: 800,
-        height: 1000,
-        aspectRatio: 0.75,
+        width,
+        height,
+        aspectRatio: width > 0 && height > 0 ? width / height : 0.75,
         rating,
         score,
         favCount: 0,
@@ -325,14 +444,15 @@ export class BooruApiService {
       });
     }
 
-    return posts;
+    return await this.filterBlacklistedPosts(posts, includeBlacklisted);
   }
 
   private async fetchGelbooruPosts(
     source: BooruSource,
     page: number,
     limit: number,
-    tags: string
+    tags: string,
+    includeBlacklisted: boolean = false
   ): Promise<BooruPost[]> {
     const cleanTags = tags.trim();
     const pid = Math.max(0, page - 1);
@@ -351,9 +471,19 @@ export class BooruApiService {
       const authTokens = new URLSearchParams(source.authParams);
       authTokens.forEach((v, k) => queryParams.append(k, v));
     }
+    // Kullanıcının kendi Gelbooru anahtarı (Doküman sırası: &api_key=...&user_id=...)
+    if (source.id === 'gelbooru') {
+      try {
+        const { userId, apiKey } = await StorageService.getGelbooruAuth();
+        if (apiKey.trim() && userId.trim()) {
+          queryParams.append('api_key', apiKey.trim());
+          queryParams.append('user_id', userId.trim());
+        }
+      } catch {}
+    }
 
-    const url = `${source.baseUrl}/index.php?${queryParams.toString()}`;
-    const response = await fetchBooru(url, {
+    const url = `${source.apiBaseUrl || source.baseUrl}/index.php?${queryParams.toString()}`;
+    const response = await this.fetchWithRetry(url, {
       headers: {
         'User-Agent': USER_AGENT,
         Accept: 'application/json',
@@ -361,29 +491,45 @@ export class BooruApiService {
     });
 
     if (!response.ok) {
-      throw new Error(`Gelbooru API error: ${response.status} ${response.statusText}`);
+      if (response.status === 401) {
+        throw new Error('Gelbooru API kimlik doğrulaması gerekiyor (401 Unauthorized). Lütfen Ayarlar sayfasından API anahtarınızı (api_key ve user_id) tanımlayın.');
+      }
+      if (response.status === 429) {
+        throw new Error('Gelbooru istek sınırı aşıldı (429 Too Many Requests). Lütfen birkaç saniye bekleyin veya API anahtarınızı tanımlayın.');
+      }
+      if (response.status >= 500) {
+        throw new Error(`Gelbooru sunucusu aşırı yüklendi veya arama sorgusu zaman aşımına uğradı (${response.status} ${response.statusText}).`);
+      }
+      throw new Error(`Gelbooru API hatası: ${response.status} ${response.statusText}`);
     }
 
-    const data = await response.json();
-    if (!Array.isArray(data)) return [];
+    let data: any;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error('Gelbooru API geçerli bir JSON yanıtı döndürmedi (sunucu aşırı yüklü veya arama tamamlanamadı).');
+    }
+    let rawItems: any[] = [];
+    if (Array.isArray(data)) {
+      rawItems = data;
+    } else if (Array.isArray(data?.post)) {
+      rawItems = data.post;
+    } else if (data?.post && typeof data.post === 'object') {
+      rawItems = [data.post];
+    } else if (Array.isArray(data?.posts)) {
+      rawItems = data.posts;
+    } else {
+      return [];
+    }
 
-    return data
+    const posts = rawItems
       .filter((item: any) => item && (item.preview_url || item.sample_url || item.file_url || item.image))
       .map((item: any): BooruPost => {
-        let preview = item.preview_url;
-        let sample = item.sample_url || item.file_url || preview;
-        let original = item.file_url || item.sample_url || preview;
-
-        // Fallback for relative directory + image in Gelbooru
-        if (!preview && item.directory !== undefined && item.image) {
-          preview = `${source.baseUrl}/thumbnails/${item.directory}/thumbnail_${item.image}`;
-        }
-        if (!sample && item.directory !== undefined && item.image) {
-          sample = `${source.baseUrl}/images/${item.directory}/${item.image}`;
-        }
-        if (!original && item.directory !== undefined && item.image) {
-          original = `${source.baseUrl}/images/${item.directory}/${item.image}`;
-        }
+        let original = item.file_url || (item.directory !== undefined && item.image ? `${source.baseUrl}/images/${item.directory}/${item.image}` : '');
+        let preview = item.preview_url || (item.directory !== undefined && item.image ? `${source.baseUrl}/thumbnails/${item.directory}/thumbnail_${item.image}` : '');
+        let sample = item.sample_url || original || preview;
+        if (!original) original = sample;
+        if (!preview) preview = sample;
 
         preview = ensureAbsoluteUrl(preview, source.baseUrl);
         sample = ensureAbsoluteUrl(sample, source.baseUrl);
@@ -420,13 +566,16 @@ export class BooruApiService {
           createdAt: item.change ? new Date(item.change * 1000).toISOString() : new Date().toISOString(),
         };
       });
+
+    return await this.filterBlacklistedPosts(posts, includeBlacklisted);
   }
 
   private async fetchDanbooruPosts(
     source: BooruSource,
     page: number,
     limit: number,
-    tags: string
+    tags: string,
+    includeBlacklisted: boolean = false
   ): Promise<BooruPost[]> {
     const cleanTags = tags.trim();
     const queryParams = new URLSearchParams({
@@ -452,7 +601,7 @@ export class BooruApiService {
     const data = await response.json();
     if (!Array.isArray(data)) return [];
 
-    return data
+    const posts = data
       .filter((item: any) => item && (item.file_url || item.large_file_url || item.preview_file_url))
       .map((item: any): BooruPost => {
         const preview = ensureAbsoluteUrl(item.preview_file_url || item.large_file_url || item.file_url, source.baseUrl);
@@ -492,13 +641,16 @@ export class BooruApiService {
           createdAt: item.created_at || new Date().toISOString(),
         };
       });
+
+    return await this.filterBlacklistedPosts(posts, includeBlacklisted);
   }
 
   private async fetchMoebooruPosts(
     source: BooruSource,
     page: number,
     limit: number,
-    tags: string
+    tags: string,
+    includeBlacklisted: boolean = false
   ): Promise<BooruPost[]> {
     const cleanTags = tags.trim();
     const queryParams = new URLSearchParams({
@@ -524,7 +676,7 @@ export class BooruApiService {
     const data = await response.json();
     if (!Array.isArray(data)) return [];
 
-    return data
+    const posts = data
       .filter((item: any) => item && (item.preview_url || item.sample_url || item.file_url))
       .map((item: any): BooruPost => {
         const preview = ensureAbsoluteUrl(item.preview_url || item.sample_url || item.file_url, source.baseUrl);
@@ -564,13 +716,16 @@ export class BooruApiService {
           createdAt: item.created_at ? new Date(item.created_at * 1000).toISOString() : new Date().toISOString(),
         };
       });
+
+    return await this.filterBlacklistedPosts(posts, includeBlacklisted);
   }
 
   private async fetchRealbooruPosts(
     source: BooruSource,
     page: number,
     limit: number,
-    tags: string
+    tags: string,
+    includeBlacklisted: boolean = false
   ): Promise<BooruPost[]> {
     const cleanTags = tags.trim();
     const pid = Math.max(0, (page - 1) * 20);
@@ -672,31 +827,29 @@ export class BooruApiService {
         }
       }
 
-      let fileExt = 'jpeg';
-      if (verifiedExt) {
-        fileExt = verifiedExt;
-      } else if (isVideo) {
-        // Realbooru hash yolunda video dosyalarını .mp4 olarak barındırır
-        fileExt = 'mp4';
-      } else {
-        fileExt = 'jpeg';
-      }
+      let fileExt = verifiedExt || (isVideo ? 'mp4' : 'jpg');
 
-      let rawOriginal = rawThumb;
+      let rawOriginal = '';
       let rawSample = rawThumb;
 
       if (verifiedOriginalUrl) {
         rawOriginal = verifiedOriginalUrl;
         rawSample = verifiedOriginalUrl;
-      } else if (thumbMatch) {
+      } else if (isVideo && thumbMatch) {
         const [, dir1, dir2, hash] = thumbMatch;
-        rawOriginal = `${source.baseUrl}/images/${dir1}/${dir2}/${hash}.${fileExt}`;
+        rawOriginal = `${source.baseUrl}/images/${dir1}/${dir2}/${hash}.mp4`;
         rawSample = rawOriginal;
+      } else {
+        // Thumbnail uzantısından original uzantısı türetilmez (jpeg tahmini 404 üretir).
+        // Scrape aşamasında verified url yoksa sample preview'da kalır,
+        // original ise viewer'da resolveGelbooruOriginalUrl ile post sayfasından çözülür.
+        rawSample = rawThumb;
+        rawOriginal = '';
       }
 
       const previewUrl = ensureAbsoluteUrl(rawThumb, source.baseUrl);
       const sampleUrl = ensureAbsoluteUrl(rawSample, source.baseUrl);
-      const originalUrl = ensureAbsoluteUrl(rawOriginal, source.baseUrl);
+      const originalUrl = rawOriginal ? ensureAbsoluteUrl(rawOriginal, source.baseUrl) : '';
 
       const sourceLink = cleanHref.includes('page=post')
         ? ensureAbsoluteUrl(cleanHref, source.baseUrl)
@@ -729,14 +882,15 @@ export class BooruApiService {
       });
     }
 
-    return posts;
+    return await this.filterBlacklistedPosts(posts, includeBlacklisted);
   }
 
   private async fetchCumStPosts(
     source: BooruSource,
     page: number,
     limit: number,
-    tags: string
+    tags: string,
+    includeBlacklisted: boolean = false
   ): Promise<BooruPost[]> {
     const cleanTags = tags.trim();
     const o = Math.max(0, (page - 1) * 50);
@@ -928,27 +1082,89 @@ export class BooruApiService {
     const source = this.currentSource;
     try {
       if (source.id === 'gelbooru') {
-        const url = `${source.baseUrl}/index.php?page=autocomplete2&term=${encodeURIComponent(query.trim())}&type=tag_query&limit=${limit}`;
-        const response = await fetchBooru(url, {
-          headers: { 'User-Agent': USER_AGENT, Referer: `${source.baseUrl}/`, Accept: 'application/json' },
-        });
-        if (!response.ok) return [];
-        const data = await response.json();
-        if (!Array.isArray(data)) return [];
+        // 1. Öncelikli: Kategori etiketli ve anonim çalışan autocomplete2 sorgusu
+        try {
+          const url = `${source.baseUrl}/index.php?page=autocomplete2&term=${encodeURIComponent(query.trim())}&type=tag_query&limit=${limit}`;
+          const response = await this.fetchWithRetry(url, {
+            headers: { 'User-Agent': USER_AGENT, Referer: `${source.baseUrl}/`, Accept: 'application/json' },
+          });
+          if (response.ok) {
+            const data = await response.json();
+            if (Array.isArray(data) && data.length > 0) {
+              return data.slice(0, limit).map((t: any) => {
+                let cat: TagCategory = 'general';
+                if (t.category === 'artist') cat = 'artist';
+                else if (t.category === 'character') cat = 'character';
+                else if (t.category === 'copyright') cat = 'copyright';
+                else if (t.category === 'metadata') cat = 'meta';
 
-        return data.slice(0, limit).map((t: any) => {
-          let cat: TagCategory = 'general';
-          if (t.category === 'artist') cat = 'artist';
-          else if (t.category === 'character') cat = 'character';
-          else if (t.category === 'copyright') cat = 'copyright';
-          else if (t.category === 'metadata') cat = 'meta';
+                return {
+                  name: t.value || t.label,
+                  category: cat,
+                  postCount: parseInt(t.post_count, 10) || 0,
+                };
+              });
+            }
+          }
+        } catch {
+          // autocomplete2 yanıt vermezse resmi DAPI Tag List endpoint'ine geç
+        }
 
-          return {
-            name: t.value || t.label,
-            category: cat,
-            postCount: parseInt(t.post_count, 10) || 0,
-          };
-        });
+        // 2. Dokümandaki resmi DAPI Tag List fallback (/index.php?page=dapi&s=tag&q=index)
+        try {
+          const queryParams = new URLSearchParams({
+            page: 'dapi',
+            s: 'tag',
+            q: 'index',
+            json: '1',
+            name_pattern: `%${query.trim()}%`,
+            orderby: 'count',
+            order: 'DESC',
+            limit: String(limit),
+          });
+
+          const { userId, apiKey } = await StorageService.getGelbooruAuth().catch(() => ({ userId: '', apiKey: '' }));
+          if (apiKey.trim() && userId.trim()) {
+            queryParams.append('api_key', apiKey.trim());
+            queryParams.append('user_id', userId.trim());
+          }
+
+          const dapiUrl = `${source.baseUrl}/index.php?${queryParams.toString()}`;
+          const dapiRes = await this.fetchWithRetry(dapiUrl, {
+            headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+          });
+
+          if (dapiRes.ok) {
+            const data = await dapiRes.json();
+            let tagItems: any[] = [];
+            if (Array.isArray(data)) {
+              tagItems = data;
+            } else if (Array.isArray(data?.tag)) {
+              tagItems = data.tag;
+            } else if (data?.tag && typeof data.tag === 'object') {
+              tagItems = [data.tag];
+            }
+
+            if (tagItems.length > 0) {
+              return tagItems.slice(0, limit).map((t: any) => {
+                const typeNum = parseInt(t.type, 10);
+                let cat: TagCategory = 'general';
+                if (typeNum === 1) cat = 'artist';
+                else if (typeNum === 3) cat = 'copyright';
+                else if (typeNum === 4) cat = 'character';
+                else if (typeNum === 5) cat = 'meta';
+
+                return {
+                  name: t.name,
+                  category: cat,
+                  postCount: parseInt(t.count, 10) || 0,
+                };
+              });
+            }
+          }
+        } catch {}
+
+        return [];
       } else if (source.type === 'gelbooru' || source.type === 'realbooru') {
         const url = `${source.baseUrl}/autocomplete.php?q=${encodeURIComponent(query.trim())}`;
         const response = await fetchBooru(url, {

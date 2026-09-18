@@ -2,6 +2,121 @@ import { Platform } from 'react-native';
 import { proxyService } from '../services/proxyService';
 import { ImageQuality } from '../services/storage';
 
+const DIMS_CACHE = new Map<string, { w: number; h: number; bytes?: number }>();
+
+/**
+ * Post sayfasındaki orijinal görsel linkinden gerçek ölçüleri çözer.
+ * Gelbooru liste HTML'inde boyut bilgisi yoktur (scrape 800x1000 placeholder
+ * bırakır); Info modalı bu fonksiyonla gerçek WxH'yi doldurur.
+ * Sonuçlar oturum boyunca cache'lenir, aynı post iki kez fetch edilmez.
+ */
+export async function resolveRealDimensions(post: {
+  id?: string;
+  sourceLink?: string;
+  originalUrl?: string;
+  sampleUrl?: string;
+  sourceId?: string;
+  [key: string]: any;
+} | null | undefined): Promise<{ w: number; h: number; bytes?: number } | null> {
+  if (!post) return null;
+  const cacheKey = post.id || post.originalUrl || '';
+  if (cacheKey && DIMS_CACHE.has(cacheKey)) return DIMS_CACHE.get(cacheKey)!;
+  const pageUrl = post.sourceLink;
+  if (!pageUrl || typeof pageUrl !== 'string' || !/^https?:\/\//i.test(pageUrl)) return null;
+  try {
+    const target = proxyService.proxyUrl(pageUrl);
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const res = await fetch(target, {
+      headers: { 'User-Agent': 'AnimeBoxes/1.9.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' },
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    if (!res.ok) return null;
+    const html = await res.text();
+    // Dosya boyutu: post sayfasındaki orijinal linkin yanında yazar
+    // (örn. "2.4 MB", "850 KB", "1,234,567 bytes")
+    let foundBytes: number | undefined;
+    const mbMatch = html.match(/(?:file size|size)?\s*:?\s*([\d.,]+)\s*MB\b/i);
+    const kbMatch = !mbMatch && html.match(/(?:file size|size)?\s*:?\s*([\d.,]+)\s*KB\b/i);
+    if (mbMatch) {
+      const v = parseFloat(mbMatch[1].replace(',', '.'));
+      if (Number.isFinite(v) && v > 0 && v < 500) foundBytes = Math.round(v * 1024 * 1024);
+    } else if (kbMatch) {
+      const v = parseFloat(kbMatch[1].replace(',', '.'));
+      if (Number.isFinite(v) && v > 0 && v < 500 * 1024) foundBytes = Math.round(v * 1024);
+    }
+
+    // Gelbooru gibi sitelerde post sayfasında dosya boyutu metin olarak bulunmayabilir;
+    // Orijinal görsel URL'ine hafif bir HEAD isteği atarak Content-Length'i alıyoruz
+    if (!foundBytes && (post.originalUrl || post.sampleUrl)) {
+      try {
+        const rawMediaUrl = post.originalUrl || post.sampleUrl;
+        const targetMedia = proxyService.proxyUrl(rawMediaUrl);
+        const headers = getMediaHeaders(rawMediaUrl);
+        const headCtrl = new AbortController();
+        const headTimeout = setTimeout(() => headCtrl.abort(), 4000);
+        const headRes = await fetch(targetMedia, {
+          method: 'HEAD',
+          headers,
+          signal: headCtrl.signal,
+        });
+        clearTimeout(headTimeout);
+        const cl = headRes.headers.get('content-length');
+        if (cl) {
+          const parsed = parseInt(cl, 10);
+          if (Number.isFinite(parsed) && parsed > 0) {
+            foundBytes = parsed;
+          }
+        }
+      } catch {
+        // HEAD fallback opsiyoneldir, hata fırlatmaz
+      }
+    }
+
+    // 1) Orijinal link: .../images/<d1>/<d2>/<hash>.<ext> — boyut post sayfasında
+    //    "Size: 1456 x 2048" / "1456x2048" / image width/height attribute'ları
+    const sizeMatch =
+      html.match(/Size:\s*(\d{2,5})\s*[x×]\s*(\d{2,5})/i) ||
+      html.match(/(\d{3,5})\s*[x×]\s*(\d{3,5})\s*(?:px)?\s*(?:<|\)|\||,)/i);
+    if (sizeMatch) {
+      const w = parseInt(sizeMatch[1], 10);
+      const h = parseInt(sizeMatch[2], 10);
+      if (w > 0 && h > 0 && w < 30000 && h < 30000) {
+        const dims = { w, h, bytes: foundBytes };
+        if (cacheKey) DIMS_CACHE.set(cacheKey, dims);
+        return dims;
+      }
+    }
+    // 2) Fallback: sayfadaki ana görselin width/height attribute'u
+    const imgMatch = html.match(/<img[^>]*id=["']image["'][^>]*>/i);
+    if (imgMatch) {
+      const wM = imgMatch[0].match(/width=["']?(\d+)/i);
+      const hM = imgMatch[0].match(/height=["']?(\d+)/i);
+      if (wM && hM) {
+        const w = parseInt(wM[1], 10);
+        const h = parseInt(hM[1], 10);
+        if (w > 0 && h > 0) {
+          const dims = { w, h, bytes: foundBytes };
+          if (cacheKey) DIMS_CACHE.set(cacheKey, dims);
+          return dims;
+        }
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export interface ImageUris {
+  previewUri: string;
+  sampleUri: string;
+  fullUri: string;
+  displayUri: string;
+  placeholderUri: string;
+}
+
 /**
  * Resolves raw (unproxied) image URIs based on quality preference.
  * - preview: display is sampleUrl (fast)
@@ -13,22 +128,39 @@ import { ImageQuality } from '../services/storage';
 export function getImageUris(
   post: { previewUrl?: string; sampleUrl?: string; originalUrl?: string; [key: string]: any } | null | undefined,
   quality: ImageQuality = 'auto'
-): { displayUri: string; placeholderUri: string; fullUri: string } {
+): ImageUris {
   if (!post) {
-    return { displayUri: '', placeholderUri: '', fullUri: '' };
+    return {
+      previewUri: '',
+      sampleUri: '',
+      fullUri: '',
+      displayUri: '',
+      placeholderUri: '',
+    };
   }
 
   const preview = post.previewUrl || '';
-  const sample = post.sampleUrl || post.originalUrl || '';
-  const full = post.originalUrl || post.sampleUrl || '';
+  const sample = post.sampleUrl || post.originalUrl || preview;
+  const full = post.originalUrl || post.sampleUrl || preview;
 
-  const display = quality === 'full' ? full : sample;
+  let display: string;
+  if (quality === 'full') {
+    display = full;
+  } else if (quality === 'preview') {
+    display = sample || preview;
+  } else {
+    // 'auto': default to sample for fast initial render
+    display = sample;
+  }
+
   const placeholder = preview || sample;
 
   return {
+    previewUri: preview,
+    sampleUri: sample,
+    fullUri: full,
     displayUri: display,
     placeholderUri: placeholder,
-    fullUri: full,
   };
 }
 
@@ -61,6 +193,121 @@ export function getMediaUrl(url: string | undefined): string {
   if (!url) return '';
   const normalized = normalizeBooruMediaUrl(url);
   return proxyService.proxyUrl(normalized);
+}
+
+/**
+ * Returns an expo-image compatible source object with distinct cacheKey per decode policy
+ * (e.g. grid downscaled vs full original un-downscaled).
+ */
+export function getMediaSource(
+  rawUrl: string | undefined,
+  purpose: 'grid' | 'sample' | 'full' = 'sample'
+): { uri: string; headers: Record<string, string>; cacheKey: string } | null {
+  if (!rawUrl) return null;
+  const url = getMediaUrl(rawUrl);
+  if (!url) return null;
+  return {
+    uri: url,
+    headers: getMediaHeaders(url),
+    cacheKey: `${url}:${purpose}`,
+  };
+}
+
+/**
+ * Gelbooru/Realbooru scrape sonucunda liste küçük resmi üzerinden orijinal
+ * görsel uzantısı tahmin edilemez (.jpg/.jpeg/.png/.webp CDN'e göre değişir).
+ * Gerçek original URL'yi post detay sayfasından çözer (cache'li, abortable).
+ */
+const ORIGINAL_RESOLVE_CACHE = new Map<string, string | null>();
+
+export async function resolveGelbooruOriginalUrl(
+  post: {
+    id?: string;
+    sourceId?: string;
+    sourceLink?: string;
+    originalUrl?: string;
+    sampleUrl?: string;
+  },
+  signal?: AbortSignal
+): Promise<string | null> {
+  // Eğer post zaten geçerli ve sample'dan farklı bir originalUrl'e sahipse fetch etme
+  if (post.originalUrl && post.originalUrl !== post.sampleUrl) {
+    return post.originalUrl;
+  }
+  if (!post.sourceLink) return post.originalUrl || null;
+
+  const cacheKey = post.sourceLink;
+  if (ORIGINAL_RESOLVE_CACHE.has(cacheKey)) {
+    return ORIGINAL_RESOLVE_CACHE.get(cacheKey) ?? null;
+  }
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 8000);
+  if (signal) {
+    signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+  }
+
+  try {
+    const target = proxyService.proxyUrl(post.sourceLink);
+    const response = await fetch(target, {
+      headers: getMediaHeaders(post.sourceLink),
+      signal: ctrl.signal,
+    });
+    clearTimeout(timeout);
+    if (!response.ok) throw new Error(`Post view status ${response.status}`);
+    const html = await response.text();
+
+    // 1) "Original image" veya "View larger size" bağlantısını ara
+    const originalLinkMatch =
+      html.match(/<a\s+[^>]*href=["']([^"']+)["'][^>]*>(?:Original image|View larger size|High resolution)<\/a>/i) ||
+      html.match(/<a\s+[^>]*href=["']([^"']+\/images\/[^"']+)["']/i);
+
+    let resolved: string | null = null;
+    if (originalLinkMatch && originalLinkMatch[1]) {
+      resolved = originalLinkMatch[1].replace(/&amp;/g, '&').trim();
+    }
+
+    // 2) Sayfadaki /images/ dosya yollarını tara
+    if (!resolved) {
+      const imageUrls = Array.from(
+        html.matchAll(/https?:\\?\/\\?\/[^'"\s<>]+\/images\/[^'"\s<>]+\.(?:jpe?g|png|webp|gif)(?:\?[^'"\s<>]*)?/gi),
+        (m) => m[0]
+      );
+      if (imageUrls.length > 0) {
+        resolved = imageUrls[0].replaceAll('\\/', '/');
+      }
+    }
+
+    // 3) OpenGraph image fallback
+    if (!resolved) {
+      const metaMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
+      if (metaMatch && metaMatch[1] && /\/images\//i.test(metaMatch[1])) {
+        resolved = metaMatch[1].trim();
+      }
+    }
+
+    if (resolved) {
+      if (resolved.startsWith('//')) {
+        resolved = `https:${resolved}`;
+      } else if (resolved.startsWith('/')) {
+        const baseMatch = post.sourceLink.match(/^https?:\/\/[^/]+/i);
+        const base = baseMatch ? baseMatch[0] : 'https://gelbooru.com';
+        resolved = `${base}${resolved}`;
+      }
+      ORIGINAL_RESOLVE_CACHE.set(cacheKey, resolved);
+      return resolved;
+    }
+
+    ORIGINAL_RESOLVE_CACHE.set(cacheKey, null);
+    return null;
+  } catch (err: any) {
+    clearTimeout(timeout);
+    if (err?.name === 'AbortError') {
+      return null;
+    }
+    ORIGINAL_RESOLVE_CACHE.set(cacheKey, null);
+    return null;
+  }
 }
 
 /**

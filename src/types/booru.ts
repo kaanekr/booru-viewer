@@ -8,6 +8,8 @@ export interface BooruSource {
   description: string;
   isSafeOnly: boolean;
   authParams?: string;
+  /** JSON API farklı host'ta ise (örn. Safebooru: safebooru.org) burada tutulur */
+  apiBaseUrl?: string;
 }
 
 export interface BooruTagGroups {
