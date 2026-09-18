@@ -8,6 +8,7 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     type: 'gelbooru',
     description: 'Safe anime art & illustrations (High compatibility)',
     isSafeOnly: true,
+    apiBaseUrl: 'https://safebooru.org',
   },
   {
     id: 'gelbooru',

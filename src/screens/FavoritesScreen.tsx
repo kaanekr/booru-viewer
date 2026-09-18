@@ -1,9 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
+  FlatList,
   Keyboard,
   Modal,
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -30,6 +33,8 @@ import {
   Flame,
   Check,
   RotateCcw,
+  Clock,
+  History,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { StorageService } from '../services/storage';
@@ -69,9 +74,10 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
   };
 
   const insets = useSafeAreaInsets();
-  const [activeSegment, setActiveSegment] = useState<'posts' | 'tags'>('posts');
+  const [activeSegment, setActiveSegment] = useState<'posts' | 'tags' | 'history'>('posts');
   const [favorites, setFavorites] = useState<BooruPost[]>([]);
   const [favoriteTags, setFavoriteTags] = useState<string[]>([]);
+  const [recentViews, setRecentViews] = useState<BooruPost[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [tagMatchMode, setTagMatchMode] = useState<'AND' | 'OR'>('AND');
@@ -84,6 +90,16 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [displayLimit, setDisplayLimit] = useState(40);
+  const [historyLimit, setHistoryLimit] = useState(40);
+
+  const loadRecentViews = useCallback(async () => {
+    try {
+      const views = await StorageService.getRecentViews();
+      setRecentViews(views);
+    } catch (e) {
+      console.warn('Load recent views error:', e);
+    }
+  }, []);
 
   const loadData = useCallback(async (silent: boolean = false) => {
     try {
@@ -105,19 +121,43 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
 
   useEffect(() => {
     loadData();
-  }, [loadData]);
+    loadRecentViews();
+  }, [loadData, loadRecentViews]);
 
   useEffect(() => {
     if (effectiveIsActive) {
       loadData(true);
+      loadRecentViews();
     }
-  }, [effectiveIsActive, loadData]);
+  }, [effectiveIsActive, loadData, loadRecentViews]);
 
   const handleRefresh = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRefreshing(true);
     setDisplayLimit(40);
-    await loadData(true);
+    setHistoryLimit(40);
+    await Promise.all([loadData(true), loadRecentViews()]);
+    setRefreshing(false);
+  };
+
+  const handleClearRecentViews = () => {
+    Alert.alert(
+      'Geçmişi Temizle',
+      'Son görüntülenen gönderilerin tümünü silmek istediğinizden emin misiniz?',
+      [
+        { text: 'İptal', style: 'cancel' },
+        {
+          text: 'Temizle',
+          style: 'destructive',
+          onPress: async () => {
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            await StorageService.clearRecentViews();
+            setRecentViews([]);
+            setHistoryLimit(40);
+          },
+        },
+      ]
+    );
   };
 
   const handleRemoveFavoriteTag = async (tag: string) => {
@@ -165,6 +205,9 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
 
     return { counts, categories };
   }, [favorites]);
+
+  // Fav ID seti: kartlar rozet için storage'a sormaz — anında + çökmesiz
+  const favoriteIdSet = useMemo(() => new Set(favorites.map((p) => p.id)), [favorites]);
 
   // Favorilerde bulunan kaynaklar ve görsel sayıları (kanonik isimlerle)
   const sourceList = useMemo(() => {
@@ -401,36 +444,86 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     }
   });
 
-  const handleCardPress = (post: BooruPost) => {
+  const handleCardPress = useCallback((post: BooruPost) => {
     const idx = filteredFavorites.findIndex((p) => p.id === post.id);
     if (idx >= 0) {
       pushViewer(filteredFavorites, idx, [], undefined);
     }
-  };
+  }, [filteredFavorites]);
+
+  const handleHistoryCardPress = useCallback((post: BooruPost) => {
+    const idx = recentViews.findIndex((p) => p.id === post.id);
+    if (idx >= 0) {
+      pushViewer(recentViews, idx, [], undefined);
+    }
+  }, [recentViews]);
+
+  // Paginated visible history slice
+  const visibleRecentViews = useMemo(
+    () => recentViews.slice(0, historyLimit),
+    [recentViews, historyLimit]
+  );
+
+  const handleLoadMoreHistory = useCallback(() => {
+    if (historyLimit < recentViews.length) {
+      setHistoryLimit((prev) => prev + 40);
+    }
+  }, [historyLimit, recentViews.length]);
+
+  const renderHistoryItem = useCallback(
+    ({ item }: { item: BooruPost }) => (
+      <PostCard
+        post={item}
+        onPress={handleHistoryCardPress}
+        favoriteIds={favoriteIdSet}
+      />
+    ),
+    [handleHistoryCardPress, favoriteIdSet]
+  );
+
+  const historyKeyExtractor = useCallback(
+    (item: BooruPost, index: number) => `hist-${item.id}-${index}`,
+    []
+  );
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Header */}
       <View style={styles.header}>
-        <View>
+        <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>Favoriler</Text>
           <Text style={styles.headerSubtitle}>
             {activeSegment === 'posts'
               ? hasActiveFilters
                 ? `${filteredFavorites.length} / ${favorites.length} görsel filtrelendi`
                 : `Kaydedilen görseller (${favorites.length})`
-              : trimmedQuery
-                ? `${filteredFavoriteTags.length} / ${favoriteTags.length} etiket`
-                : `Favori etiketler (${favoriteTags.length})`}
+              : activeSegment === 'tags'
+                ? trimmedQuery
+                  ? `${filteredFavoriteTags.length} / ${favoriteTags.length} etiket`
+                  : `Favori etiketler (${favoriteTags.length})`
+                : `Son görüntülenen görseller (${recentViews.length})`}
           </Text>
         </View>
 
-        <View style={styles.favBadge}>
-          <Heart size={16} color="#FF4D4F" fill="#FF4D4F" />
-        </View>
+        {activeSegment === 'history' ? (
+          recentViews.length > 0 ? (
+            <TouchableOpacity
+              style={styles.clearHeaderBtn}
+              onPress={handleClearRecentViews}
+              activeOpacity={0.7}
+            >
+              <Trash2 size={14} color="#FF6B6B" />
+              <Text style={styles.clearHeaderBtnText}>Temizle</Text>
+            </TouchableOpacity>
+          ) : null
+        ) : (
+          <View style={styles.favBadge}>
+            <Heart size={16} color="#FF4D4F" fill="#FF4D4F" />
+          </View>
+        )}
       </View>
 
-      {/* Segment Switcher [ Görseller | Etiketler ] */}
+      {/* Segment Switcher [ Görseller | Etiketler | Geçmiş ] */}
       <View style={styles.segmentWrapper}>
         <View style={styles.segmentContainer}>
           <TouchableOpacity
@@ -450,6 +543,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 styles.segmentText,
                 activeSegment === 'posts' && styles.segmentTextActive,
               ]}
+              numberOfLines={1}
             >
               Görseller ({favorites.length})
             </Text>
@@ -471,14 +565,40 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 styles.segmentText,
                 activeSegment === 'tags' && styles.segmentTextActive,
               ]}
+              numberOfLines={1}
             >
               Etiketler ({favoriteTags.length})
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.segmentBtn, activeSegment === 'history' && styles.segmentBtnActive]}
+            onPress={() => {
+              Haptics.selectionAsync();
+              setActiveSegment('history');
+              setHistoryLimit(40);
+              loadRecentViews();
+            }}
+          >
+            <Clock
+              size={14}
+              color={activeSegment === 'history' ? '#4DABF7' : Colors.dark.textMuted}
+            />
+            <Text
+              style={[
+                styles.segmentText,
+                activeSegment === 'history' && styles.segmentTextActive,
+              ]}
+              numberOfLines={1}
+            >
+              Geçmiş ({recentViews.length})
             </Text>
           </TouchableOpacity>
         </View>
       </View>
 
-        {/* Search Bar & Auto-Suggestions Dropdown */}
+      {/* Search Bar & Auto-Suggestions Dropdown (Sadece posts segmentinde) */}
+      {activeSegment === 'posts' && (
         <View style={styles.searchContainer}>
           <View style={styles.searchBarRow}>
             <View style={[styles.searchBar, isInputFocused && styles.searchBarFocused]}>
@@ -488,11 +608,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
               />
               <TextInput
                 style={styles.searchInput}
-                placeholder={
-                  activeSegment === 'posts'
-                    ? 'Favorilerde ara... (Enter ile etiket ekle)'
-                    : 'Favori etiketlerde ara...'
-                }
+                placeholder="Favorilerde ara... (Enter ile etiket ekle)"
                 placeholderTextColor={Colors.dark.textMuted}
                 value={searchQuery}
                 onFocus={() => setIsInputFocused(true)}
@@ -504,10 +620,10 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                   setSearchQuery(text);
                   setDisplayLimit(40);
                 }}
-                onSubmitEditing={activeSegment === 'posts' ? handleSubmitSearch : undefined}
+                onSubmitEditing={handleSubmitSearch}
                 autoCapitalize="none"
                 autoCorrect={false}
-                returnKeyType={activeSegment === 'posts' ? 'done' : 'search'}
+                returnKeyType="done"
                 clearButtonMode="never"
               />
               {searchQuery.length > 0 && (
@@ -526,78 +642,77 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             </View>
 
             {/* Gelişmiş Filtreleme Butonu */}
-            {activeSegment === 'posts' && (
-              <TouchableOpacity
-                style={[
-                  styles.filterToggleBtn,
-                  (mediaTypeFilter !== 'all' || ratingFilter !== 'all' || sortBy !== 'fav_date' || tagMatchMode !== 'AND' || selectedSource !== 'all') &&
-                    styles.filterToggleBtnActive,
-                ]}
-                onPress={() => {
-                  Haptics.selectionAsync();
-                  setShowFilterSheet(true);
-                }}
-                activeOpacity={0.7}
-              >
-                <SlidersHorizontal
-                  size={18}
-                  color={
-                    mediaTypeFilter !== 'all' || ratingFilter !== 'all' || sortBy !== 'fav_date' || tagMatchMode !== 'AND' || selectedSource !== 'all'
-                      ? GOLD_ACCENT
-                      : '#FFFFFF'
-                  }
-                />
-                {(mediaTypeFilter !== 'all' || ratingFilter !== 'all' || sortBy !== 'fav_date' || tagMatchMode !== 'AND' || selectedSource !== 'all') && (
-                  <View style={styles.filterActiveDot} />
-                )}
-              </TouchableOpacity>
-            )}
+            <TouchableOpacity
+              style={[
+                styles.filterToggleBtn,
+                (mediaTypeFilter !== 'all' || ratingFilter !== 'all' || sortBy !== 'fav_date' || tagMatchMode !== 'AND' || selectedSource !== 'all') &&
+                  styles.filterToggleBtnActive,
+              ]}
+              onPress={() => {
+                Haptics.selectionAsync();
+                setShowFilterSheet(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <SlidersHorizontal
+                size={18}
+                color={
+                  mediaTypeFilter !== 'all' || ratingFilter !== 'all' || sortBy !== 'fav_date' || tagMatchMode !== 'AND' || selectedSource !== 'all'
+                    ? GOLD_ACCENT
+                    : '#FFFFFF'
+                }
+              />
+              {(mediaTypeFilter !== 'all' || ratingFilter !== 'all' || sortBy !== 'fav_date' || tagMatchMode !== 'AND' || selectedSource !== 'all') && (
+                <View style={styles.filterActiveDot} />
+              )}
+            </TouchableOpacity>
           </View>
 
           {/* Otomatik Tamamlama / Öneri Listesi (Dropdown Overlay) */}
-        {activeSegment === 'posts' && isInputFocused && suggestions.length > 0 && (
-          <View style={styles.suggestionsDropdown}>
-            <View style={styles.suggestionsHeader}>
-              <Sparkles size={13} color={GOLD_ACCENT} />
-              <Text style={styles.suggestionsHeaderText}>
-                Favorilerdeki Eşleşen Etiketler ({suggestions.length})
-              </Text>
+          {isInputFocused && suggestions.length > 0 && (
+            <View style={styles.suggestionsDropdown}>
+              <View style={styles.suggestionsHeader}>
+                <Sparkles size={13} color={GOLD_ACCENT} />
+                <Text style={styles.suggestionsHeaderText}>
+                  Favorilerdeki Eşleşen Etiketler ({suggestions.length})
+                </Text>
+              </View>
+              <ScrollView
+                style={styles.suggestionsScroll}
+                keyboardShouldPersistTaps="handled"
+                nestedScrollEnabled
+              >
+                {suggestions.map((item, idx) => {
+                  const categoryColor = TagColors[item.category] || TagColors.general;
+                  return (
+                    <TouchableOpacity
+                      key={`fav-sug-${item.name}-${idx}`}
+                      style={styles.suggestionRow}
+                      activeOpacity={0.7}
+                      onPress={() => handleAddSelectedTag(item.name)}
+                    >
+                      <View style={styles.suggestionLeft}>
+                        <Tag size={13} color={categoryColor.text} />
+                        <Text
+                          style={[styles.suggestionText, { color: categoryColor.text }]}
+                          numberOfLines={1}
+                        >
+                          {item.name.replace(/_/g, ' ')}
+                        </Text>
+                      </View>
+                      <View style={styles.suggestionBadge}>
+                        <Text style={styles.suggestionBadgeText}>
+                          {item.count} görsel
+                        </Text>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
             </View>
-            <ScrollView
-              style={styles.suggestionsScroll}
-              keyboardShouldPersistTaps="handled"
-              nestedScrollEnabled
-            >
-              {suggestions.map((item, idx) => {
-                const categoryColor = TagColors[item.category] || TagColors.general;
-                return (
-                  <TouchableOpacity
-                    key={`fav-sug-${item.name}-${idx}`}
-                    style={styles.suggestionRow}
-                    activeOpacity={0.7}
-                    onPress={() => handleAddSelectedTag(item.name)}
-                  >
-                    <View style={styles.suggestionLeft}>
-                      <Tag size={13} color={categoryColor.text} />
-                      <Text
-                        style={[styles.suggestionText, { color: categoryColor.text }]}
-                        numberOfLines={1}
-                      >
-                        {item.name.replace(/_/g, ' ')}
-                      </Text>
-                    </View>
-                    <View style={styles.suggestionBadge}>
-                      <Text style={styles.suggestionBadgeText}>
-                        {item.count} görsel
-                      </Text>
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-          </View>
-        )}
-      </View>
+          )}
+        </View>
+      )}
 
       {/* Seçilen Etiketler / Çip Listesi (Selected Tags Chips) */}
       {activeSegment === 'posts' && (selectedTags.length > 0 || tagMatchMode === 'OR') && (
@@ -792,6 +907,43 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             </View>
           </ScrollView>
         )
+      ) : activeSegment === 'history' ? (
+        /* RECENT VIEWS VIRTUALIZED FLATLIST GRID */
+        recentViews.length === 0 ? (
+          <View style={styles.centerContainer}>
+            <View style={styles.emptyIconCircle}>
+              <Clock size={38} color={Colors.dark.textMuted} />
+            </View>
+            <Text style={styles.emptyTitle}>Görüntüleme Geçmişi Boş</Text>
+            <Text style={styles.emptyText}>
+              Görüntülediğiniz gönderiler otomatik olarak burada listelenir.
+            </Text>
+          </View>
+        ) : (
+          <FlatList
+            style={styles.scrollView}
+            data={visibleRecentViews}
+            keyExtractor={historyKeyExtractor}
+            numColumns={2}
+            columnWrapperStyle={styles.columnWrapper}
+            contentContainerStyle={styles.scrollContent}
+            renderItem={renderHistoryItem}
+            initialNumToRender={8}
+            maxToRenderPerBatch={8}
+            windowSize={5}
+            removeClippedSubviews={Platform.OS === 'android'}
+            onEndReached={handleLoadMoreHistory}
+            onEndReachedThreshold={0.5}
+            keyboardShouldPersistTaps="handled"
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                tintColor={Colors.dark.primary}
+              />
+            }
+          />
+        )
       ) : (
         /* FAVORITE POSTS MASONRY GRID */
         favorites.length === 0 ? (
@@ -853,6 +1005,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                     key={`fav-left-${post.id}-${index}`}
                     post={post}
                     onPress={handleCardPress}
+                    showFavoriteBadge={false}
                   />
                 ))}
               </View>
@@ -862,6 +1015,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                     key={`fav-right-${post.id}-${index}`}
                     post={post}
                     onPress={handleCardPress}
+                    showFavoriteBadge={false}
                   />
                 ))}
               </View>
@@ -1120,6 +1274,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  clearHeaderBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    backgroundColor: 'rgba(255, 77, 79, 0.12)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 77, 79, 0.25)',
+  },
+  clearHeaderBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FF6B6B',
+  },
   segmentWrapper: {
     paddingHorizontal: 16,
     paddingVertical: 8,
@@ -1165,6 +1335,9 @@ const styles = StyleSheet.create({
   },
   gridContainer: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  columnWrapper: {
     justifyContent: 'space-between',
   },
   column: {

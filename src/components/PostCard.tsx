@@ -1,6 +1,7 @@
 import React from 'react';
 import { Dimensions, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Image } from 'expo-image';
+import { Heart } from 'lucide-react-native';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isUnsupportedOnIOS } from '../utils/media';
@@ -11,64 +12,96 @@ const COLUMN_WIDTH = (SCREEN_WIDTH - 36) / 2;
 interface PostCardProps {
   post: BooruPost;
   onPress: (post: BooruPost) => void;
+  showFavoriteBadge?: boolean;
+  /** Üst ekran fav ID setini verdiyse kart storage'a sormaz — anında rozet, çökme yok */
+  favoriteIds?: Set<string>;
 }
 
-export const PostCard: React.FC<PostCardProps> = ({ post, onPress }) => {
+const getRatingColor = (rating: string | undefined) => {
+  switch (rating?.toLowerCase()) {
+    case 's':
+    case 'g':
+      return Colors.dark.safe;
+    case 'q':
+      return Colors.dark.warning;
+    case 'e':
+      return Colors.dark.danger;
+    default:
+      return Colors.dark.textMuted;
+  }
+};
+
+// Priority: previewUrl first to ensure safe image thumbnail (no webm passed to expo-image on iOS)
+const isCandidateSafe = (u: string | undefined) => {
+  if (!u) return false;
+  if (Platform.OS === 'ios' && isUnsupportedOnIOS(u)) return false;
+  return true;
+};
+
+const PostCardComponent: React.FC<PostCardProps> = ({
+  post,
+  onPress,
+  showFavoriteBadge = true,
+  favoriteIds,
+}) => {
   // Clamp aspect ratio between 0.6 and 1.4 for balanced masonry presentation
   const safeAspectRatio = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75));
   const cardHeight = COLUMN_WIDTH / safeAspectRatio;
 
-  const getRatingColor = (rating: string) => {
-    switch (rating?.toLowerCase()) {
-      case 's':
-      case 'g':
-        return Colors.dark.safe;
-      case 'q':
-        return Colors.dark.warning;
-      case 'e':
-        return Colors.dark.danger;
-      default:
-        return Colors.dark.textMuted;
-    }
-  };
+  const isWebm = React.useMemo(
+    () =>
+      post.fileExt?.toLowerCase() === 'webm' ||
+      Boolean(post.originalUrl && post.originalUrl.split('?')[0].toLowerCase().endsWith('.webm')) ||
+      Boolean(post.sampleUrl && post.sampleUrl.split('?')[0].toLowerCase().endsWith('.webm')),
+    [post.fileExt, post.originalUrl, post.sampleUrl]
+  );
 
-  const isWebm =
-    post.fileExt?.toLowerCase() === 'webm' ||
-    Boolean(post.originalUrl && post.originalUrl.split('?')[0].toLowerCase().endsWith('.webm')) ||
-    Boolean(post.sampleUrl && post.sampleUrl.split('?')[0].toLowerCase().endsWith('.webm'));
+  // Grid strictly uses preview thumbnail; full is exclusively owned by the viewer
+  const primaryRaw = React.useMemo(
+    () =>
+      (isCandidateSafe(post.previewUrl) ? post.previewUrl : undefined) ||
+      (isCandidateSafe(post.sampleUrl) ? post.sampleUrl : undefined) ||
+      post.previewUrl ||
+      '',
+    [post.previewUrl, post.sampleUrl]
+  );
 
-  // Priority: previewUrl first to ensure safe image thumbnail (no webm passed to expo-image on iOS)
-  const isCandidateSafe = (u: string | undefined) => {
-    if (!u) return false;
-    if (Platform.OS === 'ios' && isUnsupportedOnIOS(u)) return false;
-    return true;
-  };
+  const fallbackRaw = React.useMemo(
+    () =>
+      (primaryRaw !== post.sampleUrl && isCandidateSafe(post.sampleUrl) ? post.sampleUrl : undefined) ||
+      '',
+    [primaryRaw, post.sampleUrl]
+  );
 
-  const primaryRaw =
-    (isCandidateSafe(post.previewUrl) ? post.previewUrl : undefined) ||
-    (isCandidateSafe(post.sampleUrl) ? post.sampleUrl : undefined) ||
-    (isCandidateSafe(post.originalUrl) ? post.originalUrl : undefined) ||
-    post.previewUrl ||
-    '';
-
-  const fallbackRaw =
-    (primaryRaw !== post.sampleUrl && isCandidateSafe(post.sampleUrl) ? post.sampleUrl : undefined) ||
-    (primaryRaw !== post.previewUrl && isCandidateSafe(post.previewUrl) ? post.previewUrl : undefined) ||
-    '';
-
-  const [currentUri, setCurrentUri] = React.useState<string>(getMediaUrl(primaryRaw));
+  const initialUri = React.useMemo(() => getMediaUrl(primaryRaw), [primaryRaw]);
+  const [currentUri, setCurrentUri] = React.useState<string>(initialUri);
 
   React.useEffect(() => {
     setCurrentUri(getMediaUrl(primaryRaw));
   }, [primaryRaw]);
 
-  const handleImageError = () => {
+  const handleImageError = React.useCallback(() => {
     if (!fallbackRaw) return;
     const fallbackUrl = getMediaUrl(fallbackRaw);
     if (fallbackUrl && fallbackUrl !== currentUri) {
       setCurrentUri(fallbackUrl);
     }
-  };
+  }, [fallbackRaw, currentUri]);
+
+  const imageSource = React.useMemo(() => {
+    if (!currentUri) return undefined;
+    return {
+      uri: currentUri,
+      headers: getMediaHeaders(currentUri),
+      cacheKey: `${currentUri}:grid`,
+    };
+  }, [currentUri]);
+
+  // isFav kartın kendi storage okuması YOK: üst ekran favoriteIds setinden senkron gelir.
+  // Set yoksa rozet kapalı sayılır (gecikmeli/tekil okuma çökme ve gecikme yapıyordu).
+  const isFav = showFavoriteBadge && !!favoriteIds && favoriteIds.has(post.id);
+
+  const ratingColor = React.useMemo(() => getRatingColor(post.rating), [post.rating]);
 
   return (
     <TouchableOpacity
@@ -77,16 +110,14 @@ export const PostCard: React.FC<PostCardProps> = ({ post, onPress }) => {
       style={[styles.container, { width: COLUMN_WIDTH, height: cardHeight }]}
     >
       <Image
-        source={{
-          uri: currentUri,
-          headers: getMediaHeaders(currentUri),
-        }}
+        source={imageSource}
         style={styles.image}
         contentFit="cover"
         recyclingKey={post.id}
-        priority="normal"
-        transition={120}
+        priority="low"
+        transition={100}
         cachePolicy="memory-disk"
+        allowDownscaling={true}
         onError={handleImageError}
       />
 
@@ -98,7 +129,7 @@ export const PostCard: React.FC<PostCardProps> = ({ post, onPress }) => {
           <View
             style={[
               styles.ratingBadge,
-              { backgroundColor: getRatingColor(post.rating) },
+              { backgroundColor: ratingColor },
             ]}
           >
             <Text style={styles.ratingText}>
@@ -124,9 +155,39 @@ export const PostCard: React.FC<PostCardProps> = ({ post, onPress }) => {
           <Text style={styles.mediaBadgeText}>{post.fileExt.toUpperCase()}</Text>
         </View>
       ) : null}
+
+      {/* Favorite badge (top-left heart) */}
+      {isFav && (
+        <View style={styles.favBadge} pointerEvents="none">
+          <Heart size={13} color="#FFFFFF" fill="#FF4D4F" />
+        </View>
+      )}
     </TouchableOpacity>
   );
 };
+
+export const PostCard = React.memo<PostCardProps>(
+  PostCardComponent,
+  (prevProps, nextProps) => {
+    if (prevProps.post.id !== nextProps.post.id) return false;
+    if (prevProps.post !== nextProps.post) return false;
+    if (prevProps.showFavoriteBadge !== nextProps.showFavoriteBadge) return false;
+    if (prevProps.onPress !== nextProps.onPress) return false;
+
+    const prevFav =
+      (prevProps.showFavoriteBadge ?? true) &&
+      !!prevProps.favoriteIds &&
+      prevProps.favoriteIds.has(prevProps.post.id);
+    const nextFav =
+      (nextProps.showFavoriteBadge ?? true) &&
+      !!nextProps.favoriteIds &&
+      nextProps.favoriteIds.has(nextProps.post.id);
+
+    if (prevFav !== nextFav) return false;
+
+    return true;
+  }
+);
 
 const styles = StyleSheet.create({
   container: {
@@ -198,5 +259,16 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 9,
     fontWeight: '800',
+  },
+  favBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });

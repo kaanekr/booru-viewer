@@ -18,6 +18,7 @@ import {
   Search,
   ChevronRight,
   Check,
+  ShieldCheck,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import {
@@ -32,6 +33,8 @@ import {
   DEFAULT_FILTER_CONFIG,
 } from '../types/booru';
 import { booruApi } from '../services/booruApi';
+import { AVAILABLE_SOURCES } from '../services/sources';
+import { useSource } from '../context/SourceContext';
 import { TagChip } from './TagChip';
 import { Colors } from '../theme/colors';
 
@@ -93,8 +96,6 @@ const MIN_SCORE_OPTIONS: { label: string; value: number | undefined }[] = [
   { label: '500+ Puan', value: 500 },
 ];
 
-const PAGE_OPTIONS = [1, 2, 3, 5, 10, 20, 50, 100];
-
 function getHistoricalDateOptions(): { label: string; value: string | undefined }[] {
   const now = new Date();
   const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
@@ -138,11 +139,13 @@ interface SearchFilterModalProps {
 export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
   visible,
   filterConfig,
-  activeSource,
+  activeSource: propSource,
   onClose,
   onApply,
 }) => {
   const insets = useSafeAreaInsets();
+  const { activeSource: contextSource, selectSource } = useSource();
+  const activeSource = contextSource ?? propSource;
   const [draft, setDraft] = useState<SearchFilterConfig>(filterConfig);
   const [tagInput, setTagInput] = useState('');
   const [suggestions, setSuggestions] = useState<BooruTagSuggestion[]>([]);
@@ -156,7 +159,9 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
   const [showCumstServicePicker, setShowCumstServicePicker] = useState(false);
   const [showCumstMediaPicker, setShowCumstMediaPicker] = useState(false);
   const [showDateAnchorPicker, setShowDateAnchorPicker] = useState(false);
+  const [isSourceListOpen, setIsSourceListOpen] = useState(false);
   const [customDateText, setCustomDateText] = useState('');
+  const [pageInputText, setPageInputText] = useState('');
 
   // Sync draft when modal opens
   useEffect(() => {
@@ -164,6 +169,8 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
       setDraft({ ...filterConfig });
       setTagInput('');
       setSuggestions([]);
+      setIsSourceListOpen(false);
+      setPageInputText(filterConfig.jumpToPage > 1 ? String(filterConfig.jumpToPage) : '');
     }
   }, [visible, filterConfig]);
 
@@ -211,7 +218,18 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
       autocompleteFromServer: draft.autocompleteFromServer,
     });
     setTagInput('');
+    setPageInputText('');
     setSuggestions([]);
+  };
+
+  const confirmPageInput = () => {
+    const rawDigits = pageInputText.replace(/[^0-9]/g, '');
+    const n = parseInt(rawDigits, 10);
+    Haptics.selectionAsync();
+    const resolvedPage = Number.isFinite(n) && n > 0 ? Math.min(n, 9999) : 1;
+    setDraft((prev) => ({ ...prev, jumpToPage: resolvedPage }));
+    setPageInputText(resolvedPage > 1 ? String(resolvedPage) : '');
+    setShowPagePicker(false);
   };
 
   const handleApplySearch = () => {
@@ -227,6 +245,13 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
         if (!finalDraft.tags.includes(extraTag)) {
           finalDraft.tags = [...finalDraft.tags, extraTag];
         }
+      }
+    }
+    // Emniyet: Kullanıcı sayfaya git popup'ında sayı yazıp doğrudan Uygula'ya basarsa
+    if (pageInputText.trim()) {
+      const n = parseInt(pageInputText.replace(/[^0-9]/g, ''), 10);
+      if (Number.isFinite(n) && n > 0) {
+        finalDraft.jumpToPage = Math.min(n, 9999);
       }
     }
     onApply(finalDraft);
@@ -382,25 +407,71 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
           {/* Server Section */}
           <View style={styles.sectionContainer}>
             <Text style={styles.sectionHeader}>Server</Text>
-            <View style={styles.card}>
-              <View style={styles.serverInfoRow}>
-                <Text style={styles.serverUrlText} numberOfLines={1}>
-                  {activeSource.baseUrl}
-                </Text>
-                <Text style={styles.serverDetailsText}>
-                  Filter:{' '}
-                  {draft.rating === 'all'
-                    ? 'Disabled'
-                    : draft.rating.charAt(0).toUpperCase() + draft.rating.slice(1)}{' '}
-                  Type:{activeSource.name} Type:{activeSource.type} Logged in:Yes
-                </Text>
-              </View>
+            <View style={styles.cardGroup}>
               <TouchableOpacity
-                style={styles.addToSearchBtn}
-                onPress={() => handleAddTag(activeSource.name.toLowerCase())}
+                style={styles.rowItem}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  setIsSourceListOpen((v) => !v);
+                }}
+                activeOpacity={0.7}
               >
-                <Text style={styles.addToSearchText}>Add to Search</Text>
+                <View style={styles.sourceInfo}>
+                  <Text style={styles.rowLabel}>Kaynak: {activeSource.name}</Text>
+                  <Text style={styles.serverUrlText} numberOfLines={1}>
+                    {activeSource.baseUrl}
+                  </Text>
+                </View>
+                <View style={styles.rowRight}>
+                  <ChevronRight size={18} color={Colors.dark.textMuted} />
+                </View>
               </TouchableOpacity>
+
+              {isSourceListOpen && (
+                <>
+                  <View style={styles.rowDivider} />
+                  {AVAILABLE_SOURCES.map((source, index) => {
+                    const isSelected = activeSource.id === source.id;
+                    return (
+                      <React.Fragment key={source.id}>
+                        <TouchableOpacity
+                          style={[
+                            styles.sourceRow,
+                            isSelected && styles.sourceRowSelected,
+                          ]}
+                          onPress={() => {
+                            Haptics.selectionAsync();
+                            selectSource(source);
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <View style={styles.sourceInfo}>
+                            <View style={styles.sourceNameRow}>
+                              <Text style={styles.sourceName}>{source.name}</Text>
+                              {source.isSafeOnly && (
+                                <View style={styles.safeBadge}>
+                                  <ShieldCheck size={12} color={Colors.dark.safe} />
+                                  <Text style={styles.safeBadgeText}>SFW</Text>
+                                </View>
+                              )}
+                            </View>
+                            <Text style={styles.sourceDesc} numberOfLines={1}>
+                              {source.description}
+                            </Text>
+                          </View>
+
+                          {isSelected && (
+                            <View style={styles.checkCircle}>
+                              <Check size={14} color="#FFFFFF" />
+                            </View>
+                          )}
+                        </TouchableOpacity>
+                        {index !== AVAILABLE_SOURCES.length - 1 && <View style={styles.rowDivider} />}
+                      </React.Fragment>
+                    );
+                  })}
+                </>
+              )}
             </View>
           </View>
 
@@ -411,7 +482,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
               {/* Jump to Page */}
               <TouchableOpacity
                 style={styles.rowItem}
-                onPress={() => setShowPagePicker(true)}
+                onPress={() => {
+                  setPageInputText(draft.jumpToPage > 1 ? String(draft.jumpToPage) : '');
+                  setShowPagePicker(true);
+                }}
                 activeOpacity={0.7}
               >
                 <Text style={styles.rowLabel}>Jump to Page</Text>
@@ -788,37 +862,44 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
           visible={showPagePicker}
           transparent
           animationType="fade"
-          onRequestClose={() => setShowPagePicker(false)}
+          onRequestClose={confirmPageInput}
         >
-          <TouchableWithoutFeedback onPress={() => setShowPagePicker(false)}>
+          <TouchableWithoutFeedback onPress={confirmPageInput}>
             <View style={styles.modalOverlay}>
               <TouchableWithoutFeedback>
                 <View style={styles.popoverCard}>
                   <Text style={styles.popoverTitle}>Sayfaya Git</Text>
-                  <View style={styles.popoverList}>
-                    {PAGE_OPTIONS.map((p) => {
-                      const isSelected = draft.jumpToPage === p;
-                      return (
-                        <TouchableOpacity
-                          key={p}
-                          style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
-                          onPress={() => {
-                            Haptics.selectionAsync();
-                            setDraft((prev) => ({ ...prev, jumpToPage: p }));
-                            setShowPagePicker(false);
-                          }}
-                        >
-                          <Text
-                            style={[
-                              styles.popoverItemText,
-                              isSelected && styles.popoverItemTextSelected,
-                            ]}
-                          >
-                            Sayfa {p}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
+                  <TextInput
+                    style={styles.pageInput}
+                    placeholder={`Sayfa numarası (şu an: ${draft.jumpToPage})`}
+                    placeholderTextColor={Colors.dark.textMuted}
+                    value={pageInputText}
+                    onChangeText={setPageInputText}
+                    keyboardType="number-pad"
+                    returnKeyType="done"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    selectTextOnFocus
+                    onSubmitEditing={confirmPageInput}
+                  />
+                  <View style={styles.pageBtnRow}>
+                    <TouchableOpacity
+                      style={[styles.popoverItem, styles.pageConfirmBtn]}
+                      onPress={confirmPageInput}
+                    >
+                      <Text style={[styles.popoverItemText, styles.popoverItemTextSelected]}>Git</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.popoverItem}
+                      onPress={() => {
+                        Haptics.selectionAsync();
+                        setDraft((prev) => ({ ...prev, jumpToPage: 1 }));
+                        setPageInputText('');
+                        setShowPagePicker(false);
+                      }}
+                    >
+                      <Text style={styles.popoverItemText}>Sıfırla (1)</Text>
+                    </TouchableOpacity>
                   </View>
                 </View>
               </TouchableWithoutFeedback>
@@ -1144,28 +1225,83 @@ const styles = StyleSheet.create({
     borderColor: '#2A2E38',
     padding: 16,
   },
-  serverInfoRow: {
+  serverInfoBox: {
+    padding: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+  },
+  activeSourceHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 4,
+  },
+  activeSourceLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#8E92A4',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  activeSourceNameText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: GOLD_ACCENT,
   },
   serverUrlText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#FFFFFF',
-    marginBottom: 4,
-  },
-  serverDetailsText: {
-    fontSize: 11,
-    color: '#7E8494',
-    lineHeight: 16,
-  },
-  addToSearchBtn: {
-    alignSelf: 'flex-end',
-    marginTop: 10,
-  },
-  addToSearchText: {
-    color: GOLD_ACCENT,
     fontSize: 13,
+    fontWeight: '500',
+    color: '#CBD5E1',
+  },
+  sourceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 13,
+  },
+  sourceRowSelected: {
+    backgroundColor: 'rgba(108, 99, 255, 0.08)',
+  },
+  sourceInfo: {
+    flex: 1,
+    marginRight: 12,
+  },
+  sourceNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 2,
+  },
+  sourceName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  safeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(81, 207, 102, 0.12)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  safeBadgeText: {
+    fontSize: 10,
     fontWeight: '700',
+    color: Colors.dark.safe,
+  },
+  sourceDesc: {
+    fontSize: 12,
+    color: '#7E8494',
+  },
+  checkCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: Colors.dark.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   cardGroup: {
     backgroundColor: '#1A1C22',
@@ -1268,5 +1404,26 @@ const styles = StyleSheet.create({
   popoverItemTextSelected: {
     color: '#111216',
     fontWeight: '700',
+  },
+  pageInput: {
+    backgroundColor: '#30343E',
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '600',
+    textAlign: 'center',
+    borderWidth: 1,
+    borderColor: '#454B5A',
+  },
+  pageBtnRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 10,
+  },
+  pageConfirmBtn: {
+    flex: 1,
+    backgroundColor: GOLD_ACCENT,
   },
 });

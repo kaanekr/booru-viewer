@@ -26,11 +26,13 @@ import {
   Star,
   Pin,
   Layers,
+  AlertCircle,
+  RefreshCw,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { booruApi } from '../services/booruApi';
-import { useNavigation, type RouteProp } from '@react-navigation/native';
+import { useNavigation, type RouteProp, useIsFocused } from '@react-navigation/native';
 import {
   BooruPost,
   BooruSource,
@@ -108,10 +110,28 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const isFocused = useIsFocused();
+
+  // Kapağa dönünce fav setini tazele — viewer'da favlanan anında rozetlenir
+  useEffect(() => {
+    if (isFocused) {
+      StorageService.getFavorites().then((favs) => {
+        setFavoriteIds(new Set(favs.map((p) => p.id)));
+      });
+    }
+  }, [isFocused]);
 
   // Source Tracking & Race Condition Prevention Refs
   const lastActiveSourceIdRef = useRef(activeSource.id);
   const searchRequestIdRef = useRef(0);
+  const currentPageRef = useRef<number>(1);
+  const filterConfigRef = useRef<SearchFilterConfig>(filterConfig);
+
+  useEffect(() => {
+    filterConfigRef.current = filterConfig;
+  }, [filterConfig]);
 
   const routeParams = route?.params;
   const effectiveTag = initialTag ?? routeParams?.tag;
@@ -154,6 +174,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         setQuery(initialFilter.tags.join(' '));
       }
       executeSearchWithConfig(initialFilter);
+      if (onClearInitialTag) {
+        onClearInitialTag();
+      }
     } else if (effectiveTag) {
       executeSearch(effectiveTag, effectiveMode);
       if (onClearInitialTag) {
@@ -220,12 +243,17 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     setSuggestions([]);
     setIsSearchActive(true);
     setLoading(true);
+    setSearchError(null);
+    setResults([]);
 
     const requestId = ++searchRequestIdRef.current;
     const expectedSourceId = activeSource.id;
 
-    const startPage = config.jumpToPage > 1 ? config.jumpToPage : 1;
+    const startPage = Math.max(1, config.jumpToPage || 1);
     setPage(startPage);
+    currentPageRef.current = startPage;
+    filterConfigRef.current = config;
+    setFilterConfig(config);
 
     // Save full query to history (multi-tag searches stay as one bubble)
     if (config.tags.length > 0) {
@@ -233,8 +261,16 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       StorageService.getSearchHistory().then(setHistory);
     }
 
+    // Sabit sayfa limiti: jumpToPage > 1'de rate limit koruması ve derin sayfa için 100 gönderi çekilir (Doküman default 100)
+    const effectiveLimit = config.jumpToPage > 1 ? 100 : (activeSource.type === 'cumst' ? 50 : 24);
+
+    // Atlamalı aramada scroll'u başa al — kullanıcı eski listenin dibinde kalmasın
     try {
-      const posts = await booruApi.fetchPostsWithFilter(config, startPage, 24);
+      resultsScrollRef.current?.scrollTo({ y: 0, animated: false });
+    } catch {}
+
+    try {
+      const posts = await booruApi.fetchPostsWithFilter(config, startPage, effectiveLimit);
       // Guard: Ignore response if source changed or newer search request was triggered
       if (requestId !== searchRequestIdRef.current || expectedSourceId !== lastActiveSourceIdRef.current) {
         return;
@@ -245,12 +281,13 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         if (u) Image.prefetch(u, { headers: getMediaHeaders(u) });
       });
       setResults(posts);
-    } catch (e) {
+    } catch (e: any) {
       if (requestId !== searchRequestIdRef.current || expectedSourceId !== lastActiveSourceIdRef.current) {
         return;
       }
       console.warn('Search with config error:', e);
       setResults([]);
+      setSearchError(e?.message || 'Arama sonuçları getirilirken bir hata oluştu.');
     } finally {
       if (requestId === searchRequestIdRef.current && expectedSourceId === lastActiveSourceIdRef.current) {
         setLoading(false);
@@ -275,11 +312,11 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     setSuggestions([]);
 
     const incomingTags = parseQueryToTags(tagOrQuery);
-    if (incomingTags.length === 0) return;
 
     let updatedTags: string[];
 
     if (mode === 'add') {
+      // Boş sorguda eklenecek bir şey yok ama mevcut filtreyle yine de ara
       const currentTags = filterConfig.tags || [];
       const newToAdd = incomingTags.filter((t) => !currentTags.includes(t));
       updatedTags = [...currentTags, ...newToAdd];
@@ -308,6 +345,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const handleApplyFilterModal = (newConfig: SearchFilterConfig) => {
     setIsFilterModalOpen(false);
     setFilterConfig(newConfig);
+    filterConfigRef.current = newConfig;
     if (newConfig.tags.length > 0) {
       setQuery(newConfig.tags.join(' '));
     }
@@ -320,11 +358,16 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     const expectedSourceId = activeSource.id;
 
     setLoadingMore(true);
-    const nextPage = page + 1;
+    const activeConfig = filterConfigRef.current || filterConfig;
+    const currentBase = currentPageRef.current || page;
+    const nextPage = currentBase + 1;
     setPage(nextPage);
+    currentPageRef.current = nextPage;
+
+    const effectiveLimit = activeConfig.jumpToPage > 1 ? 100 : (activeSource.type === 'cumst' ? 50 : 24);
 
     try {
-      const newPosts = await booruApi.fetchPostsWithFilter(filterConfig, nextPage, 24);
+      const newPosts = await booruApi.fetchPostsWithFilter(activeConfig, nextPage, effectiveLimit);
       if (requestId !== searchRequestIdRef.current || expectedSourceId !== lastActiveSourceIdRef.current) {
         return;
       }
@@ -333,15 +376,30 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         const u = p.previewUrl || p.sampleUrl;
         if (u) Image.prefetch(u, { headers: getMediaHeaders(u) });
       });
+      // Atlamalı sayfa boş dönerse (limit dışı) sayacı geri al, loader takılmasın
+      if (newPosts.length === 0) {
+        setPage(currentBase);
+        currentPageRef.current = currentBase;
+        return;
+      }
       setResults((prev) => {
         const existingIds = new Set(prev.map((p) => p.id));
         const unique = newPosts.filter((p) => !existingIds.has(p.id));
+        // API aynı sayfayı döndürdüyse sayacı geri al
+        if (unique.length === 0) {
+          setPage(currentBase);
+          currentPageRef.current = currentBase;
+          return prev;
+        }
         return [...prev, ...unique];
       });
     } catch (e) {
       if (requestId !== searchRequestIdRef.current || expectedSourceId !== lastActiveSourceIdRef.current) {
         return;
       }
+      // Hatalı sayfada sayacı geri al ki sonraki kaydırma aynı sayfayı denesin
+      setPage(currentBase);
+      currentPageRef.current = currentBase;
       console.warn('Load more search error:', e);
     } finally {
       if (requestId === searchRequestIdRef.current && expectedSourceId === lastActiveSourceIdRef.current) {
@@ -532,6 +590,19 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               </TouchableOpacity>
             )}
           </View>
+
+          {/* Search Submit Button */}
+          <TouchableOpacity
+            style={styles.searchButton}
+            onPress={() => {
+              setIsInputFocused(false);
+              setSuggestions([]);
+              executeSearch(query, 'replace');
+            }}
+            activeOpacity={0.7}
+          >
+            <Search size={18} color="#FFFFFF" />
+          </TouchableOpacity>
 
           {/* Filter Modal Trigger Button */}
           <TouchableOpacity
@@ -891,6 +962,23 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               <ActivityIndicator size="large" color={Colors.dark.primary} />
               <Text style={styles.loadingText}>Sonuçlar aranıyor...</Text>
             </View>
+          ) : searchError ? (
+            <View style={styles.centerContainer}>
+              <AlertCircle size={44} color={Colors.dark.danger} />
+              <Text style={styles.noResultsTitle}>Arama Hatası</Text>
+              <Text style={styles.noResultsText}>{searchError}</Text>
+              <TouchableOpacity
+                style={styles.retryButton}
+                onPress={() => {
+                  Haptics.selectionAsync();
+                  executeSearchWithConfig(filterConfig);
+                }}
+                activeOpacity={0.7}
+              >
+                <RefreshCw size={15} color="#FFFFFF" />
+                <Text style={styles.retryButtonText}>Tekrar Dene</Text>
+              </TouchableOpacity>
+            </View>
           ) : results.length === 0 ? (
             <View style={styles.centerContainer}>
               <ImageIcon size={48} color={Colors.dark.textMuted} />
@@ -951,6 +1039,13 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                         </Text>
                       </View>
                     )}
+                    {filterConfig.jumpToPage > 1 && (
+                      <View style={styles.smallFilterPill}>
+                        <Text style={styles.smallFilterPillText}>
+                          📄 Sayfa {filterConfig.jumpToPage}
+                        </Text>
+                      </View>
+                    )}
                   </View>
                 )}
               </View>
@@ -962,6 +1057,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                     <PostCard
                       key={`left-${post.id}-${index}`}
                       post={post}
+                      favoriteIds={favoriteIds}
                       onPress={(p) => {
                         const idx = results.findIndex((item) => item.id === p.id);
                         if (idx >= 0) {
@@ -976,6 +1072,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                     <PostCard
                       key={`right-${post.id}-${index}`}
                       post={post}
+                      favoriteIds={favoriteIds}
                       onPress={(p) => {
                         const idx = results.findIndex((item) => item.id === p.id);
                         if (idx >= 0) {
@@ -1140,6 +1237,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#292D3B',
     position: 'relative',
+  },
+  searchButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: Colors.dark.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   filterButtonActive: {
     borderColor: GOLD_ACCENT,
@@ -1317,6 +1422,21 @@ const styles = StyleSheet.create({
     color: Colors.dark.textMuted,
     textAlign: 'center',
     marginTop: 6,
+  },
+  retryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: Colors.dark.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
+    marginTop: 16,
+  },
+  retryButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
   },
   footerLoader: {
     flexDirection: 'row',

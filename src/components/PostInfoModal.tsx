@@ -28,7 +28,8 @@ import {
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 import { BooruPost, TagCategory } from '../types/booru';
-import { StorageService } from '../services/storage';
+import { StorageService, ImageQuality } from '../services/storage';
+import { resolveRealDimensions } from '../utils/media';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -40,6 +41,7 @@ interface PostInfoModalProps {
   onSearchTag: (tag: string) => void;
   onAddTagToSearch?: (tag: string) => void;
   onExcludeTagFromSearch?: (tag: string) => void;
+  onPreviewOriginal?: (post: BooruPost) => void;
 }
 
 interface TagItemData {
@@ -54,6 +56,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   onSearchTag,
   onAddTagToSearch,
   onExcludeTagFromSearch,
+  onPreviewOriginal,
 }) => {
   const insets = useSafeAreaInsets();
   const [selectedTag, setSelectedTag] = useState<TagItemData | null>(null);
@@ -68,6 +71,16 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
       StorageService.isBlacklistedTag(selectedTag.name).then(setIsTagBlacklisted);
     }
   }, [selectedTag]);
+
+  // Hangi kalite modunun şu an ekrandaki görüntüye karşılık geldiğini göster:
+  // viewer kalite ayarını oku (Normal = sample, Original = full)
+  const [viewQuality, setViewQuality] = useState<ImageQuality>('auto');
+
+  useEffect(() => {
+    if (visible) {
+      StorageService.getImageQuality().then(setViewQuality);
+    }
+  }, [visible]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -237,8 +250,50 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   // Resolution data
   const normalExt = post.sampleUrl ? post.sampleUrl.split('.').pop() || 'jpg' : 'jpg';
   const originalExt = post.fileExt || (post.originalUrl ? post.originalUrl.split('.').pop() || 'png' : 'png');
-  const sampleWidth = Math.round(post.width > 1200 ? post.width * 0.5 : post.width);
-  const sampleHeight = Math.round(post.height > 1200 ? post.height * 0.5 : post.height);
+  const [resolvedDims, setResolvedDims] = useState<{ w: number; h: number } | null>(null);
+  const [resolvedBytes, setResolvedBytes] = useState<number | null>(null);
+
+  const currentW = resolvedDims?.w || post.width;
+  const currentH = resolvedDims?.h || post.height;
+  const sampleWidth = Math.round(currentW > 1200 ? currentW * 0.5 : currentW);
+  const sampleHeight = Math.round(currentH > 1200 ? currentH * 0.5 : currentH);
+
+  const formatBytes = (b: number | null | undefined): string | null => {
+    if (b === null || b === undefined || !Number.isFinite(b) || b <= 0) return null;
+    if (b >= 1024 * 1024) return `${(b / (1024 * 1024)).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(b / 1024))} KB`;
+  };
+
+  const handlePreviewOriginal = () => {
+    if (!onPreviewOriginal || !post) return;
+    Haptics.selectionAsync();
+    onClose();
+    onPreviewOriginal(post);
+  };
+
+  // Gerçek ölçüler: scrape 800x1000 placeholder bırakır, post sayfasından çöz
+  useEffect(() => {
+    if (!visible) return;
+    setResolvedDims(null);
+    setResolvedBytes(post.fileSize && post.fileSize > 0 ? post.fileSize : null);
+    const looksPlaceholder =
+      (post.width === 800 && post.height === 1000) ||
+      post.sourceId === 'gelbooru' ||
+      post.id?.startsWith('gelbooru_') ||
+      !post.width ||
+      !post.height ||
+      !post.fileSize;
+    if (!looksPlaceholder || !post.sourceLink) return;
+    let mounted = true;
+    resolveRealDimensions(post).then((dims) => {
+      if (!mounted) return;
+      if (dims) setResolvedDims(dims);
+      if (dims?.bytes && dims.bytes > 0) setResolvedBytes(dims.bytes);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, [post.id, visible]);
 
   // Dynamic menu positioning based on touch Y
   const MENU_CARD_HEIGHT = 350;
@@ -302,39 +357,46 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
             <Text style={styles.sectionTitle}>Post</Text>
 
             <View style={styles.sectionBody}>
-              {/* Normal (jpg) */}
+              {/* Normal (jpg) — aktif moddaysa sarı vurgu */}
               <TouchableOpacity
                 style={styles.postRowItem}
                 onPress={() => handleCopyText(post.sampleUrl || post.previewUrl, 'Normal Görsel URL')}
                 activeOpacity={0.7}
               >
                 <View style={styles.postRowLeft}>
-                  <Text style={styles.normalLabel}>Normal ({normalExt})</Text>
+                  <Text style={[styles.normalLabel, viewQuality === 'preview' && styles.activeModeLabel]}>
+                    Normal ({normalExt})
+                  </Text>
                   <Text style={styles.postRowSubtitle}>
                     {sampleWidth}px X {sampleHeight}px
                   </Text>
                 </View>
-                <View style={styles.yellowInfoBadge}>
-                  <InfoIcon size={13} color={GOLD_ACCENT} />
+                <View style={[styles.yellowInfoBadge, viewQuality === 'preview' && styles.yellowInfoBadgeActive]}>
+                  <InfoIcon size={13} color={viewQuality === 'preview' ? '#111216' : GOLD_ACCENT} />
                 </View>
               </TouchableOpacity>
 
               <View style={styles.rowDivider} />
 
-              {/* Original (png/jpg/mp4) */}
+              {/* Original (png/jpg/mp4) — dokununca uygulamada full önizleme, aktif moddaysa sarı vurgu */}
               <TouchableOpacity
                 style={styles.postRowItem}
-                onPress={() => handleCopyText(post.originalUrl || post.sampleUrl, 'Orijinal Görsel URL')}
+                onPress={handlePreviewOriginal}
                 activeOpacity={0.7}
               >
                 <View style={styles.postRowLeft}>
-                  <Text style={styles.originalLabel}>Original ({originalExt})</Text>
+                  <Text style={[styles.originalLabel, viewQuality === 'full' && styles.activeModeLabel]}>
+                    Original ({originalExt})
+                  </Text>
                   <Text style={styles.postRowSubtitle}>
-                    {post.width}px X {post.height}px
+                    {resolvedDims
+                      ? `${resolvedDims.w}px X ${resolvedDims.h}px`
+                      : `${post.width}px X ${post.height}px`}
+                    {formatBytes(resolvedBytes ?? post.fileSize) ? ` • ${formatBytes(resolvedBytes ?? post.fileSize)}` : ''}
                   </Text>
                 </View>
-                <View style={styles.yellowInfoBadge}>
-                  <InfoIcon size={13} color={GOLD_ACCENT} />
+                <View style={[styles.yellowInfoBadge, viewQuality === 'full' && styles.yellowInfoBadgeActive]}>
+                  <InfoIcon size={13} color={viewQuality === 'full' ? '#111216' : GOLD_ACCENT} />
                 </View>
               </TouchableOpacity>
 
@@ -674,7 +736,7 @@ const styles = StyleSheet.create({
   normalLabel: {
     fontSize: 14,
     fontWeight: '600',
-    color: GOLD_ACCENT,
+    color: '#FFFFFF',
     marginBottom: 2,
   },
   originalLabel: {
@@ -682,6 +744,10 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFFFFF',
     marginBottom: 2,
+  },
+  /** Görüntüleyicideki aktif kalite modunun satırı (Normal/Original) */
+  activeModeLabel: {
+    color: GOLD_ACCENT,
   },
   fieldLabel: {
     fontSize: 14,
@@ -702,6 +768,9 @@ const styles = StyleSheet.create({
     borderColor: GOLD_ACCENT,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  yellowInfoBadgeActive: {
+    backgroundColor: GOLD_ACCENT,
   },
   rowDivider: {
     height: StyleSheet.hairlineWidth,
