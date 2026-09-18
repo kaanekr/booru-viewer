@@ -17,22 +17,40 @@ import { booruApi } from '../services/booruApi';
 import { BooruPost, BooruSource } from '../types/booru';
 import { PostCard } from '../components/PostCard';
 import { pushViewer } from '../navigation/rootNavigation';
+import { useNavigation } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders } from '../utils/media';
+import { useSource } from '../context/SourceContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 interface FeedScreenProps {
+  navigation?: any;
   onSelectTag?: (tag: string, mode?: 'replace' | 'add' | 'exclude') => void;
-  activeSource: BooruSource;
+  activeSource?: BooruSource;
   onOpenSourcePicker?: () => void;
 }
 
 export const FeedScreen: React.FC<FeedScreenProps> = ({
+  navigation: propNavigation,
   onSelectTag,
-  activeSource,
+  activeSource: propSource,
   onOpenSourcePicker,
 }) => {
+  const hookNavigation = useNavigation<any>();
+  const navigation = propNavigation ?? hookNavigation;
+
+  const handleOpenSourcePicker = () => {
+    if (onOpenSourcePicker) {
+      onOpenSourcePicker();
+    } else if (navigation?.navigate) {
+      navigation.navigate('Settings');
+    }
+  };
+
+  const showSourcePicker = Boolean(onOpenSourcePicker) || Boolean(navigation?.navigate);
+  const { activeSource: contextSource } = useSource();
+  const activeSource = propSource ?? contextSource;
   const insets = useSafeAreaInsets();
   const [posts, setPosts] = useState<BooruPost[]>([]);
   const [page, setPage] = useState(1);
@@ -136,17 +154,22 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
     <View style={[styles.container, { paddingTop: insets.top }]}>
       {/* Top Header */}
       <View style={styles.header}>
-        <View>
+        <TouchableOpacity
+          activeOpacity={0.7}
+          onPress={() => {
+            scrollViewRef.current?.scrollTo({ y: 0, animated: true });
+          }}
+        >
           <Text style={styles.headerTitle}>Keşfet</Text>
           <Text style={styles.headerSubtitle}>En yeni anime ve çizimler</Text>
-        </View>
+        </TouchableOpacity>
 
-        {onOpenSourcePicker && (
+        {showSourcePicker && (
           <TouchableOpacity
             activeOpacity={0.8}
             onPress={() => {
               Haptics.selectionAsync();
-              onOpenSourcePicker();
+              handleOpenSourcePicker();
             }}
             style={styles.sourcePill}
           >
@@ -185,7 +208,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
               <Text style={styles.retryText}>Tekrar Dene</Text>
             </TouchableOpacity>
 
-            {onOpenSourcePicker && activeSource.id !== 'safebooru' && (
+            {showSourcePicker && activeSource.id !== 'safebooru' && (
               <TouchableOpacity
                 style={[
                   styles.retryButton,
@@ -197,7 +220,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                 ]}
                 onPress={() => {
                   Haptics.selectionAsync();
-                  onOpenSourcePicker();
+                  handleOpenSourcePicker();
                 }}
               >
                 <Layers size={16} color={Colors.dark.primaryLight} />

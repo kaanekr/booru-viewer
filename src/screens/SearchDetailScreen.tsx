@@ -1,7 +1,6 @@
 import React, { useMemo } from 'react';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../navigation/types';
-import { useSource } from '../context/SourceContext';
 import { SearchScreen } from './SearchScreen';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'SearchDetail'>;
@@ -11,7 +10,6 @@ type Props = NativeStackScreenProps<RootStackParamList, 'SearchDetail'>;
  * geri gidince bir önceki içeriğe (veya gride) dönülür. Sahte history yok.
  */
 export const SearchDetailScreen: React.FC<Props> = ({ route, navigation }) => {
-  const { activeSource } = useSource();
   const { tags, baseFilter } = route.params;
 
   const initialFilter = useMemo(() => {
@@ -23,8 +21,8 @@ export const SearchDetailScreen: React.FC<Props> = ({ route, navigation }) => {
       initialTag={tags.join(' ')}
       initialMode="replace"
       initialFilter={initialFilter}
-      activeSource={activeSource}
       onBackPress={() => navigation.goBack()}
     />
   );
 };
+

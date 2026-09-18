@@ -1,9 +1,17 @@
+import type { NavigatorScreenParams } from '@react-navigation/native';
 import type { BooruPost, SearchFilterConfig } from '../types/booru';
 
 export type SearchMode = 'replace' | 'add' | 'exclude';
 
+export type TabParamList = {
+  Feed: undefined;
+  Search: { tag?: string; mode?: SearchMode } | undefined;
+  Favorites: undefined;
+  Settings: undefined;
+};
+
 export type RootStackParamList = {
-  MainTabs: undefined;
+  MainTabs: NavigatorScreenParams<TabParamList> | undefined;
   Viewer: {
     postsKey: string;
     initialIndex: number;
@@ -14,13 +22,6 @@ export type RootStackParamList = {
     tags: string[];
     baseFilter?: SearchFilterConfig;
   };
-};
-
-export type TabParamList = {
-  Feed: undefined;
-  Search: undefined;
-  Favorites: undefined;
-  Settings: undefined;
 };
 
 // Re-export for convenience

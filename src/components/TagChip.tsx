@@ -45,6 +45,7 @@ export const TagChip: React.FC<TagChipProps> = ({
           size === 'sm' && styles.textSmall,
         ]}
         numberOfLines={1}
+        ellipsizeMode="tail"
       >
         {displayName}
       </Text>
@@ -69,6 +70,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     marginRight: 6,
     marginBottom: 6,
+    maxWidth: '100%',
   },
   chipSmall: {
     paddingHorizontal: 7,
@@ -78,10 +80,12 @@ const styles = StyleSheet.create({
   text: {
     fontSize: 13,
     fontWeight: '600',
+    flexShrink: 1,
   },
   textSmall: {
     fontSize: 11,
     fontWeight: '500',
+    flexShrink: 1,
   },
   countBadge: {
     marginLeft: 5,

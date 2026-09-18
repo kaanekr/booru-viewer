@@ -1,8 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
   StyleSheet,
-  Text,
-  TouchableOpacity,
   View,
   StatusBar as RNStatusBar,
   AppState,
@@ -13,10 +11,6 @@ import { StatusBar } from 'expo-status-bar';
 import { Compass, Search, Heart, SlidersHorizontal } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 
-import { BooruSource } from './src/types/booru';
-import { AVAILABLE_SOURCES, DEFAULT_SOURCE } from './src/services/sources';
-import { booruApi } from './src/services/booruApi';
-import { StorageService } from './src/services/storage';
 import { SecurityService } from './src/services/securityService';
 import { proxyService } from './src/services/proxyService';
 import { LockScreen } from './src/components/LockScreen';
@@ -24,9 +18,10 @@ import { Colors } from './src/theme/colors';
 
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { navigationRef } from './src/navigation/rootNavigation';
-import type { RootStackParamList } from './src/navigation/types';
-import { SourceProvider } from './src/context/SourceContext';
+import type { RootStackParamList, TabParamList } from './src/navigation/types';
+import { SourceProvider, useSource } from './src/context/SourceContext';
 import { ViewerScreen } from './src/screens/ViewerScreen';
 import { SearchDetailScreen } from './src/screens/SearchDetailScreen';
 
@@ -36,39 +31,101 @@ import { FavoritesScreen } from './src/screens/FavoritesScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 
 const RootStack = createNativeStackNavigator<RootStackParamList>();
-
-type TabType = 'feed' | 'search' | 'favorites' | 'settings';
+const Tab = createBottomTabNavigator<TabParamList>();
 
 export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      <MainApp />
+      <SourceProvider>
+        <MainApp />
+      </SourceProvider>
     </SafeAreaProvider>
   );
 }
 
+function MainTabsNavigator() {
+  const insets = useSafeAreaInsets();
+
+  return (
+    <Tab.Navigator
+      screenListeners={{
+        tabPress: () => {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        },
+      }}
+      screenOptions={{
+        headerShown: false,
+        tabBarActiveTintColor: Colors.dark.primaryLight,
+        tabBarInactiveTintColor: Colors.dark.textMuted,
+        tabBarStyle: {
+          backgroundColor: Colors.dark.tabBar,
+          borderTopWidth: 1,
+          borderTopColor: Colors.dark.divider,
+          paddingTop: 8,
+          paddingBottom: Math.max(insets.bottom, 10),
+          height: 56 + Math.max(insets.bottom, 10),
+        },
+        tabBarLabelStyle: {
+          fontSize: 11,
+          fontWeight: '600',
+        },
+      }}
+    >
+      <Tab.Screen
+        name="Feed"
+        component={FeedScreen}
+        options={{
+          tabBarLabel: 'Keşfet',
+          tabBarIcon: ({ color }) => <Compass size={22} color={color} />,
+        }}
+      />
+      <Tab.Screen
+        name="Search"
+        component={SearchScreen}
+        options={{
+          tabBarLabel: 'Arama',
+          tabBarIcon: ({ color }) => <Search size={22} color={color} />,
+        }}
+      />
+      <Tab.Screen
+        name="Favorites"
+        component={FavoritesScreen}
+        options={{
+          tabBarLabel: 'Favoriler',
+          tabBarActiveTintColor: '#FF4D4F',
+          tabBarIcon: ({ color, focused }) => (
+            <Heart
+              size={22}
+              color={color}
+              fill={focused ? '#FF4D4F' : 'transparent'}
+            />
+          ),
+        }}
+      />
+      <Tab.Screen
+        name="Settings"
+        component={SettingsScreen}
+        options={{
+          tabBarLabel: 'Ayarlar',
+          tabBarIcon: ({ color }) => <SlidersHorizontal size={22} color={color} />,
+        }}
+      />
+    </Tab.Navigator>
+  );
+}
+
 function MainApp() {
-  const [activeTab, setActiveTab] = useState<TabType>('feed');
-  const [activeSource, setActiveSource] = useState<BooruSource>(DEFAULT_SOURCE);
-  const [searchTarget, setSearchTarget] = useState<{
-    tag: string;
-    mode: 'replace' | 'add' | 'exclude';
-  } | undefined>(undefined);
-  const [isReady, setIsReady] = useState(false);
+  const { isReady: isSourceReady } = useSource();
+  const [isAppReady, setIsAppReady] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
 
-  // Initialize stored source, proxy & security lock synchronously before rendering
+  // Initialize proxy & security lock synchronously before rendering
   useEffect(() => {
     async function initApp() {
       try {
-        const [,, isPasscodeSet] = await Promise.all([
+        const [, isPasscodeSet] = await Promise.all([
           proxyService.init(),
-          StorageService.getActiveSourceId().then((savedId) => {
-            const found = AVAILABLE_SOURCES.find((s) => s.id === savedId) || DEFAULT_SOURCE;
-            setActiveSource(found);
-            booruApi.setSource(found);
-          }),
           SecurityService.isPasscodeEnabled(),
         ]);
 
@@ -76,7 +133,7 @@ function MainApp() {
           setIsLocked(true);
         }
       } finally {
-        setIsReady(true);
+        setIsAppReady(true);
       }
     }
     initApp();
@@ -98,26 +155,7 @@ function MainApp() {
     };
   }, []);
 
-  const handleSelectSource = async (source: BooruSource) => {
-    setActiveSource(source);
-    booruApi.setSource(source);
-    await StorageService.setActiveSourceId(source.id);
-  };
-
-  const handleNavigateToSearchWithTag = (
-    tag: string,
-    mode: 'replace' | 'add' | 'exclude' = 'replace'
-  ) => {
-    setSearchTarget({ tag, mode });
-    setActiveTab('search');
-  };
-
-  const handleTabPress = (tab: TabType) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setActiveTab(tab);
-  };
-
-  if (!isReady) {
+  if (!isSourceReady || !isAppReady) {
     return (
       <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
         <RNStatusBar barStyle="light-content" />
@@ -127,52 +165,38 @@ function MainApp() {
 
   return (
     <View style={styles.container}>
-      <SourceProvider initialSource={activeSource}>
-        <NavigationContainer ref={navigationRef}>
-          <RootStack.Navigator
-            screenOptions={{
+      <NavigationContainer ref={navigationRef}>
+        <RootStack.Navigator
+          screenOptions={{
+            headerShown: false,
+            animation: 'slide_from_right',
+            gestureEnabled: true,
+            contentStyle: { backgroundColor: Colors.dark.background },
+          }}
+        >
+          <RootStack.Screen name="MainTabs" component={MainTabsNavigator} />
+          <RootStack.Screen
+            name="Viewer"
+            component={ViewerScreen}
+            options={{
               headerShown: false,
               animation: 'slide_from_right',
               gestureEnabled: true,
-              contentStyle: { backgroundColor: Colors.dark.background },
+              fullScreenGestureEnabled: true,
             }}
-          >
-            <RootStack.Screen name="MainTabs">
-              {() => (
-                <MainTabsView
-                  activeTab={activeTab}
-                  activeSource={activeSource}
-                  searchTarget={searchTarget}
-                  onTabPress={handleTabPress}
-                  onSelectTag={handleNavigateToSearchWithTag}
-                  onClearSearchTarget={() => setSearchTarget(undefined)}
-                  onSelectSource={handleSelectSource}
-                />
-              )}
-            </RootStack.Screen>
-            <RootStack.Screen
-              name="Viewer"
-              component={ViewerScreen}
-              options={{
-                headerShown: false,
-                animation: 'slide_from_right',
-                gestureEnabled: true,
-                fullScreenGestureEnabled: true,
-              }}
-            />
-            <RootStack.Screen
-              name="SearchDetail"
-              component={SearchDetailScreen}
-              options={{
-                headerShown: false,
-                animation: 'slide_from_right',
-                gestureEnabled: true,
-                fullScreenGestureEnabled: true,
-              }}
-            />
-          </RootStack.Navigator>
-        </NavigationContainer>
-      </SourceProvider>
+          />
+          <RootStack.Screen
+            name="SearchDetail"
+            component={SearchDetailScreen}
+            options={{
+              headerShown: false,
+              animation: 'slide_from_right',
+              gestureEnabled: true,
+              fullScreenGestureEnabled: true,
+            }}
+          />
+        </RootStack.Navigator>
+      </NavigationContainer>
 
       {/* App Lock Screen Overlay */}
       {isLocked && (
@@ -185,164 +209,6 @@ function MainApp() {
           />
         </View>
       )}
-    </View>
-  );
-}
-
-function MainTabsView({
-  activeTab,
-  activeSource,
-  searchTarget,
-  onTabPress,
-  onSelectTag,
-  onClearSearchTarget,
-  onSelectSource,
-}: {
-  activeTab: TabType;
-  activeSource: BooruSource;
-  searchTarget: { tag: string; mode: 'replace' | 'add' | 'exclude' } | undefined;
-  onTabPress: (tab: TabType) => void;
-  onSelectTag: (tag: string, mode?: 'replace' | 'add' | 'exclude') => void;
-  onClearSearchTarget: () => void;
-  onSelectSource: (source: BooruSource) => void;
-}) {
-  const insets = useSafeAreaInsets();
-  return (
-    <View style={styles.container}>
-      {/* Screen Views (Keep-Alive) */}
-      <View style={styles.contentArea}>
-        <View
-          style={[
-            styles.screenContainer,
-            activeTab === 'feed' ? styles.screenVisible : styles.screenHidden,
-          ]}
-        >
-          <FeedScreen
-            activeSource={activeSource}
-            onSelectTag={onSelectTag}
-            onOpenSourcePicker={() => onTabPress('settings')}
-          />
-        </View>
-
-        <View
-          style={[
-            styles.screenContainer,
-            activeTab === 'search' ? styles.screenVisible : styles.screenHidden,
-          ]}
-        >
-          <SearchScreen
-            initialTag={searchTarget?.tag}
-            initialMode={searchTarget?.mode}
-            activeSource={activeSource}
-            onClearInitialTag={onClearSearchTarget}
-            onOpenSourcePicker={() => onTabPress('settings')}
-          />
-        </View>
-
-        <View
-          style={[
-            styles.screenContainer,
-            activeTab === 'favorites' ? styles.screenVisible : styles.screenHidden,
-          ]}
-        >
-          <FavoritesScreen
-            isActive={activeTab === 'favorites'}
-            onSelectTag={onSelectTag}
-          />
-        </View>
-
-        <View
-          style={[
-            styles.screenContainer,
-            activeTab === 'settings' ? styles.screenVisible : styles.screenHidden,
-          ]}
-        >
-          <SettingsScreen
-            activeSource={activeSource}
-            onSelectSource={onSelectSource}
-          />
-        </View>
-      </View>
-
-      {/* Bottom Tab Bar */}
-      <View style={[styles.tabBar, { paddingBottom: Math.max(insets.bottom, 12) }]}>
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => onTabPress('feed')}
-          activeOpacity={0.7}
-        >
-          <Compass
-            size={22}
-            color={activeTab === 'feed' ? Colors.dark.primaryLight : Colors.dark.textMuted}
-          />
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'feed' && styles.tabLabelActive,
-            ]}
-          >
-            Keşfet
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => onTabPress('search')}
-          activeOpacity={0.7}
-        >
-          <Search
-            size={22}
-            color={activeTab === 'search' ? Colors.dark.primaryLight : Colors.dark.textMuted}
-          />
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'search' && styles.tabLabelActive,
-            ]}
-          >
-            Arama
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => onTabPress('favorites')}
-          activeOpacity={0.7}
-        >
-          <Heart
-            size={22}
-            color={activeTab === 'favorites' ? '#FF4D4F' : Colors.dark.textMuted}
-            fill={activeTab === 'favorites' ? '#FF4D4F' : 'transparent'}
-          />
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'favorites' && { color: '#FF4D4F' },
-            ]}
-          >
-            Favoriler
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => onTabPress('settings')}
-          activeOpacity={0.7}
-        >
-          <SlidersHorizontal
-            size={22}
-            color={activeTab === 'settings' ? Colors.dark.primaryLight : Colors.dark.textMuted}
-          />
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'settings' && styles.tabLabelActive,
-            ]}
-          >
-            Ayarlar
-          </Text>
-        </TouchableOpacity>
-      </View>
     </View>
   );
 }
@@ -360,47 +226,5 @@ const styles = StyleSheet.create({
     bottom: 0,
     zIndex: 999999,
     backgroundColor: '#0D0E12',
-  },
-  contentArea: {
-    flex: 1,
-    position: 'relative',
-  },
-  screenContainer: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-  },
-  screenVisible: {
-    opacity: 1,
-    zIndex: 1,
-  },
-  screenHidden: {
-    opacity: 0,
-    zIndex: 0,
-    pointerEvents: 'none',
-  },
-  tabBar: {
-    flexDirection: 'row',
-    backgroundColor: Colors.dark.tabBar,
-    borderTopWidth: 1,
-    borderTopColor: Colors.dark.divider,
-    paddingTop: 10,
-    paddingHorizontal: 8,
-  },
-  tabItem: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-  },
-  tabLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: Colors.dark.textMuted,
-  },
-  tabLabelActive: {
-    color: Colors.dark.primaryLight,
   },
 });

@@ -23,3 +23,7 @@ export function setCachedPosts(posts: BooruPost[]): string {
 export function getCachedPosts(key: string): BooruPost[] {
   return cache.get(key) ?? [];
 }
+
+export function clearCachedPosts(): void {
+  cache.clear();
+}
