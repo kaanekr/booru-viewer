@@ -47,7 +47,7 @@ import { TagChip } from '../components/TagChip';
 import { pushViewer } from '../navigation/rootNavigation';
 import { SearchFilterModal } from '../components/SearchFilterModal';
 import { Colors } from '../theme/colors';
-import { getMediaHeaders } from '../utils/media';
+import { getMediaHeaders, getMediaUrl } from '../utils/media';
 import { useSource } from '../context/SourceContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -277,7 +277,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       }
 
       posts.slice(0, 10).forEach((p) => {
-        const u = p.previewUrl || p.sampleUrl;
+        const u = getMediaUrl(p.previewUrl || p.sampleUrl);
         if (u) Image.prefetch(u, { headers: getMediaHeaders(u) });
       });
       setResults(posts);
@@ -373,7 +373,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       }
 
       newPosts.slice(0, 8).forEach((p) => {
-        const u = p.previewUrl || p.sampleUrl;
+        const u = getMediaUrl(p.previewUrl || p.sampleUrl);
         if (u) Image.prefetch(u, { headers: getMediaHeaders(u) });
       });
       // Atlamalı sayfa boş dönerse (limit dışı) sayacı geri al, loader takılmasın
@@ -487,16 +487,26 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     (filterConfig.cumstMediaType && filterConfig.cumstMediaType !== 'all') ||
     filterConfig.jumpToPage > 1;
 
-  // Masonry distribution for results
+  // Yükseklik dengeli masonry: her kart o an kısa olan sütuna gider.
+  // İki sütun aynı hizada biter; kısa sütun altında ölü boşluk kalmaz.
   const leftColumn: BooruPost[] = [];
   const rightColumn: BooruPost[] = [];
-  results.forEach((post, index) => {
-    if (index % 2 === 0) {
-      leftColumn.push(post);
-    } else {
-      rightColumn.push(post);
-    }
-  });
+  {
+    const colW = (SCREEN_WIDTH - 36) / 2; // PostCard ile aynı genişlik
+    let leftH = 0;
+    let rightH = 0;
+    results.forEach((post) => {
+      const ar = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75)); // PostCard clamp'i
+      const h = colW / ar + 12; // + kart marginBottom
+      if (leftH <= rightH) {
+        leftColumn.push(post);
+        leftH += h;
+      } else {
+        rightColumn.push(post);
+        rightH += h;
+      }
+    });
+  }
 
   return (
     <View style={styles.container}>
@@ -995,7 +1005,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               showsVerticalScrollIndicator={false}
               onScroll={({ nativeEvent }) => {
                 const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
-                if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 400) {
+                if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 900) {
                   loadMoreResults();
                 }
               }}
@@ -1050,14 +1060,15 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                 )}
               </View>
 
-              {/* Masonry Post Grid */}
+              {/* 2-Column Masonry Grid */}
               <View style={styles.gridContainer}>
                 <View style={styles.column}>
-                  {leftColumn.map((post, index) => (
+                  {leftColumn.map((post) => (
                     <PostCard
-                      key={`left-${post.id}-${index}`}
+                      key={`search-${post.id}`}
                       post={post}
                       favoriteIds={favoriteIds}
+                      column="left"
                       onPress={(p) => {
                         const idx = results.findIndex((item) => item.id === p.id);
                         if (idx >= 0) {
@@ -1068,11 +1079,12 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                   ))}
                 </View>
                 <View style={styles.column}>
-                  {rightColumn.map((post, index) => (
+                  {rightColumn.map((post) => (
                     <PostCard
-                      key={`right-${post.id}-${index}`}
+                      key={`search-${post.id}`}
                       post={post}
                       favoriteIds={favoriteIds}
+                      column="right"
                       onPress={(p) => {
                         const idx = results.findIndex((item) => item.id === p.id);
                         if (idx >= 0) {

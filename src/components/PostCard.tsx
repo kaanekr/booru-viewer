@@ -5,6 +5,7 @@ import { Heart } from 'lucide-react-native';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isUnsupportedOnIOS } from '../utils/media';
+import { GridColumn, useLoadGate } from '../utils/imageLoadGate';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const COLUMN_WIDTH = (SCREEN_WIDTH - 36) / 2;
@@ -15,6 +16,8 @@ interface PostCardProps {
   showFavoriteBadge?: boolean;
   /** Üst ekran fav ID setini verdiyse kart storage'a sormaz — anında rozet, çökme yok */
   favoriteIds?: Set<string>;
+  /** ScrollView iki sütunda adil yükleme için: kapı sol/sağ sırayla slot dağıtır */
+  column?: GridColumn;
 }
 
 const getRatingColor = (rating: string | undefined) => {
@@ -43,7 +46,10 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   onPress,
   showFavoriteBadge = true,
   favoriteIds,
+  column,
 }) => {
+  // Kapı açılmadan resim mount olmaz: iki sütun bağlantı slotlarını adil paylaşır
+  const [canLoad, releaseSlot] = useLoadGate(column);
   // Clamp aspect ratio between 0.6 and 1.4 for balanced masonry presentation
   const safeAspectRatio = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75));
   const cardHeight = COLUMN_WIDTH / safeAspectRatio;
@@ -81,19 +87,22 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   }, [primaryRaw]);
 
   const handleImageError = React.useCallback(() => {
+    releaseSlot();
     if (!fallbackRaw) return;
     const fallbackUrl = getMediaUrl(fallbackRaw);
     if (fallbackUrl && fallbackUrl !== currentUri) {
       setCurrentUri(fallbackUrl);
     }
-  }, [fallbackRaw, currentUri]);
+  }, [fallbackRaw, currentUri, releaseSlot]);
 
+  // Grid, URL'yi cache key olarak kullanır (özel suffix YOK): prefetch
+  // ile aynı entry'ye yazılır/okunur. Viewer'ın :sample/:full-original
+  // key'leri ayrı kalır, çapraz kirlenme olmaz.
   const imageSource = React.useMemo(() => {
     if (!currentUri) return undefined;
     return {
       uri: currentUri,
       headers: getMediaHeaders(currentUri),
-      cacheKey: `${currentUri}:grid`,
     };
   }, [currentUri]);
 
@@ -109,17 +118,20 @@ const PostCardComponent: React.FC<PostCardProps> = ({
       onPress={() => onPress(post)}
       style={[styles.container, { width: COLUMN_WIDTH, height: cardHeight }]}
     >
-      <Image
-        source={imageSource}
-        style={styles.image}
-        contentFit="cover"
-        recyclingKey={post.id}
-        priority="low"
-        transition={100}
-        cachePolicy="memory-disk"
-        allowDownscaling={true}
-        onError={handleImageError}
-      />
+      {canLoad && imageSource ? (
+        <Image
+          source={imageSource}
+          style={styles.image}
+          contentFit="cover"
+          recyclingKey={post.id}
+          priority="low"
+          transition={100}
+          cachePolicy="memory-disk"
+          allowDownscaling={true}
+          onLoadEnd={releaseSlot}
+          onError={handleImageError}
+        />
+      ) : null}
 
       <View style={styles.gradientOverlay} />
 
@@ -173,6 +185,7 @@ export const PostCard = React.memo<PostCardProps>(
     if (prevProps.post !== nextProps.post) return false;
     if (prevProps.showFavoriteBadge !== nextProps.showFavoriteBadge) return false;
     if (prevProps.onPress !== nextProps.onPress) return false;
+    if (prevProps.column !== nextProps.column) return false;
 
     const prevFav =
       (prevProps.showFavoriteBadge ?? true) &&

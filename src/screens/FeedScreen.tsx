@@ -19,7 +19,7 @@ import { PostCard } from '../components/PostCard';
 import { pushViewer } from '../navigation/rootNavigation';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
-import { getMediaHeaders } from '../utils/media';
+import { getMediaHeaders, getMediaUrl } from '../utils/media';
 import { useSource } from '../context/SourceContext';
 import { StorageService } from '../services/storage';
 
@@ -85,9 +85,10 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           return;
         }
 
-        // Pre-warm memory/disk cache with thumbnails
+        // Pre-warm: grid'in okuyacağı AYNI entry (getMediaUrl + URL key).
+        // prefetch cacheKey desteklemez, o yüzden grid de URL key kullanır.
         newPosts.slice(0, 10).forEach((p) => {
-          const u = p.previewUrl || p.sampleUrl;
+          const u = getMediaUrl(p.previewUrl || p.sampleUrl);
           if (u) {
             Image.prefetch(u, { headers: getMediaHeaders(u) });
           }
@@ -166,19 +167,31 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
     contentOffset,
     contentSize,
   }: any) => {
-    return layoutMeasurement.height + contentOffset.y >= contentSize.height - 400;
+    return layoutMeasurement.height + contentOffset.y >= contentSize.height - 900;
   };
 
-  // Masonry 2-column distribution
+  // Yükseklik dengeli masonry: her kart o an kısa olan sütuna gider.
+  // İki sütun aynı hizada biter; kısa sütun altında ölü boşluk kalmaz,
+  // kullanıcı boşlukta kaydırıp dibi beklemek zorunda kalmaz.
+  // (Greedy deterministiktir: yeni sayfa eklenince eski atamalar değişmez.)
   const leftColumn: BooruPost[] = [];
   const rightColumn: BooruPost[] = [];
-  posts.forEach((post, index) => {
-    if (index % 2 === 0) {
-      leftColumn.push(post);
-    } else {
-      rightColumn.push(post);
-    }
-  });
+  {
+    const colW = (SCREEN_WIDTH - 36) / 2; // PostCard ile aynı genişlik
+    let leftH = 0;
+    let rightH = 0;
+    posts.forEach((post) => {
+      const ar = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75)); // PostCard clamp'i
+      const h = colW / ar + 12; // + kart marginBottom
+      if (leftH <= rightH) {
+        leftColumn.push(post);
+        leftH += h;
+      } else {
+        rightColumn.push(post);
+        rightH += h;
+      }
+    });
+  }
 
   const handleCardPress = (post: BooruPost) => {
     const idx = posts.findIndex((p) => p.id === post.id);
@@ -295,23 +308,24 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           {/* 2-Column Masonry Grid */}
           <View style={styles.gridContainer}>
             <View style={styles.column}>
-              {leftColumn.map((post, index) => (
+              {leftColumn.map((post) => (
                 <PostCard
-                  key={`feed-left-${post.id}-${index}`}
+                  key={`feed-${post.id}`}
                   post={post}
                   onPress={handleCardPress}
                   favoriteIds={favoriteIds}
+                  column="left"
                 />
               ))}
             </View>
-
             <View style={styles.column}>
-              {rightColumn.map((post, index) => (
+              {rightColumn.map((post) => (
                 <PostCard
-                  key={`feed-right-${post.id}-${index}`}
+                  key={`feed-${post.id}`}
                   post={post}
                   onPress={handleCardPress}
                   favoriteIds={favoriteIds}
+                  column="right"
                 />
               ))}
             </View>
