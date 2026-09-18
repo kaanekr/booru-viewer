@@ -37,6 +37,7 @@ import { BackupService } from '../services/backupService';
 import { AVAILABLE_SOURCES } from '../services/sources';
 import { BooruPost, TagCategory } from '../types/booru';
 import { PostCard } from '../components/PostCard';
+import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { pushViewer } from '../navigation/rootNavigation';
 import { Colors, TagColors } from '../theme/colors';
 
@@ -44,11 +45,29 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
 
 interface FavoritesScreenProps {
+  navigation?: any;
   isActive?: boolean;
   onSelectTag?: (tag: string, mode?: 'replace' | 'add' | 'exclude') => void;
 }
 
-export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSelectTag }) => {
+export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
+  navigation: propNavigation,
+  isActive,
+  onSelectTag,
+}) => {
+  const hookNavigation = useNavigation<any>();
+  const navigation = propNavigation ?? hookNavigation;
+  const isFocused = useIsFocused();
+  const effectiveIsActive = isActive ?? isFocused;
+
+  const handleSelectTag = (tag: string, mode?: 'replace' | 'add' | 'exclude') => {
+    if (onSelectTag) {
+      onSelectTag(tag, mode);
+    } else if (navigation?.navigate) {
+      navigation.navigate('Search', { tag, mode: mode ?? 'replace' });
+    }
+  };
+
   const insets = useSafeAreaInsets();
   const [activeSegment, setActiveSegment] = useState<'posts' | 'tags'>('posts');
   const [favorites, setFavorites] = useState<BooruPost[]>([]);
@@ -89,10 +108,10 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
   }, [loadData]);
 
   useEffect(() => {
-    if (isActive) {
+    if (effectiveIsActive) {
       loadData(true);
     }
-  }, [isActive, loadData]);
+  }, [effectiveIsActive, loadData]);
 
   const handleRefresh = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -755,7 +774,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({ isActive, onSe
                 <View key={`fav-tag-list-${tag}-${idx}`} style={styles.favTagRow}>
                   <TouchableOpacity
                     style={styles.favTagLeft}
-                    onPress={() => onSelectTag?.(tag)}
+                    onPress={() => handleSelectTag(tag)}
                   >
                     <Pin size={16} color={GOLD_ACCENT} />
                     <Text style={styles.favTagName}>{tag}</Text>

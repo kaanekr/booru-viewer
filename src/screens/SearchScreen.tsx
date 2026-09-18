@@ -30,6 +30,7 @@ import {
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { booruApi } from '../services/booruApi';
+import { useNavigation, type RouteProp } from '@react-navigation/native';
 import {
   BooruPost,
   BooruSource,
@@ -37,6 +38,7 @@ import {
   SearchFilterConfig,
   DEFAULT_FILTER_CONFIG,
 } from '../types/booru';
+import type { TabParamList, SearchMode } from '../navigation/types';
 import { StorageService } from '../services/storage';
 import { PostCard } from '../components/PostCard';
 import { TagChip } from '../components/TagChip';
@@ -44,6 +46,7 @@ import { pushViewer } from '../navigation/rootNavigation';
 import { SearchFilterModal } from '../components/SearchFilterModal';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders } from '../utils/media';
+import { useSource } from '../context/SourceContext';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -62,24 +65,32 @@ const POPULAR_TAGS = [
 ];
 
 interface SearchScreenProps {
+  route?: RouteProp<TabParamList, 'Search'>;
+  navigation?: any;
   initialTag?: string;
-  initialMode?: 'replace' | 'add' | 'exclude';
+  initialMode?: SearchMode;
   initialFilter?: SearchFilterConfig;
-  activeSource: BooruSource;
+  activeSource?: BooruSource;
   onClearInitialTag?: () => void;
   onOpenSourcePicker?: () => void;
   onBackPress?: () => void;
 }
 
 export const SearchScreen: React.FC<SearchScreenProps> = ({
+  route,
+  navigation: propNavigation,
   initialTag,
   initialMode,
   initialFilter,
-  activeSource,
+  activeSource: propSource,
   onClearInitialTag,
   onOpenSourcePicker,
   onBackPress,
 }) => {
+  const hookNavigation = useNavigation<any>();
+  const navigation = propNavigation ?? hookNavigation;
+  const { activeSource: contextSource } = useSource();
+  const activeSource = propSource ?? contextSource;
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const [history, setHistory] = useState<string[]>([]);
@@ -102,6 +113,20 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const lastActiveSourceIdRef = useRef(activeSource.id);
   const searchRequestIdRef = useRef(0);
 
+  const routeParams = route?.params;
+  const effectiveTag = initialTag ?? routeParams?.tag;
+  const effectiveMode = initialMode ?? routeParams?.mode ?? 'replace';
+
+  const handleOpenSourcePicker = () => {
+    if (onOpenSourcePicker) {
+      onOpenSourcePicker();
+    } else if (navigation?.navigate) {
+      navigation.navigate('Settings');
+    }
+  };
+
+  const showSourcePicker = Boolean(onOpenSourcePicker) || (!onBackPress && Boolean(navigation?.navigate));
+
   useEffect(() => {
     StorageService.getSearchHistory().then(setHistory);
     StorageService.getFavoriteTags().then(setFavoriteTags);
@@ -112,11 +137,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const initialFilterKey = initialFilter
     ? `${JSON.stringify(initialFilter.tags)}|${initialFilter.rating}|${initialFilter.sortBy}|${initialFilter.timeRange}|${initialFilter.minScore ?? ''}|${initialFilter.cumstService ?? ''}|${initialFilter.cumstMediaType ?? ''}|${initialFilter.jumpToPage}`
     : '';
-  const initialTagKey = initialTag ? `${initialTag}:${initialMode || 'replace'}` : '';
+  const initialTagKey = effectiveTag ? `${effectiveTag}:${effectiveMode}` : '';
   const combinedInitialKey = initialFilterKey ? `f:${initialFilterKey}` : initialTagKey ? `t:${initialTagKey}` : '';
 
   useEffect(() => {
-    if (!combinedInitialKey) return;
+    if (!combinedInitialKey) {
+      lastInitialKeyRef.current = '';
+      return;
+    }
     if (lastInitialKeyRef.current === combinedInitialKey) return;
     lastInitialKeyRef.current = combinedInitialKey;
 
@@ -126,9 +154,13 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         setQuery(initialFilter.tags.join(' '));
       }
       executeSearchWithConfig(initialFilter);
-    } else if (initialTag) {
-      executeSearch(initialTag, initialMode || 'replace');
-      if (onClearInitialTag) onClearInitialTag();
+    } else if (effectiveTag) {
+      executeSearch(effectiveTag, effectiveMode);
+      if (onClearInitialTag) {
+        onClearInitialTag();
+      } else if (navigation?.setParams) {
+        navigation.setParams({ tag: undefined, mode: undefined });
+      }
     }
   }, [combinedInitialKey]);
 
@@ -195,11 +227,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     const startPage = config.jumpToPage > 1 ? config.jumpToPage : 1;
     setPage(startPage);
 
-    // Save tags to history
+    // Save full query to history (multi-tag searches stay as one bubble)
     if (config.tags.length > 0) {
-      for (const t of config.tags) {
-        await StorageService.addSearchHistory(t);
-      }
+      await StorageService.addSearchHistory(config.tags.join(' '));
       StorageService.getSearchHistory().then(setHistory);
     }
 
@@ -433,12 +463,12 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               </View>
             </View>
 
-            {onOpenSourcePicker && (
+            {showSourcePicker && (
               <TouchableOpacity
                 activeOpacity={0.8}
                 onPress={() => {
                   Haptics.selectionAsync();
-                  onOpenSourcePicker();
+                  handleOpenSourcePicker();
                 }}
                 style={styles.sourcePill}
               >
@@ -531,12 +561,12 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             contentContainerStyle={styles.quickFiltersContent}
           >
             {/* Active Source Quick Badge */}
-            {onOpenSourcePicker && (
+            {showSourcePicker && (
               <TouchableOpacity
                 style={styles.sourceQuickChip}
                 onPress={() => {
                   Haptics.selectionAsync();
-                  onOpenSourcePicker();
+                  handleOpenSourcePicker();
                 }}
                 activeOpacity={0.7}
               >

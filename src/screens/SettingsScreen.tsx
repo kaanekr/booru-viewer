@@ -33,6 +33,7 @@ import {
   Image as ImageIcon,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import { Image } from 'expo-image';
 import { BooruSource } from '../types/booru';
 import { AVAILABLE_SOURCES } from '../services/sources';
 import { StorageService, ImageQuality } from '../services/storage';
@@ -40,6 +41,8 @@ import { proxyService } from '../services/proxyService';
 import { BackupService } from '../services/backupService';
 import { SecurityService, BiometryType } from '../services/securityService';
 import { PasscodeModal, PasscodeModalMode } from '../components/PasscodeModal';
+import { clearCachedPosts } from '../navigation/postsCache';
+import { useSource } from '../context/SourceContext';
 import { Colors } from '../theme/colors';
 
 const GOLD_ACCENT = '#F5A623';
@@ -69,14 +72,17 @@ const QUALITY_OPTIONS: QualityOption[] = [
 ];
 
 interface SettingsScreenProps {
-  activeSource: BooruSource;
-  onSelectSource: (source: BooruSource) => void;
+  activeSource?: BooruSource;
+  onSelectSource?: (source: BooruSource) => void;
 }
 
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({
-  activeSource,
-  onSelectSource,
+  activeSource: propSource,
+  onSelectSource: propSelectSource,
 }) => {
+  const { activeSource: contextSource, selectSource } = useSource();
+  const activeSource = propSource ?? contextSource;
+  const onSelectSource = propSelectSource ?? selectSource;
   const insets = useSafeAreaInsets();
   const [proxyEnabled, setProxyEnabled] = useState(false);
   const [workerUrl, setWorkerUrl] = useState('');
@@ -222,6 +228,31 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
             await StorageService.clearSearchHistory();
             Alert.alert('Başarılı', 'Arama geçmişi temizlendi.');
+          },
+        },
+      ]
+    );
+  };
+
+  const handleClearCache = () => {
+    Alert.alert(
+      'Önbelleği Temizle',
+      'Görsel disk ve bellek önbelleği ile geçici veriler silinecektir. Onaylıyor musunuz?',
+      [
+        { text: 'Vazgeç', style: 'cancel' },
+        {
+          text: 'Temizle',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              clearCachedPosts();
+              await Image.clearDiskCache();
+              await Image.clearMemoryCache();
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+              Alert.alert('Başarılı', 'Önbellek başarıyla temizlendi.');
+            } catch (e: any) {
+              Alert.alert('Hata', 'Önbellek temizlenirken bir sorun oluştu.');
+            }
           },
         },
       ]
@@ -459,6 +490,30 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             >
               <Text style={styles.actionRowText}>Arama Geçmişini Temizle</Text>
               <Text style={styles.actionRowSub}>Cihazdaki kayıtlı arama ve etiket geçmişini sil</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Önbellek Bölümü */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <HardDrive size={18} color={Colors.dark.primaryLight} />
+            <Text style={styles.sectionTitle}>Önbellek</Text>
+          </View>
+          <Text style={styles.sectionDescription}>
+            Görsel disk ve bellek önbelleği ile geçici veri havuzunu yönetin.
+          </Text>
+
+          <View style={styles.card}>
+            <TouchableOpacity
+              style={styles.actionRow}
+              onPress={handleClearCache}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.actionRowText}>Önbelleği Temizle</Text>
+              <Text style={styles.actionRowSub}>
+                expo-image disk/bellek önbelleğini ve geçici gönderi verilerini sil
+              </Text>
             </TouchableOpacity>
           </View>
         </View>
