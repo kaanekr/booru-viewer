@@ -356,8 +356,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
 
       <ScrollView
         style={styles.scroll}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: insets.bottom + 40 },
+        ]}
+        showsVerticalScrollIndicator={true}
       >
         {/* 1. Source Section (Most frequently used) */}
         <View style={styles.section}>

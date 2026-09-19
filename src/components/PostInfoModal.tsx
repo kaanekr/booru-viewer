@@ -315,7 +315,6 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
           styles.container,
           {
             paddingTop: Platform.OS === 'ios' ? 8 : insets.top,
-            paddingBottom: insets.bottom,
           },
         ]}
       >
@@ -349,8 +348,11 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
 
         <ScrollView
           style={styles.scrollArea}
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: insets.bottom + 40 },
+          ]}
+          showsVerticalScrollIndicator={true}
         >
           {/* 1. POST SECTION */}
           <View style={styles.sectionContainer}>

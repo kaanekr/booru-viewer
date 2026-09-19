@@ -309,7 +309,6 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
           styles.container,
           {
             paddingTop: Platform.OS === 'ios' ? 8 : insets.top,
-            paddingBottom: insets.bottom,
           },
         ]}
       >
@@ -341,9 +340,12 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
         <ScrollView
           style={styles.scrollArea}
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: insets.bottom + 40 },
+          ]}
           keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
+          showsVerticalScrollIndicator={true}
         >
           {/* Tag Chips & Input Box */}
           <View style={styles.searchBox}>
@@ -1004,7 +1006,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
               <TouchableWithoutFeedback>
                 <View style={[styles.popoverCard, { maxHeight: '80%' }]}>
                   <Text style={styles.popoverTitle}>Geçmiş Tarih Seçimi</Text>
-                  <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={false}>
+                  <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={true}>
                     <View style={styles.popoverList}>
                       {getHistoricalDateOptions().map((opt, idx) => {
                         const isSelected = draft.leaderboardDate === opt.value;
