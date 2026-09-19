@@ -1053,7 +1053,11 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false} style={styles.modalScroll}>
+            <ScrollView
+              showsVerticalScrollIndicator={true}
+              style={styles.modalScroll}
+              contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) + 16 }}
+            >
               {/* Sunucu / Kaynak Filtresi */}
               <Text style={styles.filterSectionTitle}>Sunucu</Text>
               <View style={styles.filterOptionsGrid}>
@@ -1664,7 +1668,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderColor: '#292D3B',
     maxHeight: '80%',
-    paddingBottom: 28,
+    paddingBottom: 0,
   },
   modalHeader: {
     flexDirection: 'row',
