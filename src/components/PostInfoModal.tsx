@@ -1,8 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
+  Animated,
   Dimensions,
   Linking,
   Modal,
+  PanResponder,
   Platform,
   ScrollView,
   StyleSheet,
@@ -33,6 +35,9 @@ import { resolveRealDimensions } from '../utils/media';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
+/** Parmağın bırakıldığında sheet'in kapanacağı aşağı sürükleme eşiği */
+const DISMISS_THRESHOLD = 130;
+const SHEET_MAX_HEIGHT = SCREEN_HEIGHT * 0.92;
 
 interface PostInfoModalProps {
   visible: boolean;
@@ -86,6 +91,104 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 2200);
   };
+
+  // --- Drag-to-dismiss altyapısı (Animated + PanResponder, Expo Go uyumlu) ---
+  const translateY = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
+  const scrollOffsetY = useRef(0);
+  const closing = useRef(false);
+  const [sheetScrollEnabled, setSheetScrollEnabled] = useState(true);
+
+  // Kapanış animasyonu bitmeden onClose çağrılmaz — yoksa Modal anında
+  // unmount olup çıkış animasyonu ölür.
+  const dismissThen = (cb?: () => void) => {
+    if (closing.current) {
+      cb?.();
+      return;
+    }
+    closing.current = true;
+    setSheetScrollEnabled(false);
+    Animated.timing(translateY, {
+      toValue: SCREEN_HEIGHT,
+      duration: 240,
+      useNativeDriver: true,
+    }).start(() => {
+      closing.current = false;
+      setSheetScrollEnabled(true);
+      onClose();
+      cb?.();
+    });
+  };
+
+  const requestClose = () => dismissThen();
+
+  // Açılış: alttan kayarak gel
+  useEffect(() => {
+    if (visible) {
+      closing.current = false;
+      setSheetScrollEnabled(true);
+      translateY.setValue(SCREEN_HEIGHT);
+      Animated.timing(translateY, {
+        toValue: 0,
+        duration: 180,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [visible, translateY]);
+
+  // İç ScrollView en üstteyken aşağı çekişi yakala, parmağı 1:1 takip et
+  const sheetPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_, gesture) =>
+          gesture.dy > 10 &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx) &&
+          scrollOffsetY.current <= 0,
+        onMoveShouldSetPanResponderCapture: (_, gesture) =>
+          gesture.dy > 10 &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.2 &&
+          scrollOffsetY.current <= 0,
+        onPanResponderGrant: () => {
+          translateY.stopAnimation();
+          setSheetScrollEnabled(false);
+        },
+        onPanResponderMove: (_, gesture) => {
+          // Yukarı itişe direnç uygula, aşağı birebir takip et
+          translateY.setValue(gesture.dy > 0 ? gesture.dy : gesture.dy * 0.25);
+        },
+        onPanResponderRelease: (_, gesture) => {
+          setSheetScrollEnabled(true);
+          if (gesture.dy > DISMISS_THRESHOLD || gesture.vy > 0.7) {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            dismissThen();
+          } else {
+            Animated.spring(translateY, {
+              toValue: 0,
+              damping: 26,
+              stiffness: 300,
+              useNativeDriver: true,
+            }).start();
+          }
+        },
+        onPanResponderTerminate: () => {
+          setSheetScrollEnabled(true);
+          Animated.spring(translateY, {
+            toValue: 0,
+            damping: 26,
+            stiffness: 300,
+            useNativeDriver: true,
+          }).start();
+        },
+        onPanResponderTerminationRequest: () => false,
+      }),
+    [translateY]
+  );
+
+  const backdropOpacity = translateY.interpolate({
+    inputRange: [0, SCREEN_HEIGHT],
+    outputRange: [0.5, 0],
+    extrapolate: 'clamp',
+  });
 
   if (!post) return null;
 
@@ -198,30 +301,31 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   const handleTagSearch = (tag: string) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
-    onClose();
-    onSearchTag(tag);
+    dismissThen(() => onSearchTag(tag));
   };
 
   const handleTagAddToSearch = (tag: string) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
-    onClose();
-    if (onAddTagToSearch) {
-      onAddTagToSearch(tag);
-    } else {
-      onSearchTag(tag);
-    }
+    dismissThen(() => {
+      if (onAddTagToSearch) {
+        onAddTagToSearch(tag);
+      } else {
+        onSearchTag(tag);
+      }
+    });
   };
 
   const handleTagExcludeFromSearch = (tag: string) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
-    onClose();
-    if (onExcludeTagFromSearch) {
-      onExcludeTagFromSearch(tag);
-    } else {
-      onSearchTag(`-${tag}`);
-    }
+    dismissThen(() => {
+      if (onExcludeTagFromSearch) {
+        onExcludeTagFromSearch(tag);
+      } else {
+        onSearchTag(`-${tag}`);
+      }
+    });
   };
 
   const handleToggleTagFavorite = async (tag: string) => {
@@ -267,8 +371,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   const handlePreviewOriginal = () => {
     if (!onPreviewOriginal || !post) return;
     Haptics.selectionAsync();
-    onClose();
-    onPreviewOriginal(post);
+    dismissThen(() => onPreviewOriginal(post));
   };
 
   // Gerçek ölçüler: scrape 800x1000 placeholder bırakır, post sayfasından çöz
@@ -305,19 +408,26 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   return (
     <Modal
       visible={visible}
-      animationType="slide"
-      presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'overFullScreen'}
-      onRequestClose={onClose}
-      onDismiss={onClose}
+      animationType="none"
+      transparent
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      onRequestClose={requestClose}
     >
-      <View
-        style={[
-          styles.container,
-          {
-            paddingTop: Platform.OS === 'ios' ? 8 : insets.top,
-          },
-        ]}
-      >
+      <View style={styles.backdropContainer}>
+        <TouchableWithoutFeedback onPress={requestClose}>
+          <Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]} />
+        </TouchableWithoutFeedback>
+        <Animated.View
+          style={[
+            styles.sheet,
+            {
+              transform: [{ translateY }],
+              paddingTop: Platform.OS === 'ios' ? 8 : insets.top,
+            },
+          ]}
+          {...sheetPanResponder.panHandlers}
+        >
         {/* Toast Notification */}
         {toastMessage && (
           <View style={[styles.toastContainer, { top: insets.top + 56 }]}>
@@ -334,7 +444,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
         <View style={styles.header}>
           <TouchableOpacity
             style={styles.circleBtn}
-            onPress={onClose}
+            onPress={requestClose}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
           >
             <X size={20} color="#FFFFFF" />
@@ -353,6 +463,11 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
             { paddingBottom: insets.bottom + 40 },
           ]}
           showsVerticalScrollIndicator={true}
+          scrollEnabled={sheetScrollEnabled}
+          scrollEventThrottle={16}
+          onScroll={(e) => {
+            scrollOffsetY.current = e.nativeEvent.contentOffset.y;
+          }}
         >
           {/* 1. POST SECTION */}
           <View style={styles.sectionContainer}>
@@ -655,21 +770,33 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
             </View>
           </TouchableWithoutFeedback>
         )}
+        </Animated.View>
       </View>
     </Modal>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
+  backdropContainer: {
     flex: 1,
-    backgroundColor: '#141518',
+    justifyContent: 'flex-end',
+  },
+  backdrop: {
+    ...StyleSheet.absoluteFill,
+    backgroundColor: '#000000',
+  },
+  sheet: {
+    backgroundColor: 'rgba(20, 21, 24, 0.9)',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    height: SHEET_MAX_HEIGHT,
+    overflow: 'hidden',
   },
   dragHandleContainer: {
     width: '100%',
     alignItems: 'center',
-    paddingTop: 8,
-    paddingBottom: 2,
+    paddingTop: 12,
+    paddingBottom: 6,
   },
   dragHandle: {
     width: 36,
