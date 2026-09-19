@@ -10,6 +10,18 @@ async function fetchBooru(url: string, init?: RequestInit): Promise<Response> {
   return await fetch(target, init);
 }
 
+/** Gelbooru-motoru zamanlı popüler: dönemin ilk post id'si (alt sınır) önbelleği.
+ *  Motor tarih filtresi desteklemediği için sınır, son eklenenlerde geriye
+ *  yürüyerek bulunur; asıl sorgu `id:>SINIR sort:score:desc` ile sunucuda sıralanır. */
+interface GelbooruBoundEntry {
+  bound: number | null; // null = pencerede hiç post yok
+  at: number;
+}
+const gelbooruBoundCache = new Map<string, GelbooruBoundEntry>();
+const BOUND_CACHE_TTL_MS = 5 * 60 * 1000;
+const BOUND_WALK_LIMIT = 100;
+const BOUND_MAX_PAGES = 15;
+
 function mapDanbooruCategory(catNum: number): TagCategory {
   switch (catNum) {
     case 1:
@@ -44,6 +56,27 @@ function normalizeRating(rawRating: string | undefined): 's' | 'q' | 'e' | 'g' {
   if (lower === 'questionable' || lower === 'q') return 'q';
   if (lower === 'explicit' || lower === 'e') return 'e';
   return 's';
+}
+
+/** YYYY-MM-DD (Moebooru date:A..B aralıkları için) */
+function formatYMD(d: Date): string {
+  const p = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function pastYMD(daysAgo: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - daysAgo);
+  return formatYMD(d);
+}
+
+/** TimeRangeOption → gün sayısı (0 = sınırsız) */
+export function timeRangeToDays(timeRange: string | undefined): number {
+  if (timeRange === '1d') return 1;
+  if (timeRange === '1w') return 7;
+  if (timeRange === '1m') return 30;
+  if (timeRange === '1y') return 365;
+  return 0;
 }
 
 export class BooruApiService {
@@ -134,28 +167,28 @@ export class BooruApiService {
     // Sort By & Time Range
     if (filter.sortBy === 'score') {
       if (activeSource.type === 'gelbooru' || activeSource.type === 'realbooru') {
+        // Gelbooru motoru yalnızca toplam skora göre sıralar; zaman aralığı
+        // fetchGelbooruPosts içinde alt-sınır id'sine (`id:>X`) çevrilir.
         parts.push('sort:score:desc');
       } else if (activeSource.type === 'danbooru') {
+        // 'age:1w' tam 1 haftalıkları getirir; aralık için '<' gerekir (canlı doğrulandı)
         if (filter.timeRange === '1d') {
-          parts.push('age:1d', 'order:score');
+          parts.push('age:<1day', 'order:score');
         } else if (filter.timeRange === '1w') {
-          parts.push('age:1w', 'order:score');
+          parts.push('age:<1week', 'order:score');
         } else if (filter.timeRange === '1m') {
-          parts.push('age:1m', 'order:score');
+          parts.push('age:<1month', 'order:score');
         } else if (filter.timeRange === '1y') {
-          parts.push('age:1y', 'order:score');
+          parts.push('age:<1year', 'order:score');
         } else {
           parts.push('order:rank');
         }
       } else if (activeSource.type === 'moebooru') {
-        if (filter.timeRange === '1d') {
-          parts.push('order:score', 'date:today');
-        } else if (filter.timeRange === '1w') {
-          parts.push('order:score', 'date:week');
-        } else if (filter.timeRange === '1m') {
-          parts.push('order:score', 'date:month');
-        } else if (filter.timeRange === '1y') {
-          parts.push('order:score', 'date:year');
+        // 'date:today' gibi anahtar kelimeler çalışmıyor (boş dönüyor, canlı doğrulandı);
+        // date:BAŞLANGIÇ..BİTİŞ aralığı çalışıyor
+        const days = timeRangeToDays(filter.timeRange);
+        if (days > 0) {
+          parts.push('order:score', `date:${pastYMD(days)}..${formatYMD(new Date())}`);
         } else {
           parts.push('order:score');
         }
@@ -288,15 +321,15 @@ export class BooruApiService {
         // kullanıcıya anahtarın geçersiz olduğunu göster ki düzeltebilsin
         const { userId, apiKey } = await StorageService.getGelbooruAuth().catch(() => ({ userId: '', apiKey: '' }));
         if (userId.trim() && apiKey.trim()) {
-          return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted);
+          return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted, filter);
         }
         try {
-          return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted);
+          return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted, filter);
         } catch {
           return await this.fetchGelbooruScrapedPosts(source, page, limit, tags, includeBlacklisted);
         }
       } else if (source.type === 'gelbooru') {
-        return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted);
+        return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else if (source.type === 'moebooru') {
         return await this.fetchMoebooruPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'realbooru') {
@@ -452,17 +485,85 @@ export class BooruApiService {
     page: number,
     limit: number,
     tags: string,
-    includeBlacklisted: boolean = false
+    includeBlacklisted: boolean = false,
+    filter?: SearchFilterConfig
   ): Promise<BooruPost[]> {
     const cleanTags = tags.trim();
+    const windowDays =
+      filter?.sortBy === 'score' ? timeRangeToDays(filter.timeRange) : 0;
+    if (windowDays > 0) {
+      // Dönemin alt sınır id'sini bul, sonra popülerleri sunucuda sıralat.
+      // Yürüyüş id-desc yapılır; tarih için `change` alanı kullanılır
+      // (son düzenleme zamanıdır, yükleme değil — sınıra yakın postlarda +- sapma olur).
+      const walkTags = cleanTags.replace('sort:score:desc', 'sort:id:desc');
+      const bound = await this.resolveGelbooruLowerBound(source, walkTags, windowDays);
+      if (bound === null) return [];
+      const pid = Math.max(0, page - 1);
+      return await this.fetchGelbooruPage(
+        source,
+        pid,
+        limit,
+        `${cleanTags} id:>${bound - 1}`,
+        includeBlacklisted
+      );
+    }
     const pid = Math.max(0, page - 1);
+    return await this.fetchGelbooruPage(source, pid, limit, cleanTags, includeBlacklisted);
+  }
+
+  /** Son eklenenlerde geriye yürü, tarih eşiğine giren en küçük id'yi döndür */
+  private async resolveGelbooruLowerBound(
+    source: BooruSource,
+    walkTags: string,
+    windowDays: number
+  ): Promise<number | null> {
+    const key = `${source.id}|${walkTags}|${windowDays}`;
+    const now = Date.now();
+    const cached = gelbooruBoundCache.get(key);
+    if (cached && now - cached.at < BOUND_CACHE_TTL_MS) return cached.bound;
+
+    const cutoff = now - windowDays * 86400000;
+    let bound: number | null = null;
+    for (let pid = 0; pid < BOUND_MAX_PAGES; pid++) {
+      const batch = await this.fetchGelbooruPage(
+        source,
+        pid,
+        BOUND_WALK_LIMIT,
+        walkTags,
+        false
+      );
+      if (batch.length === 0) break;
+      for (const p of batch) {
+        const nid = Number(p.id);
+        if (!Number.isFinite(nid)) continue;
+        const t = new Date(p.createdAt).getTime();
+        if (Number.isFinite(t) && t >= cutoff) {
+          if (bound === null || nid < bound) bound = nid;
+        }
+      }
+      if (batch.length < BOUND_WALK_LIMIT) break;
+      // Sayfanın en eski (son) postu eşikten eskiyse daha geriye gitme
+      const lastT = new Date(batch[batch.length - 1].createdAt).getTime();
+      if (Number.isFinite(lastT) && lastT < cutoff) break;
+    }
+    gelbooruBoundCache.set(key, { bound, at: now });
+    return bound;
+  }
+
+  private async fetchGelbooruPage(
+    source: BooruSource,
+    pid: number,
+    limit: number,
+    cleanTags: string,
+    includeBlacklisted: boolean = false
+  ): Promise<BooruPost[]> {
     const queryParams = new URLSearchParams({
       page: 'dapi',
       s: 'post',
       q: 'index',
       json: '1',
       limit: String(limit),
-      pid: String(pid),
+      pid: String(Math.max(0, pid)),
     });
     if (cleanTags) {
       queryParams.append('tags', cleanTags);
