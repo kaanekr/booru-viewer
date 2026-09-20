@@ -3,6 +3,7 @@ import { proxyService } from '../services/proxyService';
 import { ImageQuality } from '../services/storage';
 import { parseXVideosFiles, XVIDEOS_BASE, XVIDEOS_UA } from '../services/xvideos';
 import { parseXhamsterDetail, XHAMSTER_BASE, XHAMSTER_UA } from '../services/xhamster';
+import { parsePornhubDetail, PORNHUB_BASE, PORNHUB_UA } from '../services/pornhub';
 
 const DIMS_CACHE = new Map<string, { w: number; h: number; bytes?: number }>();
 
@@ -341,6 +342,10 @@ export function getMediaHeaders(url: string | undefined): Record<string, string>
     headers['Referer'] = 'https://cum.st/';
   } else if (target.includes('xvideos-cdn.com') || target.includes('xvideos.com')) {
     headers['Referer'] = 'https://www.xvideos.com/';
+  } else if (target.includes('xhamster.com') || target.includes('xhamster-cdn')) {
+    headers['Referer'] = 'https://xhamster.com/';
+  } else if (target.includes('pornhub.com') || target.includes('phncdn.com')) {
+    headers['Referer'] = 'https://www.pornhub.com/';
   }
 
   return headers;
@@ -434,6 +439,61 @@ export async function resolveXHamsterVideoUrls(
     const files = parseXhamsterDetail(html);
     if (!files.high && !files.low && !files.hls) return null;
     return files;
+  } catch {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
+/**
+ * Pornhub video linkinden oynatılabilir HLS akışlarını çözer
+ * (mediaDefinitions: high → hls → low).
+ * Akış URL'leri süreli token taşır; BİLİNÇLİ olarak cache'lenmez —
+ * her viewer açılışında taze çözülür.
+ */
+export async function resolvePornhubVideoUrls(
+  post: {
+    id?: string;
+    sourceLink?: string;
+  },
+  signal?: AbortSignal
+): Promise<{ high: string; low: string; hls: string } | null> {
+  if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 10000);
+  if (signal) {
+    signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+  }
+
+  const headers = {
+    'User-Agent': PORNHUB_UA,
+    Referer: `${PORNHUB_BASE}/`,
+    'Accept-Language': 'en-US,en;q=0.9',
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Upgrade-Insecure-Requests': '1',
+    Cookie: 'accessAgeDisclaimerPH=1; accessPH=1; platform=pc',
+  };
+
+  // 1) Tam izleme sayfası, 2) hafif embed sayfası (viewkey gerekir)
+  const urls = [post.sourceLink];
+  const keyM = post.sourceLink.match(/viewkey=([a-z0-9]+)/i);
+  if (keyM && keyM[1]) urls.push(`${PORNHUB_BASE}/embed/${keyM[1]}`);
+
+  try {
+    for (const pageUrl of urls) {
+      const target = proxyService.proxyUrl(pageUrl);
+      const response = await fetch(target, { headers, signal: ctrl.signal });
+      if (!response.ok) continue;
+      const html = await response.text();
+      const files = parsePornhubDetail(html);
+      if (files.high || files.low || files.hls) {
+        clearTimeout(timeout);
+        return files;
+      }
+    }
+    clearTimeout(timeout);
+    return null;
   } catch {
     clearTimeout(timeout);
     return null;

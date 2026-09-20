@@ -20,6 +20,14 @@ import {
   XHAMSTER_UA,
 } from './xhamster';
 import type { XHamsterDate, XHamsterSort } from './xhamster';
+import {
+  buildPornhubSearchUrl,
+  mapPornhubVideoToPost,
+  pornhubPeriodForTimeRange,
+  PORNHUB_BASE,
+  PORNHUB_UA,
+} from './pornhub';
+import type { PornhubOrdering, PornhubVideo } from './pornhub';
 
 const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 BooruViewer/1.0';
 
@@ -142,17 +150,17 @@ export class BooruApiService {
       });
     }
 
-    // Min Score (RedGifs/XVideos/XHamster'da skor filtresi yok; literal tag olarak gidip sonucu sıfırlar)
-    if (filter.minScore && filter.minScore > 0 && activeSource.type !== 'redgifs' && activeSource.type !== 'xvideos' && activeSource.type !== 'xhamster') {
+    // Min Score (RedGifs/XVideos/XHamster/Pornhub'da skor filtresi yok; literal tag olarak gidip sonucu sıfırlar)
+    if (filter.minScore && filter.minScore > 0 && activeSource.type !== 'redgifs' && activeSource.type !== 'xvideos' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub') {
       parts.push(`score:>=${filter.minScore}`);
     }
 
     // User / Artist / Creator (RedGifs kullanıcı araması ayrı endpoint'ten yapılır;
-    // XVideos/XHamster'da profil sayfası araması yok, kullanıcı adı düz kelime olarak aranır)
+    // XVideos/XHamster/Pornhub'da profil sayfası araması yok, kullanıcı adı düz kelime olarak aranır)
     if (filter.user && filter.user.trim()) {
       if (activeSource.type === 'cumst') {
         parts.push(`creator:${filter.user.trim()}`);
-      } else if (activeSource.type === 'xvideos' || activeSource.type === 'xhamster') {
+      } else if (activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub') {
         parts.push(filter.user.trim());
       } else if (activeSource.type !== 'redgifs') {
         parts.push(`user:${filter.user.trim()}`);
@@ -171,7 +179,7 @@ export class BooruApiService {
 
     // Historical Leaderboard / Anchor Date (Cum.st'e özel; başka motorda
     // literal tag sayılıp sonucu sıfırlar)
-    if (filter.leaderboardDate && activeSource.type !== 'xvideos' && activeSource.type !== 'redgifs' && activeSource.type !== 'xhamster') {
+    if (filter.leaderboardDate && activeSource.type !== 'xvideos' && activeSource.type !== 'redgifs' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub') {
       parts.push(`date:${filter.leaderboardDate.trim()}`);
     }
 
@@ -186,10 +194,10 @@ export class BooruApiService {
       }
     }
 
-    // Sort By & Time Range (RedGifs/XVideos/XHamster sıralaması order=/sort= parametresiyle
-    // kendi fetch fonksiyonları içinde yapılır; buraya order:/sort: token'ı
+    // Sort By & Time Range (RedGifs/XVideos/XHamster/Pornhub sıralaması order=/sort=/ordering
+    // parametresiyle kendi fetch fonksiyonları içinde yapılır; buraya order:/sort: token'ı
     // eklenirse literal tag sayılıp sonuç sıfırlanır)
-    if (activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster') {
+    if (activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub') {
       return parts.join(' ').trim();
     }
     if (filter.sortBy === 'score') {
@@ -369,6 +377,8 @@ export class BooruApiService {
         return await this.fetchXVideosPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else if (source.type === 'xhamster') {
         return await this.fetchXHamsterPosts(source, page, limit, tags, includeBlacklisted, filter);
+      } else if (source.type === 'pornhub') {
+        return await this.fetchPornhubPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else {
         return await this.fetchDanbooruPosts(source, page, limit, tags, includeBlacklisted);
       }
@@ -1412,6 +1422,81 @@ export class BooruApiService {
     return [];
   }
 
+  private async fetchPornhubPosts(
+    source: BooruSource,
+    page: number,
+    limit: number,
+    tags: string,
+    includeBlacklisted: boolean = false,
+    filter?: SearchFilterConfig
+  ): Promise<BooruPost[]> {
+    // Webmasters API '-' dışlama sözdizimini anlamaz; hariç tutulanlar atılır
+    const tokens = tags
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .filter((t) => !t.startsWith('-'));
+    const k = tokens.join(' ');
+    void limit;
+
+    // Sıralama eşlemesi (ordering=featured|newest|mostviewed|rating;
+    // period yalnızca ordering ile anlamlıdır)
+    let ordering: PornhubOrdering = 'newest';
+    const sb = filter?.sortBy;
+    if (sb === 'score') {
+      ordering = 'mostviewed';
+    } else if (sb === 'rating') {
+      ordering = 'rating';
+    } else if (sb === 'id' || sb === 'default' || !sb) {
+      ordering = 'newest';
+    } else if (sb === 'height' || sb === 'width') {
+      ordering = 'mostviewed';
+    }
+    const period = pornhubPeriodForTimeRange(filter?.timeRange);
+
+    const url = buildPornhubSearchUrl(page, k, ordering, period);
+    const headers = {
+      'User-Agent': PORNHUB_UA,
+      Referer: `${PORNHUB_BASE}/`,
+      'Accept-Language': 'en-US,en;q=0.9',
+      Accept: 'application/json',
+    };
+
+    let response: Response;
+    try {
+      response = await this.fetchWithRetry(url, { headers });
+    } catch (e: any) {
+      throw e instanceof Error ? e : new Error(String(e));
+    }
+    if (!response.ok) {
+      if (response.status === 429) {
+        throw new Error('Pornhub istek sınırı aşıldı (429 Too Many Requests). Lütfen bir süre bekleyin.');
+      }
+      if (response.status >= 500) {
+        throw new Error(`Pornhub sunucusu aşırı yüklendi (${response.status} ${response.statusText}).`);
+      }
+      throw new Error(`Pornhub hatası: ${response.status} ${response.statusText}`);
+    }
+
+    let data: any = null;
+    try {
+      data = await response.json();
+    } catch {
+      throw new Error('Pornhub yanıtı çözümlenemedi.');
+    }
+    // Hata gövdesi: {"code":"1001",...} (kütüphanenin check_response karşılığı)
+    if (data && typeof data.code === 'string') {
+      throw new Error(`Pornhub API hatası (${data.code}): ${data.message || 'bilinmeyen hata'}`);
+    }
+    const rawVideos: PornhubVideo[] = Array.isArray(data?.videos) ? data.videos : [];
+    const posts: BooruPost[] = [];
+    for (const v of rawVideos) {
+      const post = mapPornhubVideoToPost(v, source);
+      if (post) posts.push(post);
+    }
+    return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+  }
+
   private async fetchCumStPosts(
     source: BooruSource,
     page: number,
@@ -1713,7 +1798,7 @@ export class BooruApiService {
           }
         } catch {}
         return [];
-      } else if (source.type === 'xvideos' || source.type === 'xhamster') {
+      } else if (source.type === 'xvideos' || source.type === 'xhamster' || source.type === 'pornhub') {
         // Resmi öneri endpoint'i yok; istemci tarafı filtre yeterli
         return [];
       } else if (source.type === 'gelbooru' || source.type === 'realbooru') {

@@ -43,6 +43,7 @@ import { Colors } from '../theme/colors';
 import { StorageService, ImageQuality } from '../services/storage';
 import { TagChip } from './TagChip';
 import { PostInfoModal } from './PostInfoModal';
+import { PornhubWebViewResolver } from './PornhubWebViewResolver';
 import {
   checkMp4UpgradeAvailable,
   getImageUris,
@@ -54,6 +55,7 @@ import {
   resolveRealDimensions,
   resolveXVideosVideoUrls,
   resolveXHamsterVideoUrls,
+  resolvePornhubVideoUrls,
 } from '../utils/media';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -489,6 +491,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const [isCheckingUpgrade, setIsCheckingUpgrade] = useState(false);
   const [quality, setQuality] = useState<ImageQuality>('auto');
   const [resolvedOriginalUrl, setResolvedOriginalUrl] = useState<string | null>(null);
+  const [pornhubWebviewOn, setPornhubWebviewOn] = useState(false);
   const [realDims, setRealDims] = useState<{ w: number; h: number } | null>(null);
   const [isZoomed, setIsZoomed] = useState(false);
   const [hasUpgradedToFull, setHasUpgradedToFull] = useState(false);
@@ -512,6 +515,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     const abortCtrl = new AbortController();
 
     setResolvedOriginalUrl(null);
+    setPornhubWebviewOn(false);
 
     // Eğer post zaten sample'dan farklı gerçek bir originalUrl'e sahipse fetch etme
     if (post.originalUrl && post.originalUrl !== post.sampleUrl) {
@@ -541,6 +545,18 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
             }
           })
           .catch(() => {});
+      } else if (post.sourceId === 'pornhub') {
+        resolvePornhubVideoUrls(post, abortCtrl.signal)
+          .then((files) => {
+            if (!alive) return;
+            if (files) {
+              setResolvedOriginalUrl(files.high || files.hls || files.low || null);
+            } else {
+              // Hızlı yol bot-duvarına takıldı → gizli WebView yedeği
+              setPornhubWebviewOn(true);
+            }
+          })
+          .catch(() => {});
       } else if (post.sourceId === 'gelbooru' || post.sourceId === 'realbooru' || !post.originalUrl) {
         resolveGelbooruOriginalUrl(post, abortCtrl.signal)
           .then((url) => {
@@ -561,6 +577,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   useEffect(() => {
     setIsZoomed(false);
     isZoomedRef.current = false;
+    setPornhubWebviewOn(false);
     setHasUpgradedToFull(false);
     setSampleLoading(true);
     setSampleLoaded(false);
@@ -855,6 +872,22 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
             />
           ) : (
             <>
+              {/* Pornhub bot-duvarı yedeği: hızlı yol çözemezse gizli WebView çözer */}
+              {pornhubWebviewOn &&
+              !resolvedOriginalUrl &&
+              isActive &&
+              post.sourceId === 'pornhub' &&
+              post.sourceLink ? (
+                <PornhubWebViewResolver
+                  pageUrl={post.sourceLink}
+                  onResolve={(files) => {
+                    if (files) {
+                      setResolvedOriginalUrl(files.high || files.hls || files.low || null);
+                    }
+                    setPornhubWebviewOn(false);
+                  }}
+                />
+              ) : null}
               {/* Sample ilk yükleme göstergesi: sample henüz boyanmamışken ve full yüklenmemişken */}
               {sampleLoading && !sampleLoaded && !fullLoaded && (
                 <View style={styles.loaderCenter} pointerEvents="none">

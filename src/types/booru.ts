@@ -1,4 +1,4 @@
-export type BooruType = 'danbooru' | 'gelbooru' | 'moebooru' | 'realbooru' | 'cumst' | 'redgifs' | 'xvideos' | 'xhamster';
+export type BooruType = 'danbooru' | 'gelbooru' | 'moebooru' | 'realbooru' | 'cumst' | 'redgifs' | 'xvideos' | 'xhamster' | 'pornhub';
 
 export interface BooruSource {
   id: string;
