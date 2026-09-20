@@ -37,6 +37,7 @@ import {
   BooruPost,
   BooruSource,
   BooruTagSuggestion,
+  RedGifsNiche,
   SearchFilterConfig,
   DEFAULT_FILTER_CONFIG,
 } from '../types/booru';
@@ -112,6 +113,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const [loadingMore, setLoadingMore] = useState(false);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const [searchError, setSearchError] = useState<string | null>(null);
+  // RedGifs niches (kategoriler)
+  const [niches, setNiches] = useState<RedGifsNiche[]>([]);
+  const [nichesLoading, setNichesLoading] = useState(false);
   const isFocused = useIsFocused();
 
   // Kapağa dönünce fav setini tazele — viewer'da favlanan anında rozetlenir
@@ -151,6 +155,29 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     StorageService.getSearchHistory().then(setHistory);
     StorageService.getFavoriteTags().then(setFavoriteTags);
   }, [isSearchActive]);
+
+  // RedGifs niches: keşif ekranında ve redgifs aktifken trendleri yükle
+  useEffect(() => {
+    if (isSearchActive || activeSource.type !== 'redgifs') {
+      return;
+    }
+    let cancelled = false;
+    setNichesLoading(true);
+    booruApi
+      .fetchRedGifsNiches()
+      .then((list) => {
+        if (!cancelled) setNiches(list);
+      })
+      .catch(() => {
+        if (!cancelled) setNiches([]);
+      })
+      .finally(() => {
+        if (!cancelled) setNichesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isSearchActive, activeSource.id]);
 
   // Stable key for initialFilter/initialTag to prevent re-search loops on parent re-renders
   const lastInitialKeyRef = useRef<string>('');
@@ -1179,6 +1206,30 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       name={tag}
                       category="meta"
                       onPress={() => executeSearch(tag)}
+                    />
+                  ))}
+                </View>
+              </View>
+            )}
+
+            {/* RedGifs Niches (Kategoriler) */}
+            {activeSource.type === 'redgifs' && (niches.length > 0 || nichesLoading) && (
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <View style={styles.sectionTitleWithIcon}>
+                    <Layers size={16} color={GOLD_ACCENT} />
+                    <Text style={styles.sectionTitle}>Kategoriler (Niches)</Text>
+                  </View>
+                  {nichesLoading && <ActivityIndicator size="small" color={Colors.dark.primary} />}
+                </View>
+                <View style={styles.tagWrap}>
+                  {niches.map((niche) => (
+                    <TagChip
+                      key={`niche-${niche.id}`}
+                      name={niche.name}
+                      category="general"
+                      count={niche.gifCount}
+                      onPress={() => executeSearch(`niche:${niche.id}`)}
                     />
                   ))}
                 </View>

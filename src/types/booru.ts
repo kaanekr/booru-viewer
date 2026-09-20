@@ -43,12 +43,22 @@ export interface BooruPost {
   fileExt?: string;
   fileSize?: number;
   createdAt: string;
+  /** RedGifs kategori (niche) id'leri, örn. ['3-somes', 'natural-tits'] */
+  niches?: string[];
 }
 
 export interface BooruTagSuggestion {
   name: string;
   category: TagCategory;
   postCount: number;
+}
+
+export interface RedGifsNiche {
+  id: string;
+  name: string;
+  gifCount: number;
+  subscribers: number;
+  thumbnail?: string;
 }
 
 export type SortOption = 'default' | 'id' | 'score' | 'rating' | 'user' | 'height' | 'width';
