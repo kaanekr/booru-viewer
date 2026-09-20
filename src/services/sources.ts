@@ -91,6 +91,14 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     description: 'Popüler video platformu araması (önizlemeli klipler)',
     isSafeOnly: false,
   },
+  {
+    id: 'pornhub',
+    name: 'Pornhub',
+    baseUrl: 'https://www.pornhub.com',
+    type: 'pornhub',
+    description: 'Popüler video platformu araması (resmi Webmasters API)',
+    isSafeOnly: false,
+  },
 ];
 
 export const DEFAULT_SOURCE: BooruSource = AVAILABLE_SOURCES[0];

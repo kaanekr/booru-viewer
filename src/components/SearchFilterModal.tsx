@@ -74,6 +74,13 @@ const XHAMSTER_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[
   { label: 'Süre', value: 'height', desc: 'Video Süresine Göre' },
 ];
 
+const PORNHUB_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
+  { label: '---', value: 'default', desc: 'Varsayılan (En Yeniler)' },
+  { label: 'En Yeniler', value: 'id', desc: 'Yüklenme Tarihine Göre' },
+  { label: 'İzlenme', value: 'score', desc: 'En Çok İzlenenler' },
+  { label: 'Oy Oranı', value: 'rating', desc: 'En Beğenilenler' },
+];
+
 const CUMST_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
   { label: 'Score (Popülerlik)', value: 'score', desc: 'En Çok Kaydedilenler / Liderlik' },
   { label: 'Id (En Yeniler)', value: 'id', desc: 'Son Eklenen Gönderiler' },
@@ -325,6 +332,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
     }
     if (activeSource.type === 'xhamster') {
       const opt = XHAMSTER_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
+      return opt ? opt.label : '---';
+    }
+    if (activeSource.type === 'pornhub') {
+      const opt = PORNHUB_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
       return opt ? opt.label : '---';
     }
     if (activeSource.type === 'cumst') {
@@ -679,7 +690,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                     </View>
                   </TouchableOpacity>
                 </>
-              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' ? null : (
+              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' ? null : (
                 <>
                   <View style={styles.rowDivider} />
 
@@ -771,6 +782,8 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                       ? XVIDEOS_SORT_OPTIONS
                       : activeSource.type === 'xhamster'
                       ? XHAMSTER_SORT_OPTIONS
+                      : activeSource.type === 'pornhub'
+                      ? PORNHUB_SORT_OPTIONS
                       : activeSource.type === 'cumst'
                       ? CUMST_SORT_OPTIONS
                       : SORT_OPTIONS
