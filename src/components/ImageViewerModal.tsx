@@ -52,6 +52,8 @@ import {
   isUnsupportedOnIOS,
   resolveGelbooruOriginalUrl,
   resolveRealDimensions,
+  resolveXVideosVideoUrls,
+  resolveXHamsterVideoUrls,
 } from '../utils/media';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -520,15 +522,34 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       };
     }
 
-    // Gelbooru/Realbooru veya originalUrl eksik scrape gönderileri için post detayından çöz
-    if (post.sourceLink && (post.sourceId === 'gelbooru' || post.sourceId === 'realbooru' || !post.originalUrl)) {
-      resolveGelbooruOriginalUrl(post, abortCtrl.signal)
-        .then((url) => {
-          if (alive && url) {
-            setResolvedOriginalUrl(url);
-          }
-        })
-        .catch(() => {});
+    // Gelbooru/Realbooru/XVideos veya originalUrl eksik scrape gönderileri için
+    // post detayından çöz (XVideos mp4'leri süreli token taşır, taze çözülür)
+    if (post.sourceLink) {
+      if (post.sourceId === 'xvideos') {
+        resolveXVideosVideoUrls(post, abortCtrl.signal)
+          .then((files) => {
+            if (alive && files) {
+              setResolvedOriginalUrl(files.high || files.low || files.hls || null);
+            }
+          })
+          .catch(() => {});
+      } else if (post.sourceId === 'xhamster') {
+        resolveXHamsterVideoUrls(post, abortCtrl.signal)
+          .then((files) => {
+            if (alive && files) {
+              setResolvedOriginalUrl(files.high || files.low || files.hls || null);
+            }
+          })
+          .catch(() => {});
+      } else if (post.sourceId === 'gelbooru' || post.sourceId === 'realbooru' || !post.originalUrl) {
+        resolveGelbooruOriginalUrl(post, abortCtrl.signal)
+          .then((url) => {
+            if (alive && url) {
+              setResolvedOriginalUrl(url);
+            }
+          })
+          .catch(() => {});
+      }
     }
 
     return () => {
@@ -580,7 +601,15 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     return Math.max(2, Math.max(w / SCREEN_WIDTH, h / SCREEN_HEIGHT));
   }, [realDims, post.width, post.height]);
 
-  const videoCandidates = useMemo(() => getVideoCandidates(post), [post]);
+  // Detaydan çözülen URL (XVideos taze mp4/HLS, Gelbooru original) video
+  // adaylarına katılır; çözülene dek post'un kendi URL'leri kullanılır.
+  const videoCandidates = useMemo(
+    () =>
+      getVideoCandidates(
+        resolvedOriginalUrl ? { ...post, originalUrl: resolvedOriginalUrl } : post
+      ),
+    [post, resolvedOriginalUrl]
+  );
   const primaryCandidate =
     videoCandidates.length > 0 ? videoCandidates[0] : post.originalUrl || post.sampleUrl || post.previewUrl;
   const mediaUrl = getMediaUrl(primaryCandidate);
@@ -640,7 +669,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     };
   }, [isActive, isWebmOnlyOnIOS, primaryCandidate]);
 
-  const canPlayVideo = isVideo && (!isWebmOnlyOnIOS || Boolean(upgradedMp4Url));
+  const canPlayVideo =
+    isVideo && videoCandidates.length > 0 && (!isWebmOnlyOnIOS || Boolean(upgradedMp4Url));
   const activeVideoUrl = upgradedMp4Url ? getMediaUrl(upgradedMp4Url) : mediaUrl;
 
   const uris = useMemo(() => getImageUris(post, quality), [post, quality]);

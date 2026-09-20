@@ -1,6 +1,8 @@
 import { Platform } from 'react-native';
 import { proxyService } from '../services/proxyService';
 import { ImageQuality } from '../services/storage';
+import { parseXVideosFiles, XVIDEOS_BASE, XVIDEOS_UA } from '../services/xvideos';
+import { parseXhamsterDetail, XHAMSTER_BASE, XHAMSTER_UA } from '../services/xhamster';
 
 const DIMS_CACHE = new Map<string, { w: number; h: number; bytes?: number }>();
 
@@ -337,6 +339,8 @@ export function getMediaHeaders(url: string | undefined): Record<string, string>
     headers['Referer'] = 'https://konachan.net/';
   } else if (target.includes('cum.st') || target.includes('coomer.st')) {
     headers['Referer'] = 'https://cum.st/';
+  } else if (target.includes('xvideos-cdn.com') || target.includes('xvideos.com')) {
+    headers['Referer'] = 'https://www.xvideos.com/';
   }
 
   return headers;
@@ -353,9 +357,93 @@ export function isUnsupportedOnIOS(url: string | undefined): boolean {
 }
 
 /**
+ * XVideos detay sayfasından oynatılabilir video URL'lerini çözer
+ * (setVideoUrlHigh/Low mp4 + HLS, öncelik: high → low → hls).
+ * mp4 URL'leri süreli secure-token taşır; BİLİNÇLİ olarak cache'lenmez —
+ * her viewer açılışında taze çözülür.
+ */
+export async function resolveXVideosVideoUrls(
+  post: {
+    id?: string;
+    sourceLink?: string;
+  },
+  signal?: AbortSignal
+): Promise<{ high: string; low: string; hls: string } | null> {
+  if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 10000);
+  if (signal) {
+    signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+  }
+
+  try {
+    const target = proxyService.proxyUrl(post.sourceLink);
+    const response = await fetch(target, {
+      headers: {
+        'User-Agent': XVIDEOS_UA,
+        Referer: `${XVIDEOS_BASE}/`,
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: ctrl.signal,
+    });
+    clearTimeout(timeout);
+    if (!response.ok) return null;
+    const html = await response.text();
+    const files = parseXVideosFiles(html);
+    if (!files.high && !files.low && !files.hls) return null;
+    return files;
+  } catch {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
+/**
+ * XHamster video linkinden tam çözünürlüklü oynatılabilir video dosyalarını çözer.
+ * (mp4 + HLS, öncelik: high → low → hls).
+ */
+export async function resolveXHamsterVideoUrls(
+  post: {
+    id?: string;
+    sourceLink?: string;
+  },
+  signal?: AbortSignal
+): Promise<{ high: string; low: string; hls: string } | null> {
+  if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 10000);
+  if (signal) {
+    signal.addEventListener('abort', () => ctrl.abort(), { once: true });
+  }
+
+  try {
+    const target = proxyService.proxyUrl(post.sourceLink);
+    const response = await fetch(target, {
+      headers: {
+        'User-Agent': XHAMSTER_UA,
+        Referer: `${XHAMSTER_BASE}/`,
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: ctrl.signal,
+    });
+    clearTimeout(timeout);
+    if (!response.ok) return null;
+    const html = await response.text();
+    const files = parseXhamsterDetail(html);
+    if (!files.high && !files.low && !files.hls) return null;
+    return files;
+  } catch {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
+/**
  * Returns playable video candidate URLs extracted from post.originalUrl and post.sampleUrl,
- * sorted with iOS-compatible formats (.mp4, .mov, .m4v) prioritized ahead of .webm.
- * Only returns video extension URLs (.mp4, .mov, .m4v, .webm); image URLs are excluded.
+ * sorted with iOS-compatible formats (.mp4, .mov, .m4v) first, HLS (.m3u8) next,
+ * .webm last. Only returns video URLs; image URLs are excluded.
  */
 export function getVideoCandidates(
   post: { originalUrl?: string; sampleUrl?: string; [key: string]: any } | null | undefined
@@ -384,7 +472,8 @@ export function getVideoCandidates(
       clean.endsWith('.mp4') ||
       clean.endsWith('.mov') ||
       clean.endsWith('.m4v') ||
-      clean.endsWith('.webm')
+      clean.endsWith('.webm') ||
+      clean.endsWith('.m3u8')
     );
   };
 
@@ -393,6 +482,9 @@ export function getVideoCandidates(
   const getPriority = (url: string) => {
     const clean = url.split('?')[0].toLowerCase();
     if (clean.endsWith('.mp4') || clean.endsWith('.mov') || clean.endsWith('.m4v')) {
+      return 3;
+    }
+    if (clean.endsWith('.m3u8')) {
       return 2;
     }
     if (clean.endsWith('.webm')) {
