@@ -298,32 +298,44 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     setSelectedTag(item);
   };
 
-  const handleTagSearch = (tag: string) => {
+  const handleTagSearch = (tag: string, category?: TagCategory) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
-    dismissThen(() => onSearchTag(tag));
+    // RedGifs sanatçı adı etiketi aranırsa 0 döner; 'user:' mekaniğiyle ara
+    const query =
+      category === 'artist' && post?.sourceId === 'redgifs' && !tag.toLowerCase().startsWith('user:')
+        ? `user:${tag}`
+        : tag;
+    dismissThen(() => onSearchTag(query));
   };
 
-  const handleTagAddToSearch = (tag: string) => {
+  const isRedGifsArtist = (name: string, category?: TagCategory) =>
+    category === 'artist' && post?.sourceId === 'redgifs' && !name.toLowerCase().startsWith('user:');
+
+  const handleTagAddToSearch = (tag: string, category?: TagCategory) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
+    // RedGifs sanatçısı aramaya kullanıcı olarak eklenir
+    const query = isRedGifsArtist(tag, category) ? `user:${tag}` : tag;
     dismissThen(() => {
       if (onAddTagToSearch) {
-        onAddTagToSearch(tag);
+        onAddTagToSearch(query);
       } else {
-        onSearchTag(tag);
+        onSearchTag(query);
       }
     });
   };
 
-  const handleTagExcludeFromSearch = (tag: string) => {
+  const handleTagExcludeFromSearch = (tag: string, category?: TagCategory) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
+    // RedGifs sanatçısı '-user:' olarak dışlanır
+    const query = isRedGifsArtist(tag, category) ? `-user:${tag}` : `-${tag}`;
     dismissThen(() => {
       if (onExcludeTagFromSearch) {
-        onExcludeTagFromSearch(tag);
+        onExcludeTagFromSearch(query);
       } else {
-        onSearchTag(`-${tag}`);
+        onSearchTag(query);
       }
     });
   };
@@ -595,7 +607,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
                     {idx > 0 && <View style={styles.rowDivider} />}
                     <TouchableOpacity
                       style={styles.tagRowItem}
-                      onPress={() => handleTagSearch(item.name)}
+                      onPress={() => handleTagSearch(item.name, item.category)}
                       onLongPress={(e) => {
                         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
                         handleOpenTagMenu(item, e);
@@ -623,6 +635,46 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
               })}
             </View>
           </View>
+
+          {/* 3. NICHES SECTION (RedGifs kategorileri — dokununca o kategoriyi arar) */}
+          {post.niches && post.niches.length > 0 && (
+            <View style={styles.sectionContainer}>
+              <Text style={styles.sectionTitle}>Niches</Text>
+
+              <View style={styles.sectionBody}>
+                {post.niches.map((nicheId, idx) => (
+                  <React.Fragment key={`info-niche-${nicheId}-${idx}`}>
+                    {idx > 0 && <View style={styles.rowDivider} />}
+                    <TouchableOpacity
+                      style={styles.tagRowItem}
+                      onPress={() => handleTagSearch(`niche:${nicheId}`)}
+                      onLongPress={(e) => {
+                        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+                        handleOpenTagMenu({ name: `niche:${nicheId}`, category: 'general' }, e);
+                      }}
+                      delayLongPress={300}
+                      activeOpacity={0.6}
+                    >
+                      <Text style={[styles.tagNameText, { color: '#F5A623' }]} numberOfLines={1}>
+                        {nicheId.replace(/-/g, ' ')}
+                      </Text>
+
+                      <TouchableOpacity
+                        style={styles.yellowDotsBadge}
+                        onPress={(e) => handleOpenTagMenu({ name: `niche:${nicheId}`, category: 'general' }, e)}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.dot} />
+                        <View style={styles.dot} />
+                        <View style={styles.dot} />
+                      </TouchableOpacity>
+                    </TouchableOpacity>
+                  </React.Fragment>
+                ))}
+              </View>
+            </View>
+          )}
 
           {/* 3. OTHER SECTION */}
           <View style={styles.sectionContainer}>
@@ -712,7 +764,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
                     {/* 1. Search */}
                     <TouchableOpacity
                       style={styles.menuItem}
-                      onPress={() => handleTagSearch(selectedTag.name)}
+                      onPress={() => handleTagSearch(selectedTag.name, selectedTag.category)}
                       activeOpacity={0.7}
                     >
                       <Search size={16} color="#E6EDF3" />
@@ -722,7 +774,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
                     {/* 2. Add to Search */}
                     <TouchableOpacity
                       style={styles.menuItem}
-                      onPress={() => handleTagAddToSearch(selectedTag.name)}
+                      onPress={() => handleTagAddToSearch(selectedTag.name, selectedTag.category)}
                       activeOpacity={0.7}
                     >
                       <PlusCircle size={16} color="#E6EDF3" />
@@ -732,7 +784,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
                     {/* 3. Exclude from Search */}
                     <TouchableOpacity
                       style={styles.menuItem}
-                      onPress={() => handleTagExcludeFromSearch(selectedTag.name)}
+                      onPress={() => handleTagExcludeFromSearch(selectedTag.name, selectedTag.category)}
                       activeOpacity={0.7}
                     >
                       <MinusCircle size={16} color="#E6EDF3" />
