@@ -176,13 +176,27 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
   // Autocomplete from server for filter modal tag input
   useEffect(() => {
-    if (!draft.autocompleteFromServer || !tagInput || tagInput.trim().length < 2) {
+    if (!draft.autocompleteFromServer || !tagInput) {
+      setSuggestions([]);
+      return;
+    }
+
+    if (tagInput.endsWith(' ')) {
+      setSuggestions([]);
+      return;
+    }
+
+    const tokens = tagInput.trim().split(/[\s,]+/);
+    const activeToken = tokens[tokens.length - 1] || '';
+    const cleanToken = activeToken.replace(/^-+/, '').trim();
+
+    if (cleanToken.length < 2) {
       setSuggestions([]);
       return;
     }
 
     const timer = setTimeout(async () => {
-      const list = await booruApi.searchTags(tagInput.trim());
+      const list = await booruApi.searchTags(cleanToken);
       setSuggestions(list);
     }, 200);
 
@@ -190,13 +204,35 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
   }, [tagInput, draft.autocompleteFromServer]);
 
   const handleAddTag = (tagToAdd: string) => {
-    const clean = tagToAdd.trim().toLowerCase().replace(/\s+/g, '_');
-    if (!clean) return;
-    if (!draft.tags.includes(clean)) {
+    // Boşluk veya virgülle ayrılmış birden fazla etiketi tek tek ayrıştır
+    const parts = tagToAdd.trim().split(/[\s,]+/);
+    const validTags = parts
+      .map((p) => p.trim().toLowerCase())
+      .filter((p) => p.length > 0 && !draft.tags.includes(p));
+
+    if (validTags.length > 0) {
       Haptics.selectionAsync();
       setDraft((prev) => ({
         ...prev,
-        tags: [...prev.tags, clean],
+        tags: [...prev.tags, ...validTags],
+      }));
+    }
+    setTagInput('');
+    setSuggestions([]);
+  };
+
+  const handleSelectSuggestion = (suggestedTag: string) => {
+    Haptics.selectionAsync();
+    // Varsa önceki yazılmış token'ları da al, son yazılanı öneri ile tamamla
+    const tokens = tagInput.trim().split(/[\s,]+/);
+    const previousTokens = tokens.slice(0, -1).map((t) => t.trim().toLowerCase()).filter(Boolean);
+    const cleanSuggested = suggestedTag.trim().toLowerCase();
+
+    const toAdd = [...previousTokens, cleanSuggested].filter((t) => !draft.tags.includes(t));
+    if (toAdd.length > 0) {
+      setDraft((prev) => ({
+        ...prev,
+        tags: [...prev.tags, ...toAdd],
       }));
     }
     setTagInput('');
