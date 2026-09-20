@@ -52,8 +52,13 @@ const SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
   { label: 'Width', value: 'width', desc: 'Genişliğe Göre' },
 ];
 
+const REDGIFS_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
+  { label: '---', value: 'default', desc: 'Varsayılan (Trendler)' },
+  { label: 'Trendler (Trending)', value: 'score', desc: 'En Popüler / Trend Klipler' },
+  { label: 'En Yeniler (Latest)', value: 'id', desc: 'Son Eklenen Videolar' },
+];
+
 const CUMST_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
-  { label: '---', value: 'default', desc: 'Varsayılan Sıralama' },
   { label: 'Score (Popülerlik)', value: 'score', desc: 'En Çok Kaydedilenler / Liderlik' },
   { label: 'Id (En Yeniler)', value: 'id', desc: 'Son Eklenen Gönderiler' },
   { label: 'Videolar', value: 'width', desc: 'Videolu Gönderiler' },
@@ -294,6 +299,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
   };
 
   const getSortLabel = () => {
+    if (activeSource.type === 'redgifs') {
+      const opt = REDGIFS_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
+      return opt ? opt.label : '---';
+    }
     if (activeSource.type === 'cumst') {
       const opt = CUMST_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
       return opt ? opt.label : '---';
@@ -646,7 +655,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                     </View>
                   </TouchableOpacity>
                 </>
-              ) : (
+              ) : activeSource.type === 'redgifs' ? null : (
                 <>
                   <View style={styles.rowDivider} />
 
@@ -732,7 +741,12 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                 <View style={styles.popoverCard}>
                   <Text style={styles.popoverTitle}>Sort by</Text>
                   <View style={styles.popoverList}>
-                    {(activeSource.type === 'cumst' ? CUMST_SORT_OPTIONS : SORT_OPTIONS).map((opt) => {
+                    {(activeSource.type === 'redgifs'
+                      ? REDGIFS_SORT_OPTIONS
+                      : activeSource.type === 'cumst'
+                      ? CUMST_SORT_OPTIONS
+                      : SORT_OPTIONS
+                    ).map((opt) => {
                       const isSelected = draft.sortBy === opt.value;
                       return (
                         <TouchableOpacity

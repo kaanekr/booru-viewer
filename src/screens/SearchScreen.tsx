@@ -282,8 +282,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
     try {
       const posts = await booruApi.fetchPostsWithFilter(config, startPage, effectiveLimit);
-      // Guard: Ignore response if source changed or newer search request was triggered
-      if (requestId !== searchRequestIdRef.current || expectedSourceId !== lastActiveSourceIdRef.current) {
+      // Guard: Ignore response if newer search request was triggered
+      if (requestId !== searchRequestIdRef.current) {
         return;
       }
 
@@ -292,17 +292,15 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         if (u) Image.prefetch(u, { headers: getMediaHeaders(u) });
       });
       setResults(posts);
-    } catch (e: any) {
-      if (requestId !== searchRequestIdRef.current || expectedSourceId !== lastActiveSourceIdRef.current) {
-        return;
+      if (posts.length === 0) {
+        setSearchError('Sonuç bulunamadı');
       }
+    } catch (e: any) {
       console.warn('Search with config error:', e);
       setResults([]);
       setSearchError(e?.message || 'Arama sonuçları getirilirken bir hata oluştu.');
     } finally {
-      if (requestId === searchRequestIdRef.current && expectedSourceId === lastActiveSourceIdRef.current) {
-        setLoading(false);
-      }
+      setLoading(false);
     }
   };
 
@@ -429,17 +427,12 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         return [...prev, ...unique];
       });
     } catch (e) {
-      if (requestId !== searchRequestIdRef.current || expectedSourceId !== lastActiveSourceIdRef.current) {
-        return;
-      }
       // Hatalı sayfada sayacı geri al ki sonraki kaydırma aynı sayfayı denesin
       setPage(currentBase);
       currentPageRef.current = currentBase;
       console.warn('Load more search error:', e);
     } finally {
-      if (requestId === searchRequestIdRef.current && expectedSourceId === lastActiveSourceIdRef.current) {
-        setLoadingMore(false);
-      }
+      setLoadingMore(false);
     }
   };
 

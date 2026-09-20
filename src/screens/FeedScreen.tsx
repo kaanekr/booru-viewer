@@ -106,6 +106,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           return [...prev, ...uniqueNew];
         });
       } catch (err: any) {
+        console.warn('[FeedScreen] loadPosts error:', err);
         // Yükleme hatasında sayacı geri al ki sonraki kaydırma aynı sayfayı denesin
         if (pageNum > 1) {
           setPage(pageNum - 1);

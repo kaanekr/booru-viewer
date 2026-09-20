@@ -124,16 +124,16 @@ export class BooruApiService {
       });
     }
 
-    // Min Score
-    if (filter.minScore && filter.minScore > 0) {
+    // Min Score (RedGifs'te skor filtresi yok; literal tag olarak gidip sonucu sıfırlar)
+    if (filter.minScore && filter.minScore > 0 && activeSource.type !== 'redgifs') {
       parts.push(`score:>=${filter.minScore}`);
     }
 
-    // User / Artist / Creator
+    // User / Artist / Creator (RedGifs kullanıcı araması ayrı endpoint'ten yapılır)
     if (filter.user && filter.user.trim()) {
       if (activeSource.type === 'cumst') {
         parts.push(`creator:${filter.user.trim()}`);
-      } else {
+      } else if (activeSource.type !== 'redgifs') {
         parts.push(`user:${filter.user.trim()}`);
       }
     }
@@ -164,7 +164,11 @@ export class BooruApiService {
       }
     }
 
-    // Sort By & Time Range
+    // Sort By & Time Range (RedGifs sıralaması order= parametresiyle fetchRedGifsPosts içinde yapılır;
+    // buraya order:/sort: token'ı eklenirse literal tag sayılıp sonuç sıfırlanır)
+    if (activeSource.type === 'redgifs') {
+      return parts.join(' ').trim();
+    }
     if (filter.sortBy === 'score') {
       if (activeSource.type === 'gelbooru' || activeSource.type === 'realbooru') {
         // Gelbooru motoru yalnızca toplam skora göre sıralar; zaman aralığı
@@ -336,6 +340,8 @@ export class BooruApiService {
         return await this.fetchRealbooruPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'cumst') {
         return await this.fetchCumStPosts(source, page, limit, tags, includeBlacklisted);
+      } else if (source.type === 'redgifs') {
+        return await this.fetchRedGifsPosts(source, page, limit, tags, filter);
       } else {
         return await this.fetchDanbooruPosts(source, page, limit, tags, includeBlacklisted);
       }
@@ -986,6 +992,238 @@ export class BooruApiService {
     return await this.filterBlacklistedPosts(posts, includeBlacklisted);
   }
 
+  private redGifsToken: string | null = null;
+  private redGifsTokenExpiry: number = 0;
+
+  private async fetchRedGifsApi(url: string, token?: string): Promise<Response> {
+    const headers: Record<string, string> = {
+      'User-Agent': USER_AGENT,
+      Origin: 'https://www.redgifs.com',
+      Referer: 'https://www.redgifs.com/',
+      Accept: 'application/json',
+      'Cache-Control': 'no-store, no-cache',
+    };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+      headers['X-Redgifs-Token'] = token;
+      headers['X-Authorization'] = `Bearer ${token}`;
+    }
+    return await fetchBooru(url, { headers });
+  }
+
+  private async getRedGifsToken(): Promise<string> {
+    const now = Date.now();
+    if (this.redGifsToken && now < this.redGifsTokenExpiry) {
+      return this.redGifsToken;
+    }
+
+    const authRes = await this.fetchRedGifsApi('https://api.redgifs.com/v2/auth/temporary');
+    if (!authRes.ok) {
+      const errText = await authRes.text().catch(() => '');
+      throw new Error(`RedGifs auth başarısız (${authRes.status}): ${errText}`);
+    }
+
+    const data = await authRes.json();
+    if (!data?.token) {
+      throw new Error('RedGifs token alınamadı (boş yanıt)');
+    }
+
+    const token = data.token as string;
+    this.redGifsToken = token;
+    // Mobil IP değişimlerine karşı TTL'i 30 dakikada tutuyoruz
+    this.redGifsTokenExpiry = now + 30 * 60 * 1000;
+    return token;
+  }
+
+  private async fetchRedGifsPosts(
+    source: BooruSource,
+    page: number,
+    limit: number,
+    tags: string,
+    filter?: SearchFilterConfig
+  ): Promise<BooruPost[]> {
+    let cleanTags = tags.trim();
+    // Eğer tags içinde rating filtresi vs yoksa ve doğrudan etiket araması yapılıyorsa
+    // filter.tags varsa onu da kontrol et
+    if (!cleanTags && filter?.tags && filter.tags.length > 0) {
+      cleanTags = filter.tags.map((t) => t.trim()).filter(Boolean).join(' ');
+    }
+
+    // RedGifs '-tag' dışlama sözdizimini bilmez; dahil/hariç ayrımı yapılıp
+    // hariç tutulanlar sunucuya gönderilmeden istemcide filtrelenir
+    const normTag = (t: string) => t.toLowerCase().replace(/\s+/g, '_');
+    const tokens = cleanTags.split(/\s+/).filter(Boolean);
+    const excludeTags = tokens.filter((t) => t.startsWith('-')).map((t) => normTag(t.replace(/^-+/, ''))).filter(Boolean);
+    const includeTokens = tokens.filter((t) => !t.startsWith('-'));
+    // Sunucuya ham haliyle gönderilir: RedGifs kısmi eşleşme yapar ('ana', 'blond')
+    // ama '_' ile yarım kalan çok kelimeli etikette ('big_t') 0 döner; boşluk korunmalı
+    const includeTags = includeTokens.map((t) => t.trim()).filter(Boolean).join(' ');
+
+    let authToken = '';
+    try {
+      authToken = await this.getRedGifsToken();
+    } catch (authErr: any) {
+      console.warn('[BooruAPI] RedGifs auth token error:', authErr);
+      throw new Error(`RedGifs kimlik doğrulama başarısız: ${authErr?.message || authErr}`);
+    }
+
+    // Sıralama belirleme (RedGifs Order değerleri: trending, latest, score, top7, top28, top)
+    let order = 'trending';
+    if (filter?.sortBy === 'id') {
+      order = 'latest';
+    } else if (filter?.sortBy === 'score') {
+      if (filter.timeRange === '1d') {
+        order = 'trending';
+      } else if (filter.timeRange === '1w') {
+        order = 'top7';
+      } else if (filter.timeRange === '1m') {
+        order = 'top28';
+      } else if (filter.timeRange === '1y' || filter.timeRange === 'all') {
+        order = 'top';
+      } else {
+        order = 'score';
+      }
+    } else if (filter?.sortBy === 'rating' || filter?.sortBy === 'user') {
+      order = 'trending';
+    }
+
+    const count = Math.min(Math.max(limit, 10), 40);
+    // Kullanıcı/üretici araması: kütüphanedeki search_user karşılığı (canlı doğrulandı).
+    // Not: bu endpoint order=trending ile boş döner (latest zorunlu) ve tags parametresini
+    // desteklemez (tags eklenirse 0 döner); kullanıcı+etiket birlikteyse etiketler istemcide filtrelenir.
+    const searchUsername = filter?.user?.trim();
+    const searchUrl = searchUsername
+      ? `https://api.redgifs.com/v2/users/${encodeURIComponent(searchUsername)}/search?page=${page}&count=${count}&order=latest&type=g`
+      : includeTags
+      ? `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}&tags=${encodeURIComponent(includeTags)}`
+      : `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}`;
+
+    let response = await this.fetchRedGifsApi(searchUrl, authToken);
+
+    // 401 durumunda token'ı sıfırlayıp 1 kez yeniden dene
+    if (response.status === 401) {
+      this.redGifsToken = null;
+      this.redGifsTokenExpiry = 0;
+      authToken = await this.getRedGifsToken();
+      response = await this.fetchRedGifsApi(searchUrl, authToken);
+    }
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => '');
+      if (response.status === 404 && searchUsername) {
+        throw new Error(`RedGifs kullanıcısı bulunamadı: ${searchUsername}`);
+      }
+      throw new Error(`RedGifs API hatası (${response.status}): ${errText}`);
+    }
+
+    const data = await response.json();
+    let gifs = Array.isArray(data.gifs) ? data.gifs : [];
+
+    // Etiket araması boş dönerse bulanık çözüm: önce suggest ile en alakalı
+    // etikete tamamla ('big t' -> 'Big Tits'), sonra tekrar ara
+    if (gifs.length === 0 && !searchUsername && includeTags && excludeTags.length === 0) {
+      try {
+        // '_' içeren yarım etiket suggest'te bulunamaz; boşluklu dene ('big_t' -> 'big t')
+        const sugQuery = includeTags.replace(/_/g, ' ').trim() || includeTags;
+        const sugUrl = `https://api.redgifs.com/v2/search/suggest?query=${encodeURIComponent(sugQuery)}`;
+        const sugRes = await this.fetchRedGifsApi(sugUrl, authToken);
+        if (sugRes.ok) {
+          const sugData = await sugRes.json();
+          // En çok içeriğe sahip farklı etiketi seç ('Big' yerine 'Big Tits')
+          const top = Array.isArray(sugData)
+            ? sugData
+                .filter((s: any) => s && s.text && s.text.toLowerCase() !== includeTags.toLowerCase())
+                .sort((a: any, b: any) => (Number(b.gifs) || 0) - (Number(a.gifs) || 0))[0]
+            : null;
+          if (top?.text) {
+            const retryUrl = `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}&tags=${encodeURIComponent(top.text)}`;
+            const retryRes = await this.fetchRedGifsApi(retryUrl, authToken);
+            if (retryRes.ok) {
+              const retryData = await retryRes.json();
+              if (Array.isArray(retryData.gifs) && retryData.gifs.length > 0) {
+                gifs = retryData.gifs;
+              }
+            }
+          }
+        }
+      } catch {}
+    }
+
+    // Hâlâ boşsa ve sorgu tek kelimeyse kullanıcı adı olabilir;
+    // kullanıcı endpoint'ine düş (örn. arama kutusuna 'white_l0ad' yazılması)
+    if (gifs.length === 0 && !searchUsername && includeTokens.length === 1 && excludeTags.length === 0) {
+      try {
+        const userUrl = `https://api.redgifs.com/v2/users/${encodeURIComponent(includeTokens[0])}/search?page=${page}&count=${count}&order=latest&type=g`;
+        const userRes = await this.fetchRedGifsApi(userUrl, authToken);
+        if (userRes.ok) {
+          const userData = await userRes.json();
+          if (Array.isArray(userData.gifs) && userData.gifs.length > 0) {
+            gifs = userData.gifs;
+          }
+        }
+      } catch {}
+    }
+
+    const posts: BooruPost[] = gifs.map((g: any) => {
+      const hdUrl = g.urls?.hd || '';
+      const sdUrl = g.urls?.sd || '';
+      const silentUrl = g.urls?.silent || '';
+      const fullVideo = hdUrl || sdUrl || silentUrl;
+      const previewThumb = g.urls?.thumbnail || g.urls?.poster || '';
+      const sampleMedia = sdUrl || silentUrl || fullVideo;
+
+      const rawTags = Array.isArray(g.tags) ? g.tags : [];
+      const generalTags = rawTags.map((t: string) => t.toLowerCase().replace(/\s+/g, '_'));
+      const artistTags = g.userName ? [g.userName] : [];
+      const metaTags = ['video', ...(g.hasAudio ? ['sound'] : [])];
+      const allTags = Array.from(new Set([...artistTags, ...generalTags, ...metaTags]));
+
+      const width = Number(g.width) || 720;
+      const height = Number(g.height) || 1280;
+      const aspectRatio = width > 0 && height > 0 ? width / height : 9 / 16;
+
+      return {
+        id: `rg_${g.id}`,
+        sourceId: source.id,
+        sourceName: source.name,
+        previewUrl: previewThumb,
+        sampleUrl: sampleMedia,
+        originalUrl: fullVideo,
+        width,
+        height,
+        aspectRatio,
+        rating: 'e',
+        score: Number(g.likes) || 0,
+        favCount: Number(g.likes) || 0,
+        tags: {
+          artist: artistTags,
+          character: [],
+          copyright: [],
+          general: generalTags,
+          meta: metaTags,
+        },
+        allTags,
+        sourceLink: `https://www.redgifs.com/watch/${g.id}`,
+        fileExt: 'mp4',
+        createdAt: g.createDate ? new Date(g.createDate * 1000).toISOString() : new Date().toISOString(),
+      };
+    });
+
+    // İstemci tarafı filtreleme: kullanıcı+etiket birlikteliğinde veya '-tag'
+    // dışlamalarında sunucu filtrelemez; burada elenir
+    const needsClientFilter =
+      excludeTags.length > 0 || (searchUsername && includeTokens.length > 0);
+    if (!needsClientFilter) return posts;
+
+    const includeNorm = includeTokens.map(normTag).filter(Boolean);
+    return posts.filter((p) => {
+      const hay = p.allTags.map(normTag);
+      if (excludeTags.some((t) => hay.includes(t))) return false;
+      if (searchUsername && includeNorm.some((t) => !hay.includes(t))) return false;
+      return true;
+    });
+  }
+
   private async fetchCumStPosts(
     source: BooruSource,
     page: number,
@@ -1265,6 +1503,27 @@ export class BooruApiService {
           }
         } catch {}
 
+        return [];
+      } else if (source.type === 'redgifs') {
+        try {
+          const token = await this.getRedGifsToken();
+          // Kütüphanedeki fetch_tag_suggestions karşılığı (canlı doğrulandı)
+          const url = `https://api.redgifs.com/v2/search/suggest?query=${encodeURIComponent(query.trim())}`;
+          const response = await this.fetchRedGifsApi(url, token);
+          if (response.ok) {
+            const data = await response.json();
+            if (Array.isArray(data)) {
+              return data
+                .filter((s: any) => s && s.text)
+                .slice(0, limit)
+                .map((s: any) => ({
+                  name: String(s.text).toLowerCase().replace(/\s+/g, '_'),
+                  category: 'general' as TagCategory,
+                  postCount: Number(s.gifs) || 0,
+                }));
+            }
+          }
+        } catch {}
         return [];
       } else if (source.type === 'gelbooru' || source.type === 'realbooru') {
         const url = `${source.baseUrl}/autocomplete.php?q=${encodeURIComponent(query.trim())}`;
