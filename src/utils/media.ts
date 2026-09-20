@@ -332,12 +332,8 @@ export function getMediaHeaders(url: string | undefined): Record<string, string>
     headers['Referer'] = 'https://rule34.xxx/';
   } else if (target.includes('danbooru.donmai.us') || target.includes('cdn.donmai.us')) {
     headers['Referer'] = 'https://danbooru.donmai.us/';
-  } else if (target.includes('safebooru.org')) {
-    headers['Referer'] = 'https://safebooru.org/';
   } else if (target.includes('yande.re')) {
     headers['Referer'] = 'https://yande.re/';
-  } else if (target.includes('konachan.net')) {
-    headers['Referer'] = 'https://konachan.net/';
   } else if (target.includes('cum.st') || target.includes('coomer.st')) {
     headers['Referer'] = 'https://cum.st/';
   } else if (target.includes('xvideos-cdn.com') || target.includes('xvideos.com')) {

@@ -34,12 +34,6 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
     } else if (lowerUrl.includes('yande.re')) {
       sourceId = 'yandere';
       sourceName = 'Yande.re';
-    } else if (lowerUrl.includes('konachan')) {
-      sourceId = 'konachan';
-      sourceName = 'Konachan';
-    } else if (lowerUrl.includes('safebooru')) {
-      sourceId = 'safebooru';
-      sourceName = 'Safebooru';
     } else if (lowerUrl.includes('cum.st') || lowerUrl.includes('coomer.st')) {
       sourceId = 'cumst';
       sourceName = 'Cum.st';
@@ -142,13 +136,11 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
 
 function inferSourceFromHaystack(haystack: string): { id: string; name: string } | null {
   if (!haystack) return null;
-  if (haystack.includes('safebooru')) return { id: 'safebooru', name: 'Safebooru' };
   if (haystack.includes('gelbooru')) return { id: 'gelbooru', name: 'Gelbooru' };
   if (haystack.includes('realbooru')) return { id: 'realbooru', name: 'Realbooru' };
   if (haystack.includes('rule34')) return { id: 'rule34', name: 'Rule34.xxx' };
   if (haystack.includes('danbooru') || haystack.includes('donmai')) return { id: 'danbooru', name: 'Danbooru' };
   if (haystack.includes('yande.re')) return { id: 'yandere', name: 'Yande.re' };
-  if (haystack.includes('konachan')) return { id: 'konachan', name: 'Konachan' };
   if (haystack.includes('cum.st') || haystack.includes('coomer')) return { id: 'cumst', name: 'Cum.st' };
   return null;
 }
