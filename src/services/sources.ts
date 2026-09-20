@@ -67,6 +67,14 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     description: 'Creator media & clips archive',
     isSafeOnly: false,
   },
+  {
+    id: 'redgifs',
+    name: 'RedGifs',
+    baseUrl: 'https://api.redgifs.com',
+    type: 'redgifs',
+    description: 'High quality video clips & GIFs',
+    isSafeOnly: false,
+  },
 ];
 
 export const DEFAULT_SOURCE: BooruSource = AVAILABLE_SOURCES[0];

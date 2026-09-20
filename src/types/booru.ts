@@ -1,4 +1,4 @@
-export type BooruType = 'danbooru' | 'gelbooru' | 'moebooru' | 'realbooru' | 'cumst';
+export type BooruType = 'danbooru' | 'gelbooru' | 'moebooru' | 'realbooru' | 'cumst' | 'redgifs';
 
 export interface BooruSource {
   id: string;
