@@ -43,3 +43,4 @@ yarn-error.*
 # local / test
 *.abbj
 .claude/
+build-ipa/
