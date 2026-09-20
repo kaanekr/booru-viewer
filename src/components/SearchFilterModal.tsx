@@ -58,6 +58,22 @@ const REDGIFS_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[]
   { label: 'En Yeniler (Latest)', value: 'id', desc: 'Son Eklenen Videolar' },
 ];
 
+const XVIDEOS_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
+  { label: '---', value: 'default', desc: 'Varsayılan (Alaka Düzeyi)' },
+  { label: 'En Yeniler', value: 'id', desc: 'Yüklenme Tarihine Göre' },
+  { label: 'İzlenme', value: 'score', desc: 'En Çok İzlenenler' },
+  { label: 'Oy Oranı', value: 'rating', desc: 'En Beğenilenler' },
+  { label: 'Süre', value: 'height', desc: 'Video Süresine Göre' },
+];
+
+const XHAMSTER_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
+  { label: '---', value: 'default', desc: 'Varsayılan (En Yeniler)' },
+  { label: 'En Yeniler', value: 'id', desc: 'Yüklenme Tarihine Göre' },
+  { label: 'İzlenme', value: 'score', desc: 'En Çok İzlenenler' },
+  { label: 'En İyiler', value: 'rating', desc: 'En Beğenilenler' },
+  { label: 'Süre', value: 'height', desc: 'Video Süresine Göre' },
+];
+
 const CUMST_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
   { label: 'Score (Popülerlik)', value: 'score', desc: 'En Çok Kaydedilenler / Liderlik' },
   { label: 'Id (En Yeniler)', value: 'id', desc: 'Son Eklenen Gönderiler' },
@@ -301,6 +317,14 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
   const getSortLabel = () => {
     if (activeSource.type === 'redgifs') {
       const opt = REDGIFS_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
+      return opt ? opt.label : '---';
+    }
+    if (activeSource.type === 'xvideos') {
+      const opt = XVIDEOS_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
+      return opt ? opt.label : '---';
+    }
+    if (activeSource.type === 'xhamster') {
+      const opt = XHAMSTER_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
       return opt ? opt.label : '---';
     }
     if (activeSource.type === 'cumst') {
@@ -655,7 +679,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                     </View>
                   </TouchableOpacity>
                 </>
-              ) : activeSource.type === 'redgifs' ? null : (
+              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' ? null : (
                 <>
                   <View style={styles.rowDivider} />
 
@@ -743,6 +767,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                   <View style={styles.popoverList}>
                     {(activeSource.type === 'redgifs'
                       ? REDGIFS_SORT_OPTIONS
+                      : activeSource.type === 'xvideos'
+                      ? XVIDEOS_SORT_OPTIONS
+                      : activeSource.type === 'xhamster'
+                      ? XHAMSTER_SORT_OPTIONS
                       : activeSource.type === 'cumst'
                       ? CUMST_SORT_OPTIONS
                       : SORT_OPTIONS

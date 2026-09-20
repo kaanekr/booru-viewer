@@ -2,6 +2,24 @@ import { BooruPost, BooruSource, BooruTagGroups, BooruTagSuggestion, TagCategory
 import { DEFAULT_SOURCE } from './sources';
 import { proxyService } from './proxyService';
 import { StorageService } from './storage';
+import {
+  buildXVideosSearchCandidates,
+  buildXVideosSearchUrl,
+  parseXVideosListing,
+  xvideosDatefForTimeRange,
+  XVIDEOS_BASE,
+  XVIDEOS_UA,
+} from './xvideos';
+import type { XVideosDatef, XVideosSort } from './xvideos';
+import {
+  buildXhamsterSearchCandidates,
+  buildXhamsterSearchUrl,
+  parseXhamsterListing,
+  xhamsterDateForTimeRange,
+  XHAMSTER_BASE,
+  XHAMSTER_UA,
+} from './xhamster';
+import type { XHamsterDate, XHamsterSort } from './xhamster';
 
 const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 BooruViewer/1.0';
 
@@ -124,15 +142,18 @@ export class BooruApiService {
       });
     }
 
-    // Min Score (RedGifs'te skor filtresi yok; literal tag olarak gidip sonucu sıfırlar)
-    if (filter.minScore && filter.minScore > 0 && activeSource.type !== 'redgifs') {
+    // Min Score (RedGifs/XVideos/XHamster'da skor filtresi yok; literal tag olarak gidip sonucu sıfırlar)
+    if (filter.minScore && filter.minScore > 0 && activeSource.type !== 'redgifs' && activeSource.type !== 'xvideos' && activeSource.type !== 'xhamster') {
       parts.push(`score:>=${filter.minScore}`);
     }
 
-    // User / Artist / Creator (RedGifs kullanıcı araması ayrı endpoint'ten yapılır)
+    // User / Artist / Creator (RedGifs kullanıcı araması ayrı endpoint'ten yapılır;
+    // XVideos/XHamster'da profil sayfası araması yok, kullanıcı adı düz kelime olarak aranır)
     if (filter.user && filter.user.trim()) {
       if (activeSource.type === 'cumst') {
         parts.push(`creator:${filter.user.trim()}`);
+      } else if (activeSource.type === 'xvideos' || activeSource.type === 'xhamster') {
+        parts.push(filter.user.trim());
       } else if (activeSource.type !== 'redgifs') {
         parts.push(`user:${filter.user.trim()}`);
       }
@@ -148,8 +169,9 @@ export class BooruApiService {
       parts.push(`type:${filter.cumstMediaType}`);
     }
 
-    // Historical Leaderboard / Anchor Date
-    if (filter.leaderboardDate) {
+    // Historical Leaderboard / Anchor Date (Cum.st'e özel; başka motorda
+    // literal tag sayılıp sonucu sıfırlar)
+    if (filter.leaderboardDate && activeSource.type !== 'xvideos' && activeSource.type !== 'redgifs' && activeSource.type !== 'xhamster') {
       parts.push(`date:${filter.leaderboardDate.trim()}`);
     }
 
@@ -164,9 +186,10 @@ export class BooruApiService {
       }
     }
 
-    // Sort By & Time Range (RedGifs sıralaması order= parametresiyle fetchRedGifsPosts içinde yapılır;
-    // buraya order:/sort: token'ı eklenirse literal tag sayılıp sonuç sıfırlanır)
-    if (activeSource.type === 'redgifs') {
+    // Sort By & Time Range (RedGifs/XVideos/XHamster sıralaması order=/sort= parametresiyle
+    // kendi fetch fonksiyonları içinde yapılır; buraya order:/sort: token'ı
+    // eklenirse literal tag sayılıp sonuç sıfırlanır)
+    if (activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster') {
       return parts.join(' ').trim();
     }
     if (filter.sortBy === 'score') {
@@ -342,6 +365,10 @@ export class BooruApiService {
         return await this.fetchCumStPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'redgifs') {
         return await this.fetchRedGifsPosts(source, page, limit, tags, filter);
+      } else if (source.type === 'xvideos') {
+        return await this.fetchXVideosPosts(source, page, limit, tags, includeBlacklisted, filter);
+      } else if (source.type === 'xhamster') {
+        return await this.fetchXHamsterPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else {
         return await this.fetchDanbooruPosts(source, page, limit, tags, includeBlacklisted);
       }
@@ -1224,6 +1251,167 @@ export class BooruApiService {
     });
   }
 
+  private async fetchXVideosPosts(
+    source: BooruSource,
+    page: number,
+    limit: number,
+    tags: string,
+    includeBlacklisted: boolean = false,
+    filter?: SearchFilterConfig
+  ): Promise<BooruPost[]> {
+    // XVideos '-' dışlama sözdizimini anlamaz; hariç tutulanlar atılır
+    // (liste kartlarında etiket verisi yok, istemcide filtrelenemez).
+    const tokens = tags
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .filter((t) => !t.startsWith('-'));
+    const k = tokens.join(' ');
+    void limit;
+
+    // Sıralama eşlemesi (sitenin sort parametreleri: relevance, uploaddate,
+    // rating, length, views, random). 'user' sort'unun site karşılığı yok.
+    let sort: XVideosSort = 'relevance';
+    let datef: XVideosDatef = 'all';
+    const sb = filter?.sortBy;
+    if (sb === 'id') {
+      sort = 'uploaddate';
+    } else if (sb === 'score') {
+      sort = 'views';
+      datef = xvideosDatefForTimeRange(filter?.timeRange);
+    } else if (sb === 'rating') {
+      sort = 'rating';
+      datef = xvideosDatefForTimeRange(filter?.timeRange);
+    } else if (sb === 'height' || sb === 'width') {
+      sort = 'length';
+    }
+
+    const candidates = buildXVideosSearchCandidates(source.baseUrl || XVIDEOS_BASE, page, k, sort, datef);
+    const headers = {
+      'User-Agent': XVIDEOS_UA,
+      Referer: `${XVIDEOS_BASE}/`,
+      'Accept-Language': 'en-US,en;q=0.9',
+      Accept: 'text/html,application/xhtml+xml',
+    };
+
+    let lastError: Error | null = null;
+    let reachedSite = false;
+    for (const url of candidates) {
+      let response: Response;
+      try {
+        response = await this.fetchWithRetry(url, { headers });
+      } catch (e: any) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        continue;
+      }
+      // 404 = yanlış sayfa varyantı, sonraki adayı dene; diğerleri gerçek hata
+      if (response.status === 404) {
+        lastError = new Error(`XVideos sayfası bulunamadı (404): ${url}`);
+        continue;
+      }
+      if (!response.ok) {
+        if (response.status === 429) {
+          throw new Error('XVideos istek sınırı aşıldı (429 Too Many Requests). Lütfen bir süre bekleyin.');
+        }
+        if (response.status >= 500) {
+          throw new Error(`XVideos sunucusu aşırı yüklendi (${response.status} ${response.statusText}).`);
+        }
+        throw new Error(`XVideos hatası: ${response.status} ${response.statusText}`);
+      }
+
+      reachedSite = true;
+      const html = await response.text();
+      const posts = parseXVideosListing(html, source);
+      if (posts.length > 0) {
+        return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+      }
+      // Boş liste: aday varyantı yanlış olabilir, sonrakini dene
+    }
+
+    // Siteye hiç ulaşılamadıysa (ağ hatası / tüm adaylar 404) son hatayı
+    // fırlat; aksi halde gerçekten sonuç yok (liste sonu) → []
+    if (!reachedSite && lastError) throw lastError;
+    return [];
+  }
+
+  private async fetchXHamsterPosts(
+    source: BooruSource,
+    page: number,
+    limit: number,
+    tags: string,
+    includeBlacklisted: boolean = false,
+    filter?: SearchFilterConfig
+  ): Promise<BooruPost[]> {
+    // XHamster '-' dışlama sözdizimini anlamaz; hariç tutulanlar atılır
+    const tokens = tags
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .filter((t) => !t.startsWith('-'));
+    const k = tokens.join(' ');
+    void limit;
+
+    // Sıralama eşlemesi: score->sort=views + date from timeRange (1d=latest,1w=weekly,1m=monthly,1y=yearly); id/default->sort=newest; rating->sort=best; height/width->sort=longest
+    let sort: XHamsterSort = 'newest';
+    let date: XHamsterDate | undefined = undefined;
+    const sb = filter?.sortBy;
+    if (sb === 'score') {
+      sort = 'views';
+      date = xhamsterDateForTimeRange(filter?.timeRange);
+    } else if (sb === 'rating') {
+      sort = 'best';
+    } else if (sb === 'height' || sb === 'width') {
+      sort = 'longest';
+    } else if (sb === 'id' || sb === 'default' || !sb) {
+      sort = 'newest';
+    }
+
+    const candidates = buildXhamsterSearchCandidates(source.baseUrl || XHAMSTER_BASE, page, k, sort, date);
+    const headers = {
+      'User-Agent': XHAMSTER_UA,
+      Referer: `${XHAMSTER_BASE}/`,
+      'Accept-Language': 'en-US,en;q=0.9',
+      Accept: 'text/html,application/xhtml+xml',
+    };
+
+    let lastError: Error | null = null;
+    let reachedSite = false;
+    for (const url of candidates) {
+      let response: Response;
+      try {
+        response = await this.fetchWithRetry(url, { headers });
+      } catch (e: any) {
+        lastError = e instanceof Error ? e : new Error(String(e));
+        continue;
+      }
+      // 404 = sonraki adayı dene; 429/5xx = fırlat
+      if (response.status === 404) {
+        lastError = new Error(`XHamster sayfası bulunamadı (404): ${url}`);
+        continue;
+      }
+      if (!response.ok) {
+        if (response.status === 429) {
+          throw new Error('XHamster istek sınırı aşıldı (429 Too Many Requests). Lütfen bir süre bekleyin.');
+        }
+        if (response.status >= 500) {
+          throw new Error(`XHamster sunucusu aşırı yüklendi (${response.status} ${response.statusText}).`);
+        }
+        throw new Error(`XHamster hatası: ${response.status} ${response.statusText}`);
+      }
+
+      reachedSite = true;
+      const html = await response.text();
+      const posts = parseXhamsterListing(html, source);
+      if (posts.length > 0) {
+        return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+      }
+      // Boş liste: sonraki adayı dene
+    }
+
+    if (!reachedSite && lastError) throw lastError;
+    return [];
+  }
+
   private async fetchCumStPosts(
     source: BooruSource,
     page: number,
@@ -1524,6 +1712,9 @@ export class BooruApiService {
             }
           }
         } catch {}
+        return [];
+      } else if (source.type === 'xvideos' || source.type === 'xhamster') {
+        // Resmi öneri endpoint'i yok; istemci tarafı filtre yeterli
         return [];
       } else if (source.type === 'gelbooru' || source.type === 'realbooru') {
         const url = `${source.baseUrl}/autocomplete.php?q=${encodeURIComponent(query.trim())}`;

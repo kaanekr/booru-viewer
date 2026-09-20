@@ -474,6 +474,29 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
             <Text style={styles.sectionTitle}>Post</Text>
 
             <View style={styles.sectionBody}>
+              {/* Başlık (video kaynakları) — dokununca kopyala */}
+              {post.title ? (
+                <>
+                  <TouchableOpacity
+                    style={styles.postRowItem}
+                    onPress={() => handleCopyText(post.title || '', 'Başlık')}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.postRowLeft}>
+                      <Text style={styles.fieldLabel}>Başlık</Text>
+                      <Text style={styles.postRowSubtitle} numberOfLines={3}>
+                        {post.title}
+                      </Text>
+                    </View>
+                    <View style={styles.yellowInfoBadge}>
+                      <InfoIcon size={13} color={GOLD_ACCENT} />
+                    </View>
+                  </TouchableOpacity>
+
+                  <View style={styles.rowDivider} />
+                </>
+              ) : null}
+
               {/* Normal (jpg) — aktif moddaysa sarı vurgu */}
               <TouchableOpacity
                 style={styles.postRowItem}

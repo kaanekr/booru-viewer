@@ -75,6 +75,22 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     description: 'High quality video clips & GIFs',
     isSafeOnly: false,
   },
+  {
+    id: 'xvideos',
+    name: 'XVideos',
+    baseUrl: 'https://www.xvideos.com',
+    type: 'xvideos',
+    description: 'Popüler video platformu araması (önizlemeli klipler)',
+    isSafeOnly: false,
+  },
+  {
+    id: 'xhamster',
+    name: 'XHamster',
+    baseUrl: 'https://xhamster.com',
+    type: 'xhamster',
+    description: 'Popüler video platformu araması (önizlemeli klipler)',
+    isSafeOnly: false,
+  },
 ];
 
 export const DEFAULT_SOURCE: BooruSource = AVAILABLE_SOURCES[0];
