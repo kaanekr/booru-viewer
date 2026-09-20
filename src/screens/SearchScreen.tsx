@@ -209,20 +209,31 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
   // Autocomplete debounce - only triggers when search input is focused and guards for source match
   useEffect(() => {
-    if (!isInputFocused || !filterConfig.autocompleteFromServer || !query || query.trim().length < 2) {
+    if (!isInputFocused || !filterConfig.autocompleteFromServer || !query) {
+      setSuggestions([]);
+      return;
+    }
+
+    // Boşlukla bitiyorsa kullanıcı henüz yeni bir etiket yazmaya başlamamıştır
+    if (query.endsWith(' ')) {
+      setSuggestions([]);
+      return;
+    }
+
+    // Çoklu etiket aramalarında o an yazılmakta olan son etiketi baz al
+    const tokens = query.trim().split(/\s+/);
+    const activeToken = tokens[tokens.length - 1] || '';
+    const cleanToken = activeToken.replace(/^-+/, '').trim();
+
+    if (cleanToken.length < 2) {
       setSuggestions([]);
       return;
     }
 
     const currentSourceId = activeSource.id;
     const timer = setTimeout(async () => {
-      const cleanQ = query.trim().replace(/^-+/, '');
-      if (cleanQ.length < 2) {
-        setSuggestions([]);
-        return;
-      }
       try {
-        const list = await booruApi.searchTags(cleanQ);
+        const list = await booruApi.searchTags(cleanToken);
         if (currentSourceId === lastActiveSourceIdRef.current) {
           setSuggestions(list);
         }
@@ -292,6 +303,30 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       if (requestId === searchRequestIdRef.current && expectedSourceId === lastActiveSourceIdRef.current) {
         setLoading(false);
       }
+    }
+  };
+
+  const handleSelectSuggestion = (suggestedTag: string, immediateSearch = false) => {
+    Haptics.selectionAsync();
+
+    const parts = query.split(/\s+/);
+    let newQuery = '';
+
+    if (parts.length > 0 && !query.endsWith(' ')) {
+      const last = parts[parts.length - 1];
+      const isNegated = last.startsWith('-');
+      parts[parts.length - 1] = isNegated ? `-${suggestedTag}` : suggestedTag;
+      newQuery = parts.filter(Boolean).join(' ') + ' ';
+    } else {
+      const existing = query.trim();
+      newQuery = existing ? `${existing} ${suggestedTag} ` : `${suggestedTag} `;
+    }
+
+    setQuery(newQuery);
+    setSuggestions([]);
+
+    if (immediateSearch) {
+      executeSearch(newQuery.trim(), 'replace');
     }
   };
 
@@ -950,14 +985,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={styles.suggestionRow}
-                  onPress={() => executeSearch(item.name)}
+                  onPress={() => handleSelectSuggestion(item.name, true)}
                 >
                   <TagChip
                     name={item.name}
                     category={item.category}
                     count={item.postCount}
                     size="sm"
-                    onPress={() => executeSearch(item.name)}
+                    onPress={() => handleSelectSuggestion(item.name, true)}
                   />
                 </TouchableOpacity>
               )}
