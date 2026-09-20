@@ -2,29 +2,12 @@ import { BooruSource } from '../types/booru';
 
 export const AVAILABLE_SOURCES: BooruSource[] = [
   {
-    id: 'safebooru',
-    name: 'Safebooru',
-    baseUrl: 'https://safebooru.org',
-    type: 'gelbooru',
-    description: 'Safe anime art & illustrations (High compatibility)',
-    isSafeOnly: true,
-    apiBaseUrl: 'https://safebooru.org',
-  },
-  {
     id: 'gelbooru',
     name: 'Gelbooru',
     baseUrl: 'https://gelbooru.com',
     type: 'gelbooru',
     description: 'The premier anime & artwork imageboard',
     isSafeOnly: false,
-  },
-  {
-    id: 'konachan',
-    name: 'Konachan (Wallpapers)',
-    baseUrl: 'https://konachan.net',
-    type: 'moebooru',
-    description: 'High quality safe anime wallpapers',
-    isSafeOnly: true,
   },
   {
     id: 'yandere',

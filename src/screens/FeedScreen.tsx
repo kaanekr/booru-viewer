@@ -259,7 +259,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
               <Text style={styles.retryText}>Tekrar Dene</Text>
             </TouchableOpacity>
 
-            {showSourcePicker && activeSource.id !== 'safebooru' && (
+            {showSourcePicker && (
               <TouchableOpacity
                 style={[
                   styles.retryButton,

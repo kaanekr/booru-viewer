@@ -217,8 +217,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     const start = Date.now();
     try {
       const cleanUrl = workerUrl.trim().replace(/\/$/, '');
-      // Safebooru doesn't require API authentication and reliably returns 200 OK
-      const testTarget = 'https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1&limit=1';
+      // Gelbooru doesn't require API authentication and reliably returns 200 OK
+      const testTarget = 'https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=1';
       const endpoint = `${cleanUrl}?url=${encodeURIComponent(testTarget)}`;
 
       const res = await fetch(endpoint, {
