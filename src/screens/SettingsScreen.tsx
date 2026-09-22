@@ -296,7 +296,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         targets.map(async (tg) => {
           const [direct, via] = await Promise.all([
             probe(tg.url, tg.headers, tg.parse),
-            probe(`${cleanUrl}?url=${encodeURIComponent(tg.url)}`, tg.headers, tg.parse),
+            probe(
+              `${cleanUrl}?url=${encodeURIComponent(tg.url)}`,
+              proxyService.workerHeaders(tg.url, tg.headers),
+              tg.parse
+            ),
           ]);
           return `${tg.name}: direkt ${direct} → worker ${via}`;
         })

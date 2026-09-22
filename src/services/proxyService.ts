@@ -48,29 +48,52 @@ class ProxyService {
   }
 
   /**
+   * Worker bacağı için nötr header'lar: browser taklidi (desktop UA,
+   * Referer, Cookie) bazı WAF'ları datacenter çıkışında 403'e sokuyor;
+   * nötr iPhone UA + headersız geçiş 200 dönüyor (canlı doğrulandı).
+   * RedGifs hariç: token, eşleşen UA + Origin/Referer ister.
+   */
+  workerHeaders(url: string, headers?: Record<string, string>): Record<string, string> {
+    const out: Record<string, string> = { ...(headers || {}) };
+    if (/redgifs\.com/i.test(url)) return out;
+    for (const k of Object.keys(out)) {
+      const lk = k.toLowerCase();
+      if (lk === 'referer' || lk === 'cookie') delete out[k];
+    }
+    out['User-Agent'] =
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
+    return out;
+  }
+
+  /**
    * Dirençli fetch: önce direkt (toggle açıksa proxy), ağ kopması veya
    * 403/429/5xx'te kayıtlı worker varsa tek seferlik proxy'den tekrar dener.
    * 404'te denemez (aday yoklama mantığı bozulmasın).
    */
   async fetchWithFallback(url: string, init?: RequestInit, retryTimeoutMs: number = 12000): Promise<Response> {
     const target = this.proxyUrl(url);
+    const scrub = !/redgifs\.com/i.test(url);
     try {
       const res = await fetch(target, init);
       if (!res.ok && (res.status === 403 || res.status === 429 || res.status >= 500)) {
         const viaProxy = this.forceProxyUrl(url);
         if (viaProxy && viaProxy !== target) {
-          return await this.fetchViaProxy(viaProxy, init, retryTimeoutMs);
+          return await this.fetchViaProxy(viaProxy, init, retryTimeoutMs, scrub);
+        }
+        if (scrub && this.isEnabled()) {
+          // Zaten proxy'deyiz ama browser header'lar WAF'a takıldı: nötr dene
+          return await this.fetchViaProxy(target, init, retryTimeoutMs, scrub);
         }
       }
       return res;
     } catch (e) {
       const viaProxy = this.forceProxyUrl(url);
-      if (!viaProxy || viaProxy === target) throw e;
-      return await this.fetchViaProxy(viaProxy, init, retryTimeoutMs);
+      if (!viaProxy || (viaProxy === target && !scrub)) throw e;
+      return await this.fetchViaProxy(viaProxy, init, retryTimeoutMs, scrub);
     }
   }
 
-  private async fetchViaProxy(viaProxy: string, init?: RequestInit, retryTimeoutMs: number = 12000): Promise<Response> {
+  private async fetchViaProxy(viaProxy: string, init?: RequestInit, retryTimeoutMs: number = 12000, scrub: boolean = true): Promise<Response> {
     // Üst katmanın abort'u ateşlenmişse fallback anında ölmesin;
     // sinyal yoksa/ölüyse taze timeout'lu sinyal ver. Release'de abort
     // askıda kalabileceği için yarış zamanlayıcısı sözü mutlaka bitirir.
@@ -81,6 +104,9 @@ class ProxyService {
       const ctrl = new AbortController();
       timer = setTimeout(() => ctrl.abort(), retryTimeoutMs);
       retryInit = { ...init, signal: ctrl.signal };
+    }
+    if (scrub) {
+      retryInit = { ...retryInit, headers: this.workerHeaders(viaProxy, (retryInit?.headers as Record<string, string>) || {}) };
     }
     let raceTimer: ReturnType<typeof setTimeout> | undefined;
     const hardTimeout = new Promise<Response>((_, reject) => {
