@@ -34,27 +34,40 @@ export function buildXVideosSearchUrl(
   page: number,
   k: string,
   sort: XVideosSort,
-  datef: XVideosDatef
+  datef: XVideosDatef,
+  bestMonth?: string
 ): string {
-  return buildXVideosSearchCandidates(baseUrl, page, k, sort, datef)[0];
+  return buildXVideosSearchCandidates(baseUrl, page, k, sort, datef, bestMonth)[0];
 }
 
 /**
  * Sırayla denenecek aday URL'ler (kütüphanenin loadListingPage mantığı):
  * site bazı varyantlarda 404 verir (örn. `/new` 404, `/new/1` 200) ya da
  * boş liste döner; ilk dolu sonuç kazanır.
+ *
+ * Aramasız keşfet: sayfa 1 sitenin anasayfası (günlük seçki), deeper
+ * sayfalar ayın popülerleri (`/best` güncel aya redirect olur,
+ * `/best/YYYY-AA`). Ay bilinmiyorsa redirect çözer; çözülemezse
+ * `/new` varyantlarına düşülür.
  */
 export function buildXVideosSearchCandidates(
   baseUrl: string,
   page: number,
   k: string,
   sort: XVideosSort,
-  datef: XVideosDatef
+  datef: XVideosDatef,
+  bestMonth?: string
 ): string[] {
   const base = (baseUrl || XVIDEOS_BASE).replace(/\/$/, '');
   const keyword = (k || '').trim();
   if (!keyword) {
-    if (page <= 1) return [`${base}/new`, `${base}/new/1`];
+    const m = (bestMonth || '').match(/^\d{4}-\d{2}$/) ? (bestMonth as string) : '';
+    if (page <= 1) {
+      return m
+        ? [`${base}/`, `${base}/best/${m}`, `${base}/best`, `${base}/new/1`]
+        : [`${base}/`, `${base}/best`, `${base}/new`, `${base}/new/1`];
+    }
+    if (m) return [`${base}/best/${m}/${page - 1}`, `${base}/new/${page}`];
     return [`${base}/new/${page}`];
   }
   const make = (p: number | undefined): string => {
@@ -91,9 +104,21 @@ function decodeScriptValue(s: string): string {
     .trim();
 }
 
+/** `/best` HTML'inden güncel ay (`YYYY-AA`) çıkarılır (sayfalama linkinden). */
+export function extractXVideosBestMonth(html: string): string {
+  if (!html) return '';
+  const m = html.match(/\/best\/(\d{4}-\d{2})\/\d+/);
+  return m ? m[1] : '';
+}
+
 /**
  * Arama/liste HTML'inden kartları çıkarır. Her kart bir videodur
  * (site tamamen video; fotoğraf yok).
+ *
+ * İki kart yapısı desteklenir:
+ * - Klasik: `id="video_<eid>" data-id="<numeric>"` thumb-block div'leri
+ * - Yeni (`/best` sayfaları): `id="video-thumb-<enc>"` + `data-video` JSON
+ *   (nümerik id, encodedId, previewVideo mp4)
  */
 export function parseXVideosListing(html: string, source: BooruSource): BooruPost[] {
   const posts: BooruPost[] = [];
@@ -135,10 +160,12 @@ export function parseXVideosListing(html: string, source: BooruSource): BooruPos
     }
 
     const titleM =
-      c.match(/<p class="title"><a[^>]*title="([^"]+)"/) || c.match(/title="([^"]+)"/);
+      c.match(/<p class="title"><a[^>]*title="([^"]+)"/) ||
+      c.match(/<div class="title" title="([^"]+)"/) ||
+      c.match(/title="([^"]+)"/);
     const title = titleM ? decodeEntities(titleM[1]).trim() : '';
 
-    const profM = c.match(/<span class="name">([^<]+)<\/span>/);
+    const profM = c.match(/<(?:span|a) class="name"[^>]*>([^<]+)</);
     const profile = profM ? decodeEntities(profM[1]).trim() : '';
 
     // Kalite işareti (örn. >720p< / >360p<) → 16:9 boyut tahmini
@@ -165,6 +192,107 @@ export function parseXVideosListing(html: string, source: BooruSource): BooruPos
       sampleUrl: preview,
       // Orijinal mp4 secure-token'lıdır ve süreli olabilir; liste anında
       // gömülmez — viewer açılışında detaydan taze çözülür.
+      originalUrl: '',
+      width,
+      height,
+      aspectRatio: width > 0 && height > 0 ? width / height : 16 / 9,
+      rating: 'e',
+      score: 0,
+      favCount: 0,
+      tags: {
+        artist,
+        character: [],
+        copyright: [],
+        general: [],
+        meta: ['video'],
+      },
+      allTags: [...artist],
+      sourceLink: `${base}${href}`,
+      fileExt: 'mp4',
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  // Yeni kart yapısı (`/best` sayfaları): `id="video-thumb-<enc>"` div'leri.
+  // Nümerik id + önizleme mp4'ü `data-video` JSON'undan, başlık/küçük resim
+  // kart içinden alınır; çıktı formu klasik yapıyla aynıdır.
+  const bestChunks = html.split('id="video-thumb-');
+  for (let i = 1; i < bestChunks.length; i++) {
+    const c = bestChunks[i];
+
+    let vid = 0;
+    let enc = '';
+    let previewVideo: string | undefined;
+    const jsonM = c.match(/data-video='(\{.*?\})'/);
+    if (jsonM) {
+      try {
+        const j = JSON.parse(jsonM[1]);
+        if (j && typeof j.id === 'number' && Number.isFinite(j.id)) vid = j.id;
+        if (j && typeof j.encodedId === 'string') enc = j.encodedId.trim();
+        if (j && typeof j.previewVideo === 'string' && j.previewVideo.trim()) {
+          previewVideo = j.previewVideo.trim();
+        }
+      } catch {
+        // bozuk JSON: aşağıdaki regex'lere düş
+      }
+    }
+    if (!enc) {
+      const encM = c.match(/^([a-z0-9]+)"/i);
+      if (encM) enc = encM[1];
+    }
+    if (!enc) continue;
+    const key = vid ? String(vid) : enc;
+    if (seen.has(key)) continue;
+
+    const hrefM = c.match(/<a[^>]*href="(\/video\.[^"]+)"/);
+    if (!hrefM) continue;
+    const href = decodeEntities(hrefM[1]);
+
+    const thumbM =
+      c.match(/data-src="([^"]+)"/) || c.match(/<img[^>]*src="([^"]+)"/);
+    const preview = thumbM ? thumbM[1].trim() : '';
+    if (!preview || preview.includes('blank.gif')) continue;
+
+    if (!previewVideo) {
+      const pvvM = c.match(/data-pvv="([^"]+\.mp4[^"]*)"/i);
+      if (pvvM) previewVideo = pvvM[1].trim();
+    }
+
+    let previewThumbs: string[] | undefined;
+    const matchNum = preview.match(/_(\d+)_t\.(jpg|jpeg|webp|avif)/i);
+    if (matchNum) {
+      const ext = matchNum[2];
+      previewThumbs = [1, 3, 5, 7, 10, 15, 20, 25].map((num) =>
+        preview.replace(/_\d+_t\.(jpg|jpeg|webp|avif)/i, `_${num}_t.${ext}`)
+      );
+    }
+
+    const titleM =
+      c.match(/<div class="title" title="([^"]+)"/) || c.match(/title="([^"]+)"/);
+    const title = titleM ? decodeEntities(titleM[1]).trim() : '';
+
+    const profM = c.match(/<(?:span|a) class="name"[^>]*>([^<]+)</);
+    const profile = profM ? decodeEntities(profM[1]).trim() : '';
+
+    let height = 720;
+    const qM = c.match(/>(\d{3,4})p</);
+    if (qM) {
+      const q = parseInt(qM[1], 10);
+      if (Number.isFinite(q) && q >= 144 && q <= 2160) height = q;
+    }
+    const width = Math.round((height * 16) / 9);
+    const artist = profile ? [profile] : [];
+
+    seen.add(key);
+    posts.push({
+      id: `xv_${key}`,
+      sourceId: source.id,
+      sourceName: source.name,
+      title: title || undefined,
+      previewUrl: preview,
+      previewVideoUrl: previewVideo,
+      previewThumbs,
+      sampleUrl: preview,
       originalUrl: '',
       width,
       height,

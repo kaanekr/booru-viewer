@@ -89,8 +89,8 @@ export function buildXhamsterSearchCandidates(
       if (pageNum <= 1) return [`${base}/newest`, base];
       return [`${base}/newest/${pageNum}`, `${base}/${pageNum}`];
     }
-    // Varsayılan / 'newest'
-    if (pageNum <= 1) return [`${base}/newest`, `${base}/newest/1`, base];
+    // Varsayılan / 'newest' — keşfet sayfa 1: anasayfa (günlük seçki) önce
+    if (pageNum <= 1) return [base, `${base}/newest`, `${base}/newest/1`];
     return [`${base}/newest/${pageNum}`, `${base}/newest?page=${pageNum}`, `${base}/${pageNum}`];
   }
 

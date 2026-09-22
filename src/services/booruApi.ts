@@ -5,6 +5,7 @@ import { StorageService } from './storage';
 import {
   buildXVideosSearchCandidates,
   buildXVideosSearchUrl,
+  extractXVideosBestMonth,
   parseXVideosListing,
   xvideosDatefForTimeRange,
   XVIDEOS_BASE,
@@ -1351,6 +1352,45 @@ export class BooruApiService {
     }
   }
 
+  private xvideosBestMonth = '';
+  private xvideosBestMonthAt = 0;
+
+  /**
+   * XVideos `/best` güncel ayını (`YYYY-AA`) çözer (6 saat cache).
+   * Sayfa-1 `/best` redirect'i ayı kendisi bulur; deeper keşfet sayfaları
+   * için aydan türetilmiş URL gerekir. Bulunamazsa '' döner ve keşfet
+   * `/new` varyantlarına düşer.
+   */
+  private async resolveXVideosBestMonth(baseUrl: string): Promise<string> {
+    const now = Date.now();
+    if (this.xvideosBestMonth && now - this.xvideosBestMonthAt < 6 * 60 * 60 * 1000) {
+      return this.xvideosBestMonth;
+    }
+    try {
+      const base = (baseUrl || XVIDEOS_BASE).replace(/\/$/, '');
+      const res = await this.fetchWithRetry(`${base}/best`, {
+        headers: {
+          'User-Agent': XVIDEOS_UA,
+          Referer: `${XVIDEOS_BASE}/`,
+          'Accept-Language': 'en-US,en;q=0.9',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+      });
+      if (res.ok) {
+        const html = await res.text();
+        const m = extractXVideosBestMonth(html);
+        if (m) {
+          this.xvideosBestMonth = m;
+          this.xvideosBestMonthAt = now;
+          return m;
+        }
+      }
+    } catch {
+      // yok say: /new fallback'i devrede
+    }
+    return '';
+  }
+
   private async fetchXVideosPosts(
     source: BooruSource,
     page: number,
@@ -1386,7 +1426,8 @@ export class BooruApiService {
       sort = 'length';
     }
 
-    const candidates = buildXVideosSearchCandidates(source.baseUrl || XVIDEOS_BASE, page, k, sort, datef);
+    const bestMonth = !k && page > 1 ? await this.resolveXVideosBestMonth(source.baseUrl || XVIDEOS_BASE) : this.xvideosBestMonth;
+    const candidates = buildXVideosSearchCandidates(source.baseUrl || XVIDEOS_BASE, page, k, sort, datef, bestMonth);
     const headers = {
       'User-Agent': XVIDEOS_UA,
       Referer: `${XVIDEOS_BASE}/`,
@@ -1423,6 +1464,13 @@ export class BooruApiService {
       const html = await response.text();
       const posts = parseXVideosListing(html, source);
       if (posts.length > 0) {
+        if (!k) {
+          const m = extractXVideosBestMonth(html);
+          if (m) {
+            this.xvideosBestMonth = m;
+            this.xvideosBestMonthAt = Date.now();
+          }
+        }
         return await this.filterBlacklistedPosts(posts, includeBlacklisted);
       }
       // Boş liste: aday varyantı yanlış olabilir, sonrakini dene
@@ -1536,14 +1584,14 @@ export class BooruApiService {
     const k = tokens.join(' ');
     void limit;
 
-    // Aramada featured (alaka), keşfette mostviewed+weekly (dinamik trendler)
+    // Aramada featured (alaka), keşfette mostviewed+daily (dinamik trendler)
     let ordering: PornhubOrdering = 'featured';
     let period = pornhubPeriodForTimeRange(filter?.timeRange);
 
     if (!k) {
       ordering = 'mostviewed';
       if (filter?.timeRange === 'all' || !filter?.timeRange) {
-        period = 'weekly';
+        period = 'daily';
       }
     } else {
       const sb = filter?.sortBy;
@@ -1561,6 +1609,30 @@ export class BooruApiService {
     }
 
     const url = buildPornhubSearchUrl(page, k, ordering, period);
+    const htmlHeaders = {
+      'User-Agent': PORNHUB_UA,
+      Referer: `${PORNHUB_BASE}/`,
+      Cookie: 'accessAgeDisclaimerPH=1; platform=pc',
+    };
+
+    // Keşfet sayfa 1: anasayfa (sitenin o an öne çıkardıkları). Başarısız
+    // olursa aşağıdaki API akışına düşülür; deeper sayfalar API'den gelir.
+    if (!k && page <= 1) {
+      try {
+        const homeRes = await this.fetchWithRetry(`${PORNHUB_BASE}/`, {
+          headers: htmlHeaders,
+        });
+        if (homeRes.ok) {
+          const homeHtml = await homeRes.text();
+          const homePosts = parsePornhubHtmlListing(homeHtml, source);
+          if (homePosts.length > 0) {
+            return await this.filterBlacklistedPosts(homePosts, includeBlacklisted);
+          }
+        }
+      } catch (homeErr) {
+        console.warn('[BooruAPI] Pornhub homepage discover failed, fallback to API:', homeErr);
+      }
+    }
     const headers = {
       'User-Agent': PORNHUB_UA,
       Referer: `${PORNHUB_BASE}/`,
