@@ -261,22 +261,34 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     const probe = async (url: string, headers: Record<string, string>, parse?: (html: string) => number): Promise<string> => {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), 10000);
-      try {
-        const res = await fetch(url, { headers, signal: ctrl.signal });
-        if (!res.ok || !parse) return String(res.status);
-        const html = await res.text();
-        let n = 0;
+      const run = (async () => {
         try {
-          n = parse(html);
-        } catch {
-          n = -1;
+          const res = await fetch(url, { headers, signal: ctrl.signal });
+          if (!res.ok || !parse) return String(res.status);
+          const html = await res.text();
+          let n = 0;
+          try {
+            n = parse(html);
+          } catch {
+            n = -1;
+          }
+          return `${res.status}/${n}`;
+        } catch (e: any) {
+          const msg = String(e?.message || e || '');
+          return /abort|cancel/i.test(e?.name || '') || /abort/i.test(msg) ? 'zaman aşımı' : 'kopuk';
+        } finally {
+          clearTimeout(t);
         }
-        return `${res.status}/${n}`;
-      } catch (e: any) {
-        const msg = String(e?.message || e || '');
-        return /abort|cancel/i.test(e?.name || '') || /abort/i.test(msg) ? 'zaman aşımı' : 'kopuk';
-      } finally {
-        clearTimeout(t);
+      })();
+      // Release'de abort askıda kalabilir: test sonsuza dönmesin diye 12sn'de kes.
+      let rt: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([
+          run.then((v) => { if (rt) clearTimeout(rt); return v; }, (e) => { if (rt) clearTimeout(rt); throw e; }),
+          new Promise<string>((resolve) => { rt = setTimeout(() => resolve('zaman aşımı'), 12000); }),
+        ]);
+      } catch {
+        return 'kopuk';
       }
     };
     try {

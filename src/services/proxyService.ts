@@ -72,7 +72,8 @@ class ProxyService {
 
   private async fetchViaProxy(viaProxy: string, init?: RequestInit, retryTimeoutMs: number = 12000): Promise<Response> {
     // Üst katmanın abort'u ateşlenmişse fallback anında ölmesin;
-    // sinyal yoksa/ölüyse taze timeout'lu sinyal ver.
+    // sinyal yoksa/ölüyse taze timeout'lu sinyal ver. Release'de abort
+    // askıda kalabileceği için yarış zamanlayıcısı sözü mutlaka bitirir.
     let retryInit = init;
     const sig = init?.signal as AbortSignal | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -81,8 +82,16 @@ class ProxyService {
       timer = setTimeout(() => ctrl.abort(), retryTimeoutMs);
       retryInit = { ...init, signal: ctrl.signal };
     }
+    let raceTimer: ReturnType<typeof setTimeout> | undefined;
+    const hardTimeout = new Promise<Response>((_, reject) => {
+      raceTimer = setTimeout(() => reject(new Error(`proxy timeout after ${retryTimeoutMs}ms`)), retryTimeoutMs);
+    });
     try {
-      return await fetch(viaProxy, retryInit);
+      const p = fetch(viaProxy, retryInit);
+      return await Promise.race([
+        p.then((v) => { if (raceTimer) clearTimeout(raceTimer); return v; }, (e) => { if (raceTimer) clearTimeout(raceTimer); throw e; }),
+        hardTimeout,
+      ]);
     } finally {
       if (timer) clearTimeout(timer);
     }
