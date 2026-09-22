@@ -35,7 +35,29 @@ const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Apple
 
 async function fetchBooru(url: string, init?: RequestInit): Promise<Response> {
   const target = proxyService.proxyUrl(url);
-  return await fetch(target, init);
+  try {
+    return await fetch(target, init);
+  } catch (e) {
+    // Direkt bağlantı ağ seviyesinde koptu (TLS/SNI engeli vb.): kayıtlı
+    // worker varsa tek seferlik proxy üzerinden tekrar dene.
+    const viaProxy = proxyService.forceProxyUrl(url);
+    if (!viaProxy || viaProxy === target) throw e;
+    // Üst katmanın abort'u çoktan ateşlenmişse fallback anında ölmesin;
+    // sinyal yoksa/ölüyse taze timeout'lu sinyal ver.
+    let retryInit = init;
+    const sig = init?.signal as AbortSignal | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (!sig || sig.aborted) {
+      const ctrl = new AbortController();
+      timer = setTimeout(() => ctrl.abort(), 12000);
+      retryInit = { ...init, signal: ctrl.signal };
+    }
+    try {
+      return await fetch(viaProxy, retryInit);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 }
 
 /** Gelbooru-motoru zamanlı popüler: dönemin ilk post id'si (alt sınır) önbelleği.
@@ -123,19 +145,28 @@ export class BooruApiService {
    * Rate-limit koruması + 429/5xx retry: Gelbooru scrape'i banlamasın diye
    * istekler arası min 800ms boşluk, 429/503'te tek seferlik bekleyip tekrar dener.
    */
-  private async fetchWithRetry(url: string, init?: RequestInit, retries = 1): Promise<Response> {
+  private async fetchWithRetry(url: string, init?: RequestInit, retries = 1, timeoutMs?: number): Promise<Response> {
     const now = Date.now();
     const wait = 800 - (now - this.lastRequestAt);
     if (wait > 0) {
       await new Promise((r) => setTimeout(r, wait));
     }
-    this.lastRequestAt = Date.now();
-    const res = await fetchBooru(url, init);
+    const attempt = async (): Promise<Response> => {
+      this.lastRequestAt = Date.now();
+      if (!timeoutMs) return await fetchBooru(url, init);
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        return await fetchBooru(url, { ...init, signal: ctrl.signal });
+      } finally {
+        clearTimeout(t);
+      }
+    };
+    const res = await attempt();
     if ((res.status === 429 || res.status >= 500) && retries > 0) {
       const retryAfter = Number(res.headers.get('retry-after')) || 2;
       await new Promise((r) => setTimeout(r, Math.min(retryAfter, 5) * 1000));
-      this.lastRequestAt = Date.now();
-      return await fetchBooru(url, init);
+      return await attempt();
     }
     return res;
   }
@@ -1567,6 +1598,21 @@ export class BooruApiService {
     return [];
   }
 
+  private phDiscoverCache: BooruPost[] = [];
+  private phDiscoverCacheAt = 0;
+
+  /** Keşfet önbelleği 15dk geçerli (site düşse bile grid boş kalmaz). */
+  private phDiscoverCacheValid(): boolean {
+    return this.phDiscoverCache.length > 0 && Date.now() - this.phDiscoverCacheAt < 15 * 60 * 1000;
+  }
+
+  private storePhDiscoverCache(posts: BooruPost[], k: string, page: number): void {
+    if (!k && page <= 1 && posts.length > 0) {
+      this.phDiscoverCache = posts;
+      this.phDiscoverCacheAt = Date.now();
+    }
+  }
+
   private async fetchPornhubPosts(
     source: BooruSource,
     page: number,
@@ -1621,12 +1667,14 @@ export class BooruApiService {
       try {
         const homeRes = await this.fetchWithRetry(`${PORNHUB_BASE}/`, {
           headers: htmlHeaders,
-        });
+        }, 1, 12000);
         if (homeRes.ok) {
           const homeHtml = await homeRes.text();
           const homePosts = parsePornhubHtmlListing(homeHtml, source);
           if (homePosts.length > 0) {
-            return await this.filterBlacklistedPosts(homePosts, includeBlacklisted);
+            const out = await this.filterBlacklistedPosts(homePosts, includeBlacklisted);
+            this.storePhDiscoverCache(out, k, page);
+            return out;
           }
         }
       } catch (homeErr) {
@@ -1642,11 +1690,19 @@ export class BooruApiService {
 
     let response: Response;
     try {
-      response = await this.fetchWithRetry(url, { headers });
+      response = await this.fetchWithRetry(url, { headers }, 1, 12000);
     } catch (e: any) {
+      if (!k && page <= 1 && this.phDiscoverCacheValid()) {
+        console.warn('[BooruAPI] Pornhub API unreachable, serving cached discover');
+        return this.phDiscoverCache;
+      }
       throw e instanceof Error ? e : new Error(String(e));
     }
     if (!response.ok) {
+      if (!k && page <= 1 && this.phDiscoverCacheValid()) {
+        console.warn(`[BooruAPI] Pornhub API failed (${response.status}), serving cached discover`);
+        return this.phDiscoverCache;
+      }
       if (response.status === 429) {
         throw new Error('Pornhub istek sınırı aşıldı (429 Too Many Requests). Lütfen bir süre bekleyin.');
       }
@@ -1679,7 +1735,7 @@ export class BooruApiService {
           Referer: `${PORNHUB_BASE}/`,
           Cookie: 'accessAgeDisclaimerPH=1; platform=pc',
         },
-      });
+      }, 1, 12000);
       if (htmlRes.ok) {
         const html = await htmlRes.text();
         const htmlPosts = parsePornhubHtmlListing(html, source);
@@ -1703,7 +1759,9 @@ export class BooruApiService {
           if (posts.length === 0) {
             posts.push(...htmlPosts);
           }
-          return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+          const enriched = await this.filterBlacklistedPosts(posts, includeBlacklisted);
+          this.storePhDiscoverCache(enriched, k, page);
+          return enriched;
         }
       }
     } catch (htmlErr) {
@@ -1714,7 +1772,9 @@ export class BooruApiService {
       const post = mapPornhubVideoToPost(v, source);
       if (post) posts.push(post);
     }
-    return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+    const out = await this.filterBlacklistedPosts(posts, includeBlacklisted);
+    this.storePhDiscoverCache(out, k, page);
+    return out;
   }
 
   private async fetchCumStPosts(

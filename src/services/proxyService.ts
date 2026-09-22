@@ -35,6 +35,18 @@ class ProxyService {
     return this.workerUrl;
   }
 
+  hasWorker(): boolean {
+    return Boolean(this.workerUrl);
+  }
+
+  /** Toggle kapalı olsa bile kayıtlı worker üzerinden URL üretir (fallback için). */
+  forceProxyUrl(originalUrl: string | undefined): string {
+    if (!originalUrl) return '';
+    if (!this.workerUrl) return originalUrl;
+    if (originalUrl.startsWith(this.workerUrl)) return originalUrl;
+    return `${this.workerUrl}?url=${encodeURIComponent(originalUrl)}`;
+  }
+
   proxyUrl(originalUrl: string | undefined): string {
     if (!originalUrl) return '';
     if (!this.isEnabled()) return originalUrl;

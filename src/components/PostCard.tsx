@@ -99,6 +99,13 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   const [activeThumbIndex, setActiveThumbIndex] = React.useState(0);
 
   const previewVideoUrl = post.previewVideoUrl;
+  // iOS AVPlayer WebM açamaz (PH mediabook .webm): oynatıcıya verilirse
+  // siyah kart + AVFoundation "Cannot Open" uyarıları. iOS'ta WebM
+  // önizleme yok sayılır, kapak/slayt fallback'i devreye girer.
+  const playablePreviewUrl =
+    previewVideoUrl && !(Platform.OS === 'ios' && isUnsupportedOnIOS(previewVideoUrl))
+      ? previewVideoUrl
+      : undefined;
   const previewThumbs = post.previewThumbs;
   const secondaryThumb = post.previewThumbUrl;
 
@@ -257,7 +264,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
       delayPressIn={0}
       pressRetentionOffset={{ top: 200, bottom: 200, left: 100, right: 100 }}
       onPressIn={() => {
-        if (previewVideoUrl || previewThumbs || secondaryThumb) {
+        if (playablePreviewUrl || previewThumbs || secondaryThumb) {
           clearTouchTimer();
           clearActivePreviewTimer();
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -297,8 +304,8 @@ const PostCardComponent: React.FC<PostCardProps> = ({
         />
       ) : null}
 
-      {isPreviewActive && previewVideoUrl ? (
-        <CardVideoPreview url={previewVideoUrl} />
+      {isPreviewActive && playablePreviewUrl ? (
+        <CardVideoPreview url={playablePreviewUrl} />
       ) : isPreviewActive && previewThumbs && previewThumbs.length > 0 ? (
         <Image
           source={{
