@@ -338,7 +338,7 @@ export function getMediaHeaders(url: string | undefined): Record<string, string>
     headers['Referer'] = 'https://cum.st/';
   } else if (target.includes('xvideos-cdn.com') || target.includes('xvideos.com')) {
     headers['Referer'] = 'https://www.xvideos.com/';
-  } else if (target.includes('xhamster.com') || target.includes('xhamster-cdn')) {
+  } else if (target.includes('xhamster.com') || target.includes('xhamster-cdn') || target.includes('xhpingcdn.com') || target.includes('xhcdn')) {
     headers['Referer'] = 'https://xhamster.com/';
   } else if (target.includes('pornhub.com') || target.includes('phncdn.com')) {
     headers['Referer'] = 'https://www.pornhub.com/';

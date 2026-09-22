@@ -1,6 +1,8 @@
 import React from 'react';
 import { Dimensions, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Image } from 'expo-image';
+import { useVideoPlayer, VideoView } from 'expo-video';
+import { useEventListener } from 'expo';
 import { Heart } from 'lucide-react-native';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
@@ -18,6 +20,8 @@ interface PostCardProps {
   favoriteIds?: Set<string>;
   /** ScrollView iki sütunda adil yükleme için: kapı sol/sağ sırayla slot dağıtır */
   column?: GridColumn;
+  /** Görünürlük kancasından: true ise video kapak oynar, false ise durur */
+  videoActive?: boolean;
 }
 
 const getRatingColor = (rating: string | undefined) => {
@@ -47,9 +51,18 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   showFavoriteBadge = true,
   favoriteIds,
   column,
+  videoActive = false,
 }) => {
   // Kapı açılmadan resim mount olmaz: iki sütun bağlantı slotlarını adil paylaşır
   const [canLoad, releaseSlot] = useLoadGate(column);
+  // Emniyet: kapı açılıp da onLoadEnd/onError hiç ateşlenmezse (takılan
+  // thumb, boş URI) slot sonsuza dek dolu kalır ve kuyruk kararır. 8sn'de
+  // otomatik bırak; release idempotent olduğu için erken bırakma zararsız.
+  React.useEffect(() => {
+    if (!canLoad) return;
+    const t = setTimeout(releaseSlot, 8000);
+    return () => clearTimeout(t);
+  }, [canLoad, releaseSlot]);
   // Clamp aspect ratio between 0.6 and 1.4 for balanced masonry presentation
   const safeAspectRatio = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75));
   const cardHeight = COLUMN_WIDTH / safeAspectRatio;
@@ -81,6 +94,91 @@ const PostCardComponent: React.FC<PostCardProps> = ({
 
   const initialUri = React.useMemo(() => getMediaUrl(primaryRaw), [primaryRaw]);
   const [currentUri, setCurrentUri] = React.useState<string>(initialUri);
+
+  // XHamster liste HTML'i ekran-dışı kartlarda statik kapak vermez (skeleton);
+  // tek kapak data-previewvideo MP4'tür. expo-image MP4 gösteremez → siyah kart.
+  // Görüntülenebilir resim yok ama MP4 varsa kapak sessiz video olarak oynar.
+  const isMp4Url = React.useCallback(
+    (u: string | undefined) => !!u && /\.mp4($|\?)/i.test(u.split('?')[0]),
+    []
+  );
+  const hasRenderableImage = React.useMemo(
+    () => Boolean(primaryRaw && !isMp4Url(primaryRaw)),
+    [primaryRaw, isMp4Url]
+  );
+  const videoCoverRaw = React.useMemo(() => {
+    if (hasRenderableImage) return '';
+    const cands = [post.previewUrl, post.sampleUrl, post.originalUrl];
+    for (const u of cands) {
+      if (isMp4Url(u)) return u as string;
+    }
+    return '';
+  }, [hasRenderableImage, post.previewUrl, post.sampleUrl, post.originalUrl, isMp4Url]);
+  const useVideoCover = Boolean(videoCoverRaw);
+
+  const videoCoverSource = React.useMemo(() => {
+    // Kaynak kapı açılana kadar null: ~50 oyuncu aynı anda yüklenmeye
+    // hücum edip ilk kartları boğuyordu. Kapı (6 slot) yüklemeyi seriye bağlar.
+    if (!videoCoverRaw || !canLoad) return null;
+    const url = getMediaUrl(videoCoverRaw);
+    if (!url) return null;
+    return { uri: url, headers: getMediaHeaders(url) };
+  }, [videoCoverRaw, canLoad]);
+
+  const videoPlayer = useVideoPlayer(videoCoverSource, (p) => {
+    p.loop = true;
+    p.muted = true;
+    // Otomatik oynatma YOK: videoActive + readyToPlay birlikte karar verir.
+  });
+  // Kapak hazır olunca (ilk kare) kapı slotunu bırak (8sn emniyeti zaten var).
+  // Hazır olma anında kart görünürse oynat: ilk ekrandaki kartlarda play()
+  // çağrısı oyuncu yüklenmeden boşa gidebildiği için burada tekrar deniyoruz.
+  const videoActiveRef = React.useRef(videoActive);
+  videoActiveRef.current = videoActive;
+  const useVideoCoverRef = React.useRef(useVideoCover);
+  useVideoCoverRef.current = useVideoCover;
+  const videoSourceRef = React.useRef(videoCoverSource);
+  videoSourceRef.current = videoCoverSource;
+  const thumbRetryRef = React.useRef(0);
+  useEventListener(videoPlayer, 'statusChange', (payload) => {
+    if (payload.status === 'readyToPlay') {
+      releaseSlot();
+      if (videoActiveRef.current && useVideoCoverRef.current) {
+        try {
+          videoPlayer.play();
+        } catch {}
+      }
+    } else if (payload.status === 'error') {
+      // Hücum anında düşen kapak: slotu bırak, gecikmeyle en fazla 2 kez dene
+      releaseSlot();
+      const src = videoSourceRef.current;
+      if (src && thumbRetryRef.current < 2) {
+        thumbRetryRef.current += 1;
+        const delay = 1500 * thumbRetryRef.current;
+        setTimeout(() => {
+          try {
+            videoPlayer.replace(src);
+          } catch {}
+        }, delay);
+      }
+    }
+  });
+  useEventListener(videoPlayer, 'playingChange', (payload) => {
+    if (payload.isPlaying) releaseSlot();
+  });
+
+  // Sadece ekrandaki video kapak oynar: ebeveyn videoActive'i görünürlüğe
+  // göre sürer. Resim kartlarda etkisiz.
+  React.useEffect(() => {
+    if (!useVideoCover) return;
+    try {
+      if (videoActive) {
+        videoPlayer.play();
+      } else {
+        videoPlayer.pause();
+      }
+    } catch {}
+  }, [videoActive, useVideoCover, videoPlayer]);
 
   React.useEffect(() => {
     setCurrentUri(getMediaUrl(primaryRaw));
@@ -118,7 +216,16 @@ const PostCardComponent: React.FC<PostCardProps> = ({
       onPress={() => onPress(post)}
       style={[styles.container, { width: COLUMN_WIDTH, height: cardHeight }]}
     >
-      {canLoad && imageSource ? (
+      {canLoad && useVideoCover ? (
+        <VideoView
+          player={videoPlayer}
+          style={styles.image}
+          contentFit="cover"
+          nativeControls={false}
+          allowsPictureInPicture={false}
+          fullscreenOptions={{ enable: false }}
+        />
+      ) : canLoad && imageSource ? (
         <Image
           source={imageSource}
           style={styles.image}
@@ -186,6 +293,7 @@ export const PostCard = React.memo<PostCardProps>(
     if (prevProps.showFavoriteBadge !== nextProps.showFavoriteBadge) return false;
     if (prevProps.onPress !== nextProps.onPress) return false;
     if (prevProps.column !== nextProps.column) return false;
+    if ((prevProps.videoActive ?? false) !== (nextProps.videoActive ?? false)) return false;
 
     const prevFav =
       (prevProps.showFavoriteBadge ?? true) &&
