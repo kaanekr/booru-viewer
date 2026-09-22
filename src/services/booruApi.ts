@@ -23,6 +23,7 @@ import type { XHamsterDate, XHamsterSort } from './xhamster';
 import {
   buildPornhubSearchUrl,
   mapPornhubVideoToPost,
+  parsePornhubHtmlListing,
   pornhubPeriodForTimeRange,
   PORNHUB_BASE,
   PORNHUB_UA,
@@ -888,7 +889,8 @@ export class BooruApiService {
     includeBlacklisted: boolean = false
   ): Promise<BooruPost[]> {
     const cleanTags = tags.trim();
-    const pid = Math.max(0, (page - 1) * 20);
+    // Realbooru sayfa başına 42 post listeler (pid=0, 42, 84, ...)
+    const pid = (page - 1) * 42;
     const queryParams = new URLSearchParams({
       page: 'post',
       s: 'list',
@@ -1271,6 +1273,7 @@ export class BooruApiService {
         sourceId: source.id,
         sourceName: source.name,
         previewUrl: previewThumb,
+        previewVideoUrl: silentUrl || sdUrl || undefined,
         sampleUrl: sampleMedia,
         originalUrl: fullVideo,
         width,
@@ -1448,8 +1451,8 @@ export class BooruApiService {
     const k = tokens.join(' ');
     void limit;
 
-    // Sıralama eşlemesi: score->sort=views + date from timeRange (1d=latest,1w=weekly,1m=monthly,1y=yearly); id/default->sort=newest; rating->sort=best; height/width->sort=longest
-    let sort: XHamsterSort = 'newest';
+    // score->views+date, rating->best, height/width->longest, id->newest, default->relevance
+    let sort: XHamsterSort = 'relevance';
     let date: XHamsterDate | undefined = undefined;
     const sb = filter?.sortBy;
     if (sb === 'score') {
@@ -1459,8 +1462,10 @@ export class BooruApiService {
       sort = 'best';
     } else if (sb === 'height' || sb === 'width') {
       sort = 'longest';
-    } else if (sb === 'id' || sb === 'default' || !sb) {
+    } else if (sb === 'id') {
       sort = 'newest';
+    } else if (sb === 'default' || !sb) {
+      sort = 'relevance';
     }
 
     const candidates = buildXhamsterSearchCandidates(source.baseUrl || XHAMSTER_BASE, page, k, sort, date);
@@ -1505,7 +1510,12 @@ export class BooruApiService {
       // Boş liste: sonraki adayı dene
     }
 
-    if (!reachedSite && lastError) throw lastError;
+    if (!reachedSite && lastError) {
+      if (lastError.message.includes('(404)')) {
+        return [];
+      }
+      throw lastError;
+    }
     return [];
   }
 
@@ -1526,20 +1536,29 @@ export class BooruApiService {
     const k = tokens.join(' ');
     void limit;
 
-    // Sıralama eşlemesi (ordering=featured|newest|mostviewed|rating;
-    // period yalnızca ordering ile anlamlıdır)
-    let ordering: PornhubOrdering = 'newest';
-    const sb = filter?.sortBy;
-    if (sb === 'score') {
+    // Aramada featured (alaka), keşfette mostviewed+weekly (dinamik trendler)
+    let ordering: PornhubOrdering = 'featured';
+    let period = pornhubPeriodForTimeRange(filter?.timeRange);
+
+    if (!k) {
       ordering = 'mostviewed';
-    } else if (sb === 'rating') {
-      ordering = 'rating';
-    } else if (sb === 'id' || sb === 'default' || !sb) {
-      ordering = 'newest';
-    } else if (sb === 'height' || sb === 'width') {
-      ordering = 'mostviewed';
+      if (filter?.timeRange === 'all' || !filter?.timeRange) {
+        period = 'weekly';
+      }
+    } else {
+      const sb = filter?.sortBy;
+      if (sb === 'score') {
+        ordering = 'mostviewed';
+      } else if (sb === 'rating') {
+        ordering = 'rating';
+      } else if (sb === 'id') {
+        ordering = 'newest';
+      } else if (sb === 'height' || sb === 'width') {
+        ordering = 'mostviewed';
+      } else {
+        ordering = 'featured';
+      }
     }
-    const period = pornhubPeriodForTimeRange(filter?.timeRange);
 
     const url = buildPornhubSearchUrl(page, k, ordering, period);
     const headers = {
@@ -1577,6 +1596,48 @@ export class BooruApiService {
     }
     const rawVideos: PornhubVideo[] = Array.isArray(data?.videos) ? data.videos : [];
     const posts: BooruPost[] = [];
+
+    try {
+      const htmlSearchUrl = k
+        ? `${PORNHUB_BASE}/video/search?search=${encodeURIComponent(k)}&page=${page}`
+        : `${PORNHUB_BASE}/video?o=mv&page=${page}`;
+      const htmlRes = await this.fetchWithRetry(htmlSearchUrl, {
+        headers: {
+          'User-Agent': PORNHUB_UA,
+          Referer: `${PORNHUB_BASE}/`,
+          Cookie: 'accessAgeDisclaimerPH=1; platform=pc',
+        },
+      });
+      if (htmlRes.ok) {
+        const html = await htmlRes.text();
+        const htmlPosts = parsePornhubHtmlListing(html, source);
+        if (htmlPosts.length > 0) {
+          const mbMap = new Map<string, string>();
+          for (const hp of htmlPosts) {
+            if (hp.previewVideoUrl) {
+              mbMap.set(hp.id.replace('ph_', ''), hp.previewVideoUrl);
+            }
+          }
+          for (const v of rawVideos) {
+            const post = mapPornhubVideoToPost(v, source);
+            if (post) {
+              const mb = mbMap.get(v.video_id);
+              if (mb) {
+                post.previewVideoUrl = mb;
+              }
+              posts.push(post);
+            }
+          }
+          if (posts.length === 0) {
+            posts.push(...htmlPosts);
+          }
+          return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+        }
+      }
+    } catch (htmlErr) {
+      console.warn('[BooruAPI] Pornhub HTML mediabook enrichment failed, fallback to API:', htmlErr);
+    }
+
     for (const v of rawVideos) {
       const post = mapPornhubVideoToPost(v, source);
       if (post) posts.push(post);

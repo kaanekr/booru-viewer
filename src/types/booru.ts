@@ -29,6 +29,9 @@ export interface BooruPost {
   /** Video kaynaklarındaki içerik başlığı (örn. XVideos); yoksa undefined */
   title?: string;
   previewUrl: string;
+  previewVideoUrl?: string;
+  previewThumbUrl?: string;
+  previewThumbs?: string[];
   sampleUrl: string;
   originalUrl: string;
   width: number;

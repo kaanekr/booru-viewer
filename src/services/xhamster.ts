@@ -23,7 +23,7 @@ export const XHAMSTER_BASE = 'https://xhamster.com';
 export const XHAMSTER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36';
 
-export type XHamsterSort = 'views' | 'newest' | 'best' | 'longest';
+export type XHamsterSort = 'views' | 'newest' | 'best' | 'longest' | 'relevance';
 export type XHamsterDate = 'latest' | 'weekly' | 'monthly' | 'yearly';
 
 /**
@@ -70,6 +70,10 @@ export function buildXhamsterSearchCandidates(
       return [`${base}/best/${pageNum}`, `${base}/best?page=${pageNum}`];
     }
     if (sort === 'views') {
+      if (date === 'latest') {
+        if (pageNum <= 1) return [`${base}/best/daily`, `${base}/best/daily/1`];
+        return [`${base}/best/daily/${pageNum}`, `${base}/best/daily?page=${pageNum}`];
+      }
       if (date === 'weekly') {
         if (pageNum <= 1) return [`${base}/best/weekly`, `${base}/best/weekly/1`];
         return [`${base}/best/weekly/${pageNum}`, `${base}/best/weekly?page=${pageNum}`];
@@ -92,18 +96,27 @@ export function buildXhamsterSearchCandidates(
 
   // Arama URL'leri
   const qp = new URLSearchParams();
-  qp.set('quality', '720p');
-  if (sort) qp.set('sort', sort);
+  if (sort && sort !== 'relevance') qp.set('sort', sort);
   if (date) qp.set('date', date);
   if (pageNum > 1) qp.set('page', String(pageNum));
 
   const qs = qp.toString();
   const slug = encodeURIComponent(keyword);
 
-  return [
-    `${base}/search/${slug}?${qs}`,
-    `${base}/search?q=${slug}&${qs}`,
+  const candidates: string[] = [
+    `${base}/search/${slug}${qs ? `?${qs}` : ''}`,
+    `${base}/search?q=${slug}${qs ? `&${qs}` : ''}`,
   ];
+
+  if (sort || date) {
+    const fallbackQp = new URLSearchParams();
+    if (pageNum > 1) fallbackQp.set('page', String(pageNum));
+    const fallbackQs = fallbackQp.toString();
+    candidates.push(`${base}/search/${slug}${fallbackQs ? `?${fallbackQs}` : ''}`);
+    candidates.push(`${base}/search?q=${slug}${fallbackQs ? `&${fallbackQs}` : ''}`);
+  }
+
+  return candidates;
 }
 
 function decodeEntities(s: string): string {
@@ -147,6 +160,29 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
   const seen = new Set<string>();
   const base = (source.baseUrl || XHAMSTER_BASE).replace(/\/$/, '');
 
+  const initVideoMap = new Map<string, any>();
+  const initMatch = html.match(/<script id=['"]initials-script['"]>window\.initials=([\s\S]*?)<\/script>/);
+  if (initMatch) {
+    try {
+      const raw = initMatch[1].trim().replace(/;$/, '');
+      const parsed = JSON.parse(raw);
+      const scan = (obj: any) => {
+        if (!obj || typeof obj !== 'object') return;
+        if (Array.isArray(obj)) {
+          for (const item of obj) {
+            if (item && typeof item === 'object' && item.id != null && (item.thumbURL || item.imageURL)) {
+              initVideoMap.set(String(item.id), item);
+            }
+          }
+          for (const item of obj) scan(item);
+        } else {
+          for (const k of Object.keys(obj)) scan(obj[k]);
+        }
+      };
+      scan(parsed);
+    } catch {}
+  }
+
   // Kartlar data-video-id="..." içeren video-thumb düğümleridir
   const chunks = html.split(/<div[^>]*data-video-id="/);
   for (let i = 1; i < chunks.length; i++) {
@@ -161,29 +197,38 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
     let href = hrefM ? decodeEntities(hrefM[1]) : '';
     if (href.startsWith('/')) href = `${base}${href}`;
 
-    // data-previewvideo ve data-previewvideo-fallback
-    // (iOS/Expo oynatıcı uyumu için av1 yerine h264 mp4 tercih edilir)
-    const prevM = c.match(/data-previewvideo="([^"]+)"/i);
-    const prevFallbackM = c.match(/data-previewvideo-fallback="([^"]+)"/i);
+    // data-previewvideo / trailer mp4
+    const initData = initVideoMap.get(videoId);
     let previewVideo = '';
-    if (prevFallbackM && prevFallbackM[1].endsWith('.mp4') && !prevFallbackM[1].includes('.av1.')) {
-      previewVideo = prevFallbackM[1];
-    } else if (prevM && !prevM[1].includes('.av1.')) {
-      previewVideo = prevM[1];
-    } else if (prevFallbackM) {
-      previewVideo = prevFallbackM[1];
-    } else if (prevM) {
-      previewVideo = prevM[1];
+    if (initData?.trailerFallbackUrl && typeof initData.trailerFallbackUrl === 'string') {
+      previewVideo = initData.trailerFallbackUrl.replace(/\\/g, '');
+    } else if (initData?.trailerURL && typeof initData.trailerURL === 'string' && !initData.trailerURL.includes('.av1.')) {
+      previewVideo = initData.trailerURL.replace(/\\/g, '');
+    } else {
+      const prevM = c.match(/data-previewvideo="([^"]+)"/i);
+      const prevFallbackM = c.match(/data-previewvideo-fallback="([^"]+)"/i);
+      if (prevFallbackM && prevFallbackM[1].endsWith('.mp4') && !prevFallbackM[1].includes('.av1.')) {
+        previewVideo = prevFallbackM[1];
+      } else if (prevM && !prevM[1].includes('.av1.')) {
+        previewVideo = prevM[1];
+      } else if (prevFallbackM) {
+        previewVideo = prevFallbackM[1];
+      } else if (prevM) {
+        previewVideo = prevM[1];
+      }
     }
 
-    // Küçük resim (img[data-role="thumb-preview-img"]).
-    // Grid için srcset'teki küçük varyant tercih edilir: src 2560x1440 (~90KB,
-    // decode'da ~15MB) yerine 526x298 (~25KB, ~0.6MB) kartları akıcı yükler.
-    // Sıra: lazy-attr (data-thumb-url/data-src/data-original) -> küçük srcset
-    // -> src; data:image/* placeholder reddedilir.
+    // Küçük resim: önce initials JSON (lazy kartlarda DOM'da img yok),
+    // sonra mevcut srcset/src mantığı.
+    let thumbUrl = '';
+    if (initData?.thumbURL && typeof initData.thumbURL === 'string') {
+      thumbUrl = initData.thumbURL.replace(/\\\//g, '/');
+    } else if (initData?.imageURL && typeof initData.imageURL === 'string') {
+      thumbUrl = initData.imageURL.replace(/\\\//g, '/');
+    }
+    if (!thumbUrl) {
     const roleImgM =
       c.match(/<img[^>]*data-role="thumb-preview-img"[^>]*>/i) || c.match(/<img[^>]*>/i);
-    let thumbUrl = '';
     // Lazy-load varyantları (data-thumb-url / data-src / data-original) önce;
     // placeholder data:image/* reddedilir; sonra grid dostu küçük srcset, en son src.
     const pickAttr = (tag: string): string => {
@@ -222,18 +267,24 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
       const imgM = c.match(/<img[^>]*src="([^"]+)"/i);
       thumbUrl = imgM ? decodeEntities(imgM[1]) : '';
     }
+    }
 
-    // Başlık (aria-label veya title veya img alt)
-    const ariaM = c.match(/aria-label="([^"]+)"/i);
-    const titleAttrM = c.match(/title="([^"]+)"/i);
-    const altM = c.match(/alt="([^"]+)"/i);
-    const title = ariaM
-      ? decodeEntities(ariaM[1]).trim()
-      : titleAttrM
-      ? decodeEntities(titleAttrM[1]).trim()
-      : altM
-      ? decodeEntities(altM[1]).trim()
-      : '';
+    // Başlık (initData öncelikli)
+    let title = '';
+    if (initData?.title && typeof initData.title === 'string') {
+      title = initData.title.trim();
+    } else {
+      const ariaM = c.match(/aria-label="([^"]+)"/i);
+      const titleAttrM = c.match(/title="([^"]+)"/i);
+      const altM = c.match(/alt="([^"]+)"/i);
+      title = ariaM
+        ? decodeEntities(ariaM[1]).trim()
+        : titleAttrM
+        ? decodeEntities(titleAttrM[1]).trim()
+        : altM
+        ? decodeEntities(altM[1]).trim()
+        : '';
+    }
 
     // Süre ([data-role="video-duration"])
     const durM = c.match(/data-role="video-duration"[^>]*>([\s\S]*?)<\/div>/i);
@@ -254,6 +305,12 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
     const viewsStr = viewsM ? viewsM[1].replace(/<[^>]+>/g, '').trim() : '';
     const score = parseViews(viewsStr);
 
+    const previewThumb = (initData?.previewThumbURL && typeof initData.previewThumbURL === 'string')
+      ? initData.previewThumbURL.trim()
+      : undefined;
+
+    const xhThumbs = [thumbUrl, previewThumb].filter(Boolean) as string[];
+
     seen.add(videoId);
     posts.push({
       id: `xh_${videoId}`,
@@ -261,6 +318,9 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
       sourceName: source.name,
       title: title || undefined,
       previewUrl: thumbUrl || previewVideo,
+      previewVideoUrl: previewVideo || undefined,
+      previewThumbUrl: previewThumb,
+      previewThumbs: xhThumbs.length > 1 ? xhThumbs : undefined,
       sampleUrl: previewVideo || thumbUrl,
       // Per-card data-previewvideo mp4: anlık sampleUrl/originalUrl fallback;
       // tam dosya viewer açılışında detaydan tembel (lazy) çözülür.

@@ -3,6 +3,7 @@ import { Dimensions, Platform, StyleSheet, Text, TouchableOpacity, View } from '
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEventListener } from 'expo';
+import * as Haptics from 'expo-haptics';
 import { Heart } from 'lucide-react-native';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
@@ -94,6 +95,45 @@ const PostCardComponent: React.FC<PostCardProps> = ({
 
   const initialUri = React.useMemo(() => getMediaUrl(primaryRaw), [primaryRaw]);
   const [currentUri, setCurrentUri] = React.useState<string>(initialUri);
+  const [isPreviewActive, setIsPreviewActive] = React.useState(false);
+  const [activeThumbIndex, setActiveThumbIndex] = React.useState(0);
+
+  const previewVideoUrl = post.previewVideoUrl;
+  const previewThumbs = post.previewThumbs;
+  const secondaryThumb = post.previewThumbUrl;
+
+  const touchTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const activePreviewTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearTouchTimer = () => {
+    if (touchTimerRef.current) {
+      clearTimeout(touchTimerRef.current);
+      touchTimerRef.current = null;
+    }
+  };
+  const clearActivePreviewTimer = () => {
+    if (activePreviewTimerRef.current) {
+      clearTimeout(activePreviewTimerRef.current);
+      activePreviewTimerRef.current = null;
+    }
+  };
+
+  React.useEffect(() => {
+    return () => {
+      clearTouchTimer();
+      clearActivePreviewTimer();
+    };
+  }, []);
+  React.useEffect(() => {
+    if (!isPreviewActive || !previewThumbs || previewThumbs.length <= 1) {
+      setActiveThumbIndex(0);
+      return;
+    }
+    const timer = setInterval(() => {
+      setActiveThumbIndex((prev) => (prev + 1) % previewThumbs.length);
+    }, 500);
+    return () => clearInterval(timer);
+  }, [isPreviewActive, previewThumbs]);
 
   // XHamster liste HTML'i ekran-dışı kartlarda statik kapak vermez (skeleton);
   // tek kapak data-previewvideo MP4'tür. expo-image MP4 gösteremez → siyah kart.
@@ -214,6 +254,23 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     <TouchableOpacity
       activeOpacity={0.88}
       onPress={() => onPress(post)}
+      delayPressIn={0}
+      pressRetentionOffset={{ top: 200, bottom: 200, left: 100, right: 100 }}
+      onPressIn={() => {
+        if (previewVideoUrl || previewThumbs || secondaryThumb) {
+          clearTouchTimer();
+          clearActivePreviewTimer();
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+          setIsPreviewActive(true);
+        }
+      }}
+      onPressOut={() => {
+        clearTouchTimer();
+        clearActivePreviewTimer();
+        activePreviewTimerRef.current = setTimeout(() => {
+          setIsPreviewActive(false);
+        }, 1200);
+      }}
       style={[styles.container, { width: COLUMN_WIDTH, height: cardHeight }]}
     >
       {canLoad && useVideoCover ? (
@@ -237,6 +294,30 @@ const PostCardComponent: React.FC<PostCardProps> = ({
           allowDownscaling={true}
           onLoadEnd={releaseSlot}
           onError={handleImageError}
+        />
+      ) : null}
+
+      {isPreviewActive && previewVideoUrl ? (
+        <CardVideoPreview url={previewVideoUrl} />
+      ) : isPreviewActive && previewThumbs && previewThumbs.length > 0 ? (
+        <Image
+          source={{
+            uri: getMediaUrl(previewThumbs[activeThumbIndex]) || previewThumbs[activeThumbIndex],
+            headers: getMediaHeaders(previewThumbs[activeThumbIndex]),
+          }}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          transition={100}
+        />
+      ) : isPreviewActive && secondaryThumb ? (
+        <Image
+          source={{
+            uri: getMediaUrl(secondaryThumb) || secondaryThumb,
+            headers: getMediaHeaders(secondaryThumb),
+          }}
+          style={StyleSheet.absoluteFill}
+          contentFit="cover"
+          transition={150}
         />
       ) : null}
 
@@ -284,6 +365,31 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     </TouchableOpacity>
   );
 };
+
+const CardVideoPreview: React.FC<{ url: string }> = React.memo(({ url }) => {
+  const videoSource = React.useMemo(
+    () => ({
+      uri: getMediaUrl(url) || url,
+      headers: getMediaHeaders(url),
+    }),
+    [url]
+  );
+
+  const player = useVideoPlayer(videoSource, (p) => {
+    p.loop = true;
+    p.muted = true;
+    p.play();
+  });
+
+  return (
+    <VideoView
+      player={player}
+      style={StyleSheet.absoluteFill}
+      contentFit="cover"
+      nativeControls={false}
+    />
+  );
+});
 
 export const PostCard = React.memo<PostCardProps>(
   PostCardComponent,

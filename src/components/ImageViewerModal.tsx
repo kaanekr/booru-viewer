@@ -498,6 +498,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const scrollRef = useRef<ScrollView>(null);
   const lastTapRef = useRef<number>(0);
   const isZoomedRef = useRef<boolean>(false);
+  const dismissingRef = useRef<boolean>(false);
   const singleTapTimerRef = useRef<any>(null);
 
   useEffect(() => {
@@ -518,7 +519,9 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     setPornhubWebviewOn(false);
 
     // Eğer post zaten sample'dan farklı gerçek bir originalUrl'e sahipse fetch etme
-    if (post.originalUrl && post.originalUrl !== post.sampleUrl) {
+    // Not: XHamster ve XVideos süreli token/geçici preview taşıdığı için her zaman detaydan taze çözülür
+    const needsFreshVideoResolution = post.sourceId === 'xvideos' || post.sourceId === 'xhamster';
+    if (post.originalUrl && post.originalUrl !== post.sampleUrl && !needsFreshVideoResolution) {
       setResolvedOriginalUrl(post.originalUrl);
       return () => {
         alive = false;
@@ -633,12 +636,13 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
 
   const cleanMedia = primaryCandidate ? primaryCandidate.split('?')[0].toLowerCase() : '';
   const isVideo =
-    Boolean(post.fileExt && ['mp4', 'webm', 'mov', 'm4v'].includes(post.fileExt.toLowerCase())) ||
+    Boolean(post.fileExt && ['mp4', 'webm', 'mov', 'm4v', 'm3u8'].includes(post.fileExt.toLowerCase())) ||
     Boolean(
       cleanMedia &&
         (cleanMedia.endsWith('.mp4') ||
           cleanMedia.endsWith('.webm') ||
           cleanMedia.endsWith('.mov') ||
+          cleanMedia.endsWith('.m3u8') ||
           cleanMedia.endsWith('.m4v'))
     );
 
@@ -753,7 +757,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
 
     if (!zoomed) {
       const offsetY = e.nativeEvent.contentOffset.y;
-      if (offsetY < -80 && !isDismissing) {
+      if (offsetY < -80 && !dismissingRef.current) {
+        dismissingRef.current = true;
         setIsDismissing(true);
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         onClose();
@@ -767,7 +772,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     const zoomScale = e.nativeEvent.zoomScale || 1;
     if (zoomScale <= 1.05) {
       const offsetY = e.nativeEvent.contentOffset.y;
-      if (offsetY < -45 && !isDismissing) {
+      if (offsetY < -45 && !dismissingRef.current) {
+        dismissingRef.current = true;
         setIsDismissing(true);
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         onClose();

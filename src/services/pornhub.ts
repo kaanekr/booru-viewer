@@ -24,7 +24,7 @@ export const PORNHUB_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36';
 
 export type PornhubOrdering = 'featured' | 'newest' | 'mostviewed' | 'rating';
-export type PornhubPeriod = 'weekly' | 'monthly' | 'alltime';
+export type PornhubPeriod = 'daily' | 'weekly' | 'monthly' | 'alltime';
 
 export interface PornhubThumb {
   size?: string;
@@ -52,6 +52,7 @@ export interface PornhubVideo {
 
 /** Uygulamanın TimeRangeOption karşılığı: 1w->weekly, 1m->monthly, 1y/1d->alltime */
 export function pornhubPeriodForTimeRange(timeRange: string | undefined): PornhubPeriod {
+  if (timeRange === '1d') return 'daily';
   if (timeRange === '1w') return 'weekly';
   if (timeRange === '1m') return 'monthly';
   return 'alltime';
@@ -128,12 +129,29 @@ export function mapPornhubVideoToPost(v: PornhubVideo, source: BooruSource): Boo
     if (!Number.isNaN(d.getTime())) createdAt = d.toISOString();
   }
 
+  // Thumbs listesindeki farklı sahne kareleri
+  const previewThumbs: string[] = [];
+  if (Array.isArray(v.thumbs)) {
+    const seenSrcs = new Set<string>();
+    for (const t of v.thumbs) {
+      if (t && typeof t.src === 'string') {
+        const s = t.src.trim();
+        if (s && !seenSrcs.has(s)) {
+          seenSrcs.add(s);
+          previewThumbs.push(s);
+        }
+      }
+    }
+  }
+
   return {
     id: `ph_${v.video_id}`,
     sourceId: source.id,
     sourceName: source.name,
     title: (v.title || '').trim() || undefined,
     previewUrl: thumb,
+    previewThumbUrl: previewThumbs[previewThumbs.length - 1],
+    previewThumbs: previewThumbs.length > 1 ? previewThumbs : undefined,
     sampleUrl: thumb,
     originalUrl: '',
     width,
@@ -189,21 +207,103 @@ export function parsePornhubDetail(html: string): PornhubFiles {
   const re =
     /\{"group":\d+,"height":(\d+),"width":(\d+),"defaultQuality":(true|false),"format":"(hls|mp4)","videoUrl":"((?:[^"\\]|\\.)*)","quality":"?([^",}]*)/g;
   let m: RegExpExecArray | null;
-  const hls: { url: string; quality: number; isDefault: boolean }[] = [];
+  const streams: { url: string; quality: number; isDefault: boolean; format: string }[] = [];
   while ((m = re.exec(src)) !== null) {
     const format = m[4];
-    if (format !== 'hls') continue;
     const url = decodeScriptValue(m[5]);
     if (!url || !/^https?:\/\//i.test(url)) continue;
     const q = parseInt(m[6], 10);
-    hls.push({ url, quality: Number.isFinite(q) ? q : 0, isDefault: m[3] === 'true' });
+    streams.push({
+      url,
+      quality: Number.isFinite(q) ? q : 0,
+      isDefault: m[3] === 'true',
+      format,
+    });
   }
-  if (hls.length === 0) return out;
+  if (streams.length === 0) return out;
 
-  hls.sort((a, b) => b.quality - a.quality);
-  const def = hls.find((h) => h.isDefault);
-  out.high = hls[0].url;
-  out.low = hls[hls.length - 1].url;
-  out.hls = def ? def.url : hls[0].url;
+  const hls = streams.filter((s) => s.format === 'hls');
+  const targetStreams = hls.length > 0 ? hls : streams;
+
+  targetStreams.sort((a, b) => b.quality - a.quality);
+  const def = targetStreams.find((h) => h.isDefault);
+  out.high = targetStreams[0].url;
+  out.low = targetStreams[targetStreams.length - 1].url;
+  if (hls.length > 0) {
+    out.hls = def ? def.url : targetStreams[0].url;
+  }
   return out;
+}
+
+/**
+ * Pornhub HTML arama veya browse sayfasından video kartlarını ayrıştırır.
+ * Her karttan doğrudan önizleme videosu (data-mediabook .webm) çekilir.
+ */
+export function parsePornhubHtmlListing(html: string, source: BooruSource): BooruPost[] {
+  const posts: BooruPost[] = [];
+  if (!html) return posts;
+
+  const chunks = html.split(/<li[^>]*data-video-vkey=["']/);
+  const seen = new Set<string>();
+
+  for (let i = 1; i < chunks.length; i++) {
+    const c = chunks[i];
+    const quoteEnd = c.search(/["']/);
+    if (quoteEnd === -1) continue;
+    const vkey = c.slice(0, quoteEnd).trim();
+    if (!vkey || seen.has(vkey)) continue;
+
+    const titleM =
+      c.match(/<span class="title">[\s\S]*?<a[^>]*title="([^"]+)"/i) ||
+      c.match(/title="([^"]+)"/i);
+    const title = titleM ? titleM[1].trim() : undefined;
+
+    const thumbM =
+      c.match(/src="([^"]+)"/i) ||
+      c.match(/data-thumb_url="([^"]+)"/i) ||
+      c.match(/data-image="([^"]+)"/i);
+    const thumb = thumbM ? thumbM[1].trim() : '';
+    if (!thumb) continue;
+
+    const mbM = c.match(/data-mediabook="([^"]+)"/i);
+    const previewVideo = mbM ? mbM[1].replace(/&amp;/g, '&').trim() : undefined;
+
+    const durM = c.match(/<var class="duration">([^<]+)<\/var>/i);
+    const viewsM = c.match(/<span class="views"><var>([^<]+)<\/var>/i);
+
+    const generalTags: string[] = [];
+    if (durM) generalTags.push(`duration:${durM[1].trim()}`);
+    if (viewsM) generalTags.push(`views:${viewsM[1].trim()}`);
+
+    seen.add(vkey);
+    posts.push({
+      id: `ph_${vkey}`,
+      sourceId: source.id,
+      sourceName: source.name,
+      title,
+      previewUrl: thumb,
+      previewVideoUrl: previewVideo,
+      sampleUrl: previewVideo || thumb,
+      originalUrl: '',
+      width: 640,
+      height: 360,
+      aspectRatio: 16 / 9,
+      score: 0,
+      favCount: 0,
+      rating: 'e',
+      tags: {
+        artist: [],
+        character: [],
+        copyright: [],
+        general: generalTags,
+        meta: ['video'],
+      },
+      allTags: generalTags,
+      sourceLink: `${PORNHUB_BASE}/view_video.php?viewkey=${vkey}`,
+      fileExt: 'mp4',
+      createdAt: new Date().toISOString(),
+    });
+  }
+
+  return posts;
 }
