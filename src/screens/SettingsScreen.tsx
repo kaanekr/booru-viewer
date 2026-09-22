@@ -40,6 +40,9 @@ import { BooruSource } from '../types/booru';
 import { AVAILABLE_SOURCES } from '../services/sources';
 import { StorageService, ImageQuality } from '../services/storage';
 import { proxyService } from '../services/proxyService';
+import { PORNHUB_UA, PORNHUB_BASE } from '../services/pornhub';
+import { XVIDEOS_UA, XVIDEOS_BASE } from '../services/xvideos';
+import { XHAMSTER_UA, XHAMSTER_BASE } from '../services/xhamster';
 import { BackupService } from '../services/backupService';
 import { SecurityService, BiometryType } from '../services/securityService';
 import { PasscodeModal, PasscodeModalMode } from '../components/PasscodeModal';
@@ -214,27 +217,57 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     setProxyTestResult(null);
     Haptics.selectionAsync();
 
-    const start = Date.now();
-    try {
-      const cleanUrl = workerUrl.trim().replace(/\/$/, '');
-      // Gelbooru doesn't require API authentication and reliably returns 200 OK
-      const testTarget = 'https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=1';
-      const endpoint = `${cleanUrl}?url=${encodeURIComponent(testTarget)}`;
-
-      const res = await fetch(endpoint, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)',
-        },
-      });
-
-      const elapsed = Date.now() - start;
-
-      if (res.ok) {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        setProxyTestResult(`✅ Bağlantı Başarılı! (${elapsed}ms)`);
-      } else {
-        throw new Error(`HTTP ${res.status}`);
+    const cleanUrl = workerUrl.trim().replace(/\/$/, '');
+    // Engel tanısı: her video hostuna direkt + worker üzerinden paralel
+    // yoklama. HTTP kodu dönmesi = yol açık (401 bile ulaşılabilir demek);
+    // 'kopuk'/'zaman aşımı' = TLS/SNI engeli.
+    const targets: { name: string; url: string; headers: Record<string, string> }[] = [
+      {
+        name: 'PH',
+        url: `${PORNHUB_BASE}/webmasters/search?search=test&page=1&thumbsize=medium`,
+        headers: { 'User-Agent': PORNHUB_UA, Referer: `${PORNHUB_BASE}/`, Accept: 'application/json' },
+      },
+      {
+        name: 'XH',
+        url: `${XHAMSTER_BASE}/newest/1`,
+        headers: { 'User-Agent': XHAMSTER_UA, Referer: `${XHAMSTER_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
+      },
+      {
+        name: 'XV',
+        url: `${XVIDEOS_BASE}/new/1`,
+        headers: { 'User-Agent': XVIDEOS_UA, Referer: `${XVIDEOS_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
+      },
+      {
+        name: 'RG',
+        url: 'https://api.redgifs.com/v2/gifs/search?type=g&order=trending&count=1&page=1',
+        headers: { 'User-Agent': PORNHUB_UA, Origin: 'https://www.redgifs.com', Referer: 'https://www.redgifs.com/', Accept: 'application/json' },
+      },
+    ];
+    const probe = async (url: string, headers: Record<string, string>): Promise<string> => {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 8000);
+      try {
+        const res = await fetch(url, { headers, signal: ctrl.signal });
+        return String(res.status);
+      } catch (e: any) {
+        const msg = String(e?.message || e || '');
+        return /abort|cancel/i.test(e?.name || '') || /abort/i.test(msg) ? 'zaman aşımı' : 'kopuk';
+      } finally {
+        clearTimeout(t);
       }
+    };
+    try {
+      const rows = await Promise.all(
+        targets.map(async (tg) => {
+          const [direct, via] = await Promise.all([
+            probe(tg.url, tg.headers),
+            probe(`${cleanUrl}?url=${encodeURIComponent(tg.url)}`, tg.headers),
+          ]);
+          return `${tg.name}: direkt ${direct} → worker ${via}`;
+        })
+      );
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+      setProxyTestResult(rows.join('\n'));
     } catch (e: any) {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
       setProxyTestResult(`❌ Hata: ${e?.message || 'Bağlanılamadı'}`);
