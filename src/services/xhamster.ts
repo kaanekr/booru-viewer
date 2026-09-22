@@ -176,12 +176,52 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
       previewVideo = prevM[1];
     }
 
-    // Küçük resim (img[data-role="thumb-preview-img"])
-    const imgM =
-      c.match(/<img[^>]*data-role="thumb-preview-img"[^>]*src="([^"]+)"/i) ||
-      c.match(/<img[^>]*src="([^"]+)"[^>]*data-role="thumb-preview-img"/i) ||
-      c.match(/<img[^>]*src="([^"]+)"/i);
-    const thumbUrl = imgM ? decodeEntities(imgM[1]) : '';
+    // Küçük resim (img[data-role="thumb-preview-img"]).
+    // Grid için srcset'teki küçük varyant tercih edilir: src 2560x1440 (~90KB,
+    // decode'da ~15MB) yerine 526x298 (~25KB, ~0.6MB) kartları akıcı yükler.
+    // Sıra: lazy-attr (data-thumb-url/data-src/data-original) -> küçük srcset
+    // -> src; data:image/* placeholder reddedilir.
+    const roleImgM =
+      c.match(/<img[^>]*data-role="thumb-preview-img"[^>]*>/i) || c.match(/<img[^>]*>/i);
+    let thumbUrl = '';
+    // Lazy-load varyantları (data-thumb-url / data-src / data-original) önce;
+    // placeholder data:image/* reddedilir; sonra grid dostu küçük srcset, en son src.
+    const pickAttr = (tag: string): string => {
+      const m =
+        tag.match(/data-thumb-url="([^"]+)"/i) ||
+        tag.match(/data-src="([^"]+)"/i) ||
+        tag.match(/data-original="([^"]+)"/i);
+      return m ? m[1] : '';
+    };
+    if (roleImgM) {
+      const tag = roleImgM[0];
+      // Lazy-load gerçek URL varsa en önce o (placeholder data:image/* atlanır)
+      const lazyRaw = pickAttr(tag);
+      if (lazyRaw && !lazyRaw.startsWith('data:image/')) {
+        thumbUrl = decodeEntities(lazyRaw);
+      }
+      const srcsetM =
+        tag.match(/srcset="([^"]+)"/i) ||
+        c.match(/<img[^>]*data-role="thumb-preview-img"[^>]*srcset="([^"]+)"/i);
+      if (!thumbUrl && srcsetM) {
+        // srcset tek URL de olabilir ("...s(w:526,h:298),webp/...", içinde virgül var!),
+        // aday listesi de ("url1 526w, url2 1280w"). Virgüle göre bölme URL'yi
+        // parçalar; ilk whitespace token grid için doğru seçimdir.
+        thumbUrl = decodeEntities(srcsetM[1].trim().split(/\s+/)[0].replace(/,$/, ''));
+      }
+      if (!thumbUrl || thumbUrl.startsWith('data:image/')) {
+        thumbUrl = '';
+        const srcM = tag.match(/src="([^"]+)"/i);
+        if (srcM) {
+          const raw = decodeEntities(srcM[1]);
+          if (!raw.startsWith('data:image/')) thumbUrl = raw;
+        }
+      }
+    }
+    if (!thumbUrl) {
+      const imgM = c.match(/<img[^>]*src="([^"]+)"/i);
+      thumbUrl = imgM ? decodeEntities(imgM[1]) : '';
+    }
 
     // Başlık (aria-label veya title veya img alt)
     const ariaM = c.match(/aria-label="([^"]+)"/i);

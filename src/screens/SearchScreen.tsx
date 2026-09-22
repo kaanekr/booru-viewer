@@ -49,9 +49,10 @@ import { pushViewer } from '../navigation/rootNavigation';
 import { SearchFilterModal } from '../components/SearchFilterModal';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl } from '../utils/media';
+import { useVisibleIds, CardLayout } from '../utils/gridVisibility';
 import { useSource } from '../context/SourceContext';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
 
 const POPULAR_TAGS = [
@@ -113,6 +114,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const [loadingMore, setLoadingMore] = useState(false);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const [searchError, setSearchError] = useState<string | null>(null);
+  // Video kapaklar sadece ekrandayken oynar (kasılmayı önler)
+  const [visibleIds, updateVisible] = useVisibleIds();
+  const searchOffsetRef = useRef(0);
   // RedGifs niches (kategoriler)
   const [niches, setNiches] = useState<RedGifsNiche[]>([]);
   const [nichesLoading, setNichesLoading] = useState(false);
@@ -315,7 +319,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       }
 
       posts.slice(0, 10).forEach((p) => {
-        const u = getMediaUrl(p.previewUrl || p.sampleUrl);
+        const raw = p.previewUrl || p.sampleUrl;
+        if (raw && /\.mp4($|\?)/i.test(raw.split('?')[0])) return;
+        const u = getMediaUrl(raw);
         if (u) Image.prefetch(u, { headers: getMediaHeaders(u) });
       });
       setResults(posts);
@@ -433,7 +439,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       }
 
       newPosts.slice(0, 8).forEach((p) => {
-        const u = getMediaUrl(p.previewUrl || p.sampleUrl);
+        const raw = p.previewUrl || p.sampleUrl;
+        if (raw && /\.mp4($|\?)/i.test(raw.split('?')[0])) return;
+        const u = getMediaUrl(raw);
         if (u) Image.prefetch(u, { headers: getMediaHeaders(u) });
       });
       // Atlamalı sayfa boş dönerse (limit dışı) sayacı geri al, loader takılmasın
@@ -546,6 +554,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   // İki sütun aynı hizada biter; kısa sütun altında ölü boşluk kalmaz.
   const leftColumn: BooruPost[] = [];
   const rightColumn: BooruPost[] = [];
+  const layoutMap = new Map<string, CardLayout>();
   {
     const colW = (SCREEN_WIDTH - 36) / 2; // PostCard ile aynı genişlik
     let leftH = 0;
@@ -554,14 +563,24 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       const ar = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75)); // PostCard clamp'i
       const h = colW / ar + 12; // + kart marginBottom
       if (leftH <= rightH) {
+        layoutMap.set(post.id, { y: leftH, h });
         leftColumn.push(post);
         leftH += h;
       } else {
+        layoutMap.set(post.id, { y: rightH, h });
         rightColumn.push(post);
         rightH += h;
       }
     });
   }
+  const layoutMapRef = useRef(layoutMap);
+  layoutMapRef.current = layoutMap;
+
+  // Sonuç değişince ilk ekranın videoları hemen oynasın
+  useEffect(() => {
+    updateVisible(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results]);
 
   return (
     <View style={styles.container}>
@@ -1060,6 +1079,12 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               showsVerticalScrollIndicator={false}
               onScroll={({ nativeEvent }) => {
                 const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
+                searchOffsetRef.current = contentOffset.y;
+                updateVisible(
+                  layoutMapRef.current,
+                  contentOffset.y,
+                  layoutMeasurement.height
+                );
                 if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 900) {
                   loadMoreResults();
                 }
@@ -1124,6 +1149,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       post={post}
                       favoriteIds={favoriteIds}
                       column="left"
+                      videoActive={visibleIds.has(post.id)}
                       onPress={(p) => {
                         const idx = results.findIndex((item) => item.id === p.id);
                         if (idx >= 0) {
@@ -1140,6 +1166,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       post={post}
                       favoriteIds={favoriteIds}
                       column="right"
+                      videoActive={visibleIds.has(post.id)}
                       onPress={(p) => {
                         const idx = results.findIndex((item) => item.id === p.id);
                         if (idx >= 0) {

@@ -20,10 +20,11 @@ import { pushViewer } from '../navigation/rootNavigation';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl } from '../utils/media';
+import { useVisibleIds, CardLayout } from '../utils/gridVisibility';
 import { useSource } from '../context/SourceContext';
 import { StorageService } from '../services/storage';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 interface FeedScreenProps {
   navigation?: any;
@@ -61,6 +62,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const isFocused = useIsFocused();
+  // Video kapaklar sadece ekrandayken oynar (kasılmayı önler)
+  const [visibleIds, updateVisible] = useVisibleIds();
 
   // Kapağa dönünce fav setini tazele — viewer'da favlanan anında rozetlenir
   useEffect(() => {
@@ -87,8 +90,11 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
         // Pre-warm: grid'in okuyacağı AYNI entry (getMediaUrl + URL key).
         // prefetch cacheKey desteklemez, o yüzden grid de URL key kullanır.
+        // MP4 kapaklar video yoldan yüklenir; Image.prefetch boşa indirme yapmasın.
         newPosts.slice(0, 10).forEach((p) => {
-          const u = getMediaUrl(p.previewUrl || p.sampleUrl);
+          const raw = p.previewUrl || p.sampleUrl;
+          if (raw && /\.mp4($|\?)/i.test(raw.split('?')[0])) return;
+          const u = getMediaUrl(raw);
           if (u) {
             Image.prefetch(u, { headers: getMediaHeaders(u) });
           }
@@ -177,6 +183,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   // (Greedy deterministiktir: yeni sayfa eklenince eski atamalar değişmez.)
   const leftColumn: BooruPost[] = [];
   const rightColumn: BooruPost[] = [];
+  const layoutMap = new Map<string, CardLayout>();
   {
     const colW = (SCREEN_WIDTH - 36) / 2; // PostCard ile aynı genişlik
     let leftH = 0;
@@ -185,14 +192,24 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
       const ar = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75)); // PostCard clamp'i
       const h = colW / ar + 12; // + kart marginBottom
       if (leftH <= rightH) {
+        layoutMap.set(post.id, { y: leftH, h });
         leftColumn.push(post);
         leftH += h;
       } else {
+        layoutMap.set(post.id, { y: rightH, h });
         rightColumn.push(post);
         rightH += h;
       }
     });
   }
+  const layoutMapRef = useRef(layoutMap);
+  layoutMapRef.current = layoutMap;
+
+  // Liste değişince ilk ekranın videoları hemen oynasın
+  useEffect(() => {
+    updateVisible(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posts]);
 
   const handleCardPress = (post: BooruPost) => {
     const idx = posts.findIndex((p) => p.id === post.id);
@@ -300,6 +317,11 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           }
           onScroll={({ nativeEvent }) => {
             scrollOffsetRef.current = nativeEvent.contentOffset.y;
+            updateVisible(
+              layoutMapRef.current,
+              nativeEvent.contentOffset.y,
+              nativeEvent.layoutMeasurement.height
+            );
             if (isCloseToBottom(nativeEvent)) {
               handleLoadMore();
             }
@@ -316,6 +338,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                   onPress={handleCardPress}
                   favoriteIds={favoriteIds}
                   column="left"
+                  videoActive={visibleIds.has(post.id)}
                 />
               ))}
             </View>
@@ -327,6 +350,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                   onPress={handleCardPress}
                   favoriteIds={favoriteIds}
                   column="right"
+                  videoActive={visibleIds.has(post.id)}
                 />
               ))}
             </View>
