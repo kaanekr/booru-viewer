@@ -121,6 +121,7 @@ export class BooruApiService {
   /**
    * Rate-limit koruması + 429/5xx retry: Gelbooru scrape'i banlamasın diye
    * istekler arası min 800ms boşluk, 429/503'te tek seferlik bekleyip tekrar dener.
+   * 403 de retry edilir (DPI/bot-duvarı akış-bazlı düşürür, ikinci deneme genelde geçer).
    */
   private async fetchWithRetry(url: string, init?: RequestInit, retries = 1, timeoutMs?: number): Promise<Response> {
     const now = Date.now();
@@ -140,7 +141,7 @@ export class BooruApiService {
       }
     };
     const res = await attempt();
-    if ((res.status === 429 || res.status >= 500) && retries > 0) {
+    if ((res.status === 403 || res.status === 429 || res.status >= 500) && retries > 0) {
       const retryAfter = Number(res.headers.get('retry-after')) || 2;
       await new Promise((r) => setTimeout(r, Math.min(retryAfter, 5) * 1000));
       return await attempt();
