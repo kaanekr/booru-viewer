@@ -112,9 +112,27 @@ export function parseXVideosListing(html: string, source: BooruSource): BooruPos
     if (seen.has(dataId)) continue;
 
     const thumbM =
-      c.match(/data-src="(https?:[^"]+)"/) || c.match(/<img[^>]*src="(https?:[^"]+)"/);
+      c.match(/data-src="([^"]+)"/) || c.match(/<img[^>]*src="([^"]+)"/);
     const preview = thumbM ? thumbM[1].trim() : '';
     if (!preview) continue;
+
+    const pvvM = c.match(/data-pvv="([^"]+\.mp4[^"]*)"/i);
+    const previewVideo = pvvM ? pvvM[1].trim() : undefined;
+
+    let previewThumbs: string[] | undefined;
+    if (preview.includes('THUMBNUM')) {
+      previewThumbs = [1, 2, 3, 4, 5, 6, 7, 8].map((num) =>
+        preview.replace('THUMBNUM', String(num))
+      );
+    } else {
+      const matchNum = preview.match(/_(\d+)_t\.(jpg|jpeg|webp|avif)/i);
+      if (matchNum) {
+        const ext = matchNum[2];
+        previewThumbs = [1, 3, 5, 7, 10, 15, 20, 25].map((num) =>
+          preview.replace(/_\d+_t\.(jpg|jpeg|webp|avif)/i, `_${num}_t.${ext}`)
+        );
+      }
+    }
 
     const titleM =
       c.match(/<p class="title"><a[^>]*title="([^"]+)"/) || c.match(/title="([^"]+)"/);
@@ -142,6 +160,8 @@ export function parseXVideosListing(html: string, source: BooruSource): BooruPos
       sourceName: source.name,
       title: title || undefined,
       previewUrl: preview,
+      previewVideoUrl: previewVideo,
+      previewThumbs,
       sampleUrl: preview,
       // Orijinal mp4 secure-token'lıdır ve süreli olabilir; liste anında
       // gömülmez — viewer açılışında detaydan taze çözülür.
