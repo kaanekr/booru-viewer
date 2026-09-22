@@ -40,9 +40,9 @@ import { BooruSource } from '../types/booru';
 import { AVAILABLE_SOURCES } from '../services/sources';
 import { StorageService, ImageQuality } from '../services/storage';
 import { proxyService } from '../services/proxyService';
-import { PORNHUB_UA, PORNHUB_BASE } from '../services/pornhub';
-import { XVIDEOS_UA, XVIDEOS_BASE } from '../services/xvideos';
-import { XHAMSTER_UA, XHAMSTER_BASE } from '../services/xhamster';
+import { PORNHUB_UA, PORNHUB_BASE, parsePornhubHtmlListing } from '../services/pornhub';
+import { XVIDEOS_UA, XVIDEOS_BASE, parseXVideosListing } from '../services/xvideos';
+import { XHAMSTER_UA, XHAMSTER_BASE, parseXhamsterListing } from '../services/xhamster';
 import { BackupService } from '../services/backupService';
 import { SecurityService, BiometryType } from '../services/securityService';
 import { PasscodeModal, PasscodeModalMode } from '../components/PasscodeModal';
@@ -220,22 +220,37 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     const cleanUrl = workerUrl.trim().replace(/\/$/, '');
     // Engel tanısı: her video hostuna direkt + worker üzerinden paralel
     // yoklama. HTTP kodu dönmesi = yol açık (401 bile ulaşılabilir demek);
-    // 'kopuk'/'zaman aşımı' = TLS/SNI engeli.
-    const targets: { name: string; url: string; headers: Record<string, string> }[] = [
+    // 'kopuk'/'zaman aşımı' = TLS/SNI engeli. Kart sayısı = gövde gerçekten
+    // parse edilebiliyor mu (worker içeriği bozuyorsa 200/0 çıkar).
+    const stubSource = (id: string, baseUrl: string) => ({ id, name: id, baseUrl, type: id }) as any;
+    const targets: {
+      name: string;
+      url: string;
+      headers: Record<string, string>;
+      parse?: (html: string) => number;
+    }[] = [
       {
         name: 'PH',
         url: `${PORNHUB_BASE}/webmasters/search?search=test&page=1&thumbsize=medium`,
         headers: { 'User-Agent': PORNHUB_UA, Referer: `${PORNHUB_BASE}/`, Accept: 'application/json' },
       },
       {
+        name: 'PHweb',
+        url: `${PORNHUB_BASE}/video?o=mv&page=1`,
+        headers: { 'User-Agent': PORNHUB_UA, Referer: `${PORNHUB_BASE}/`, Cookie: 'accessAgeDisclaimerPH=1; platform=pc' },
+        parse: (html) => parsePornhubHtmlListing(html, stubSource('pornhub', PORNHUB_BASE)).length,
+      },
+      {
         name: 'XH',
         url: `${XHAMSTER_BASE}/newest/1`,
         headers: { 'User-Agent': XHAMSTER_UA, Referer: `${XHAMSTER_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
+        parse: (html) => parseXhamsterListing(html, stubSource('xhamster', XHAMSTER_BASE)).length,
       },
       {
         name: 'XV',
         url: `${XVIDEOS_BASE}/new/1`,
         headers: { 'User-Agent': XVIDEOS_UA, Referer: `${XVIDEOS_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
+        parse: (html) => parseXVideosListing(html, stubSource('xvideos', XVIDEOS_BASE)).length,
       },
       {
         name: 'RG',
@@ -243,12 +258,20 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         headers: { 'User-Agent': PORNHUB_UA, Origin: 'https://www.redgifs.com', Referer: 'https://www.redgifs.com/', Accept: 'application/json' },
       },
     ];
-    const probe = async (url: string, headers: Record<string, string>): Promise<string> => {
+    const probe = async (url: string, headers: Record<string, string>, parse?: (html: string) => number): Promise<string> => {
       const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 8000);
+      const t = setTimeout(() => ctrl.abort(), 10000);
       try {
         const res = await fetch(url, { headers, signal: ctrl.signal });
-        return String(res.status);
+        if (!res.ok || !parse) return String(res.status);
+        const html = await res.text();
+        let n = 0;
+        try {
+          n = parse(html);
+        } catch {
+          n = -1;
+        }
+        return `${res.status}/${n}`;
       } catch (e: any) {
         const msg = String(e?.message || e || '');
         return /abort|cancel/i.test(e?.name || '') || /abort/i.test(msg) ? 'zaman aşımı' : 'kopuk';
@@ -260,8 +283,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       const rows = await Promise.all(
         targets.map(async (tg) => {
           const [direct, via] = await Promise.all([
-            probe(tg.url, tg.headers),
-            probe(`${cleanUrl}?url=${encodeURIComponent(tg.url)}`, tg.headers),
+            probe(tg.url, tg.headers, tg.parse),
+            probe(`${cleanUrl}?url=${encodeURIComponent(tg.url)}`, tg.headers, tg.parse),
           ]);
           return `${tg.name}: direkt ${direct} → worker ${via}`;
         })
