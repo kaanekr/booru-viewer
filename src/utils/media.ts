@@ -27,10 +27,9 @@ export async function resolveRealDimensions(post: {
   const pageUrl = post.sourceLink;
   if (!pageUrl || typeof pageUrl !== 'string' || !/^https?:\/\//i.test(pageUrl)) return null;
   try {
-    const target = proxyService.proxyUrl(pageUrl);
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
-    const res = await fetch(target, {
+    const res = await proxyService.fetchWithFallback(pageUrl, {
       headers: { 'User-Agent': 'AnimeBoxes/1.9.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' },
       signal: ctrl.signal,
     });
@@ -55,11 +54,10 @@ export async function resolveRealDimensions(post: {
     if (!foundBytes && (post.originalUrl || post.sampleUrl)) {
       try {
         const rawMediaUrl = post.originalUrl || post.sampleUrl;
-        const targetMedia = proxyService.proxyUrl(rawMediaUrl);
         const headers = getMediaHeaders(rawMediaUrl);
         const headCtrl = new AbortController();
         const headTimeout = setTimeout(() => headCtrl.abort(), 4000);
-        const headRes = await fetch(targetMedia, {
+        const headRes = await proxyService.fetchWithFallback(rawMediaUrl as string, {
           method: 'HEAD',
           headers,
           signal: headCtrl.signal,
@@ -251,8 +249,7 @@ export async function resolveGelbooruOriginalUrl(
   }
 
   try {
-    const target = proxyService.proxyUrl(post.sourceLink);
-    const response = await fetch(target, {
+    const response = await proxyService.fetchWithFallback(post.sourceLink, {
       headers: getMediaHeaders(post.sourceLink),
       signal: ctrl.signal,
     });
@@ -379,8 +376,7 @@ export async function resolveXVideosVideoUrls(
   }
 
   try {
-    const target = proxyService.proxyUrl(post.sourceLink);
-    const response = await fetch(target, {
+    const response = await proxyService.fetchWithFallback(post.sourceLink, {
       headers: {
         'User-Agent': XVIDEOS_UA,
         Referer: `${XVIDEOS_BASE}/`,
@@ -420,8 +416,7 @@ export async function resolveXHamsterVideoUrls(
   }
 
   try {
-    const target = proxyService.proxyUrl(post.sourceLink);
-    const response = await fetch(target, {
+    const response = await proxyService.fetchWithFallback(post.sourceLink, {
       headers: {
         'User-Agent': XHAMSTER_UA,
         Referer: `${XHAMSTER_BASE}/`,
@@ -478,8 +473,7 @@ export async function resolvePornhubVideoUrls(
 
   try {
     for (const pageUrl of urls) {
-      const target = proxyService.proxyUrl(pageUrl);
-      const response = await fetch(target, { headers, signal: ctrl.signal });
+      const response = await proxyService.fetchWithFallback(pageUrl, { headers, signal: ctrl.signal });
       if (!response.ok) continue;
       const html = await response.text();
       const files = parsePornhubDetail(html);

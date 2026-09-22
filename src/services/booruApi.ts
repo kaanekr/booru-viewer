@@ -34,30 +34,7 @@ import type { PornhubOrdering, PornhubVideo } from './pornhub';
 const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 BooruViewer/1.0';
 
 async function fetchBooru(url: string, init?: RequestInit): Promise<Response> {
-  const target = proxyService.proxyUrl(url);
-  try {
-    return await fetch(target, init);
-  } catch (e) {
-    // Direkt bağlantı ağ seviyesinde koptu (TLS/SNI engeli vb.): kayıtlı
-    // worker varsa tek seferlik proxy üzerinden tekrar dene.
-    const viaProxy = proxyService.forceProxyUrl(url);
-    if (!viaProxy || viaProxy === target) throw e;
-    // Üst katmanın abort'u çoktan ateşlenmişse fallback anında ölmesin;
-    // sinyal yoksa/ölüyse taze timeout'lu sinyal ver.
-    let retryInit = init;
-    const sig = init?.signal as AbortSignal | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    if (!sig || sig.aborted) {
-      const ctrl = new AbortController();
-      timer = setTimeout(() => ctrl.abort(), 12000);
-      retryInit = { ...init, signal: ctrl.signal };
-    }
-    try {
-      return await fetch(viaProxy, retryInit);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  }
+  return await proxyService.fetchWithFallback(url, init);
 }
 
 /** Gelbooru-motoru zamanlı popüler: dönemin ilk post id'si (alt sınır) önbelleği.

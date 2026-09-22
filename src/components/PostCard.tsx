@@ -8,6 +8,7 @@ import { Heart } from 'lucide-react-native';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isUnsupportedOnIOS } from '../utils/media';
+import { proxyService } from '../services/proxyService';
 import { GridColumn, useLoadGate } from '../utils/imageLoadGate';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
@@ -233,12 +234,22 @@ const PostCardComponent: React.FC<PostCardProps> = ({
 
   const handleImageError = React.useCallback(() => {
     releaseSlot();
-    if (!fallbackRaw) return;
-    const fallbackUrl = getMediaUrl(fallbackRaw);
-    if (fallbackUrl && fallbackUrl !== currentUri) {
-      setCurrentUri(fallbackUrl);
+    if (fallbackRaw) {
+      const fallbackUrl = getMediaUrl(fallbackRaw);
+      if (fallbackUrl && fallbackUrl !== currentUri) {
+        setCurrentUri(fallbackUrl);
+        return;
+      }
     }
-  }, [fallbackRaw, currentUri, releaseSlot]);
+    // Direkt kapak da öldüyse ve worker kayıtlıysa proxy üzerinden tekrar dene
+    if (proxyService.hasWorker()) {
+      const raw = primaryRaw || post.previewUrl || '';
+      const viaProxy = raw ? getMediaUrl(proxyService.forceProxyUrl(raw)) : '';
+      if (viaProxy && viaProxy !== currentUri) {
+        setCurrentUri(viaProxy);
+      }
+    }
+  }, [fallbackRaw, currentUri, releaseSlot, primaryRaw, post.previewUrl]);
 
   // Grid, URL'yi cache key olarak kullanır (özel suffix YOK): prefetch
   // ile aynı entry'ye yazılır/okunur. Viewer'ın :sample/:full-original

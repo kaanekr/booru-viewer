@@ -47,6 +47,47 @@ class ProxyService {
     return `${this.workerUrl}?url=${encodeURIComponent(originalUrl)}`;
   }
 
+  /**
+   * Dirençli fetch: önce direkt (toggle açıksa proxy), ağ kopması veya
+   * 403/429/5xx'te kayıtlı worker varsa tek seferlik proxy'den tekrar dener.
+   * 404'te denemez (aday yoklama mantığı bozulmasın).
+   */
+  async fetchWithFallback(url: string, init?: RequestInit, retryTimeoutMs: number = 12000): Promise<Response> {
+    const target = this.proxyUrl(url);
+    try {
+      const res = await fetch(target, init);
+      if (!res.ok && (res.status === 403 || res.status === 429 || res.status >= 500)) {
+        const viaProxy = this.forceProxyUrl(url);
+        if (viaProxy && viaProxy !== target) {
+          return await this.fetchViaProxy(viaProxy, init, retryTimeoutMs);
+        }
+      }
+      return res;
+    } catch (e) {
+      const viaProxy = this.forceProxyUrl(url);
+      if (!viaProxy || viaProxy === target) throw e;
+      return await this.fetchViaProxy(viaProxy, init, retryTimeoutMs);
+    }
+  }
+
+  private async fetchViaProxy(viaProxy: string, init?: RequestInit, retryTimeoutMs: number = 12000): Promise<Response> {
+    // Üst katmanın abort'u ateşlenmişse fallback anında ölmesin;
+    // sinyal yoksa/ölüyse taze timeout'lu sinyal ver.
+    let retryInit = init;
+    const sig = init?.signal as AbortSignal | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (!sig || sig.aborted) {
+      const ctrl = new AbortController();
+      timer = setTimeout(() => ctrl.abort(), retryTimeoutMs);
+      retryInit = { ...init, signal: ctrl.signal };
+    }
+    try {
+      return await fetch(viaProxy, retryInit);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   proxyUrl(originalUrl: string | undefined): string {
     if (!originalUrl) return '';
     if (!this.isEnabled()) return originalUrl;
