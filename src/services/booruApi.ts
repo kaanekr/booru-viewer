@@ -33,6 +33,18 @@ import type { PornhubOrdering, PornhubVideo } from './pornhub';
 
 const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 BooruViewer/1.0';
 
+/**
+ * Abort'e bağlı kalmayan hard-timeout: release build'de abort edilen fetch
+ * askıda kalabilir; bu yarış sözü mutlaka sonlandırır (sarkan istek asılı kalır).
+ */
+function withHardTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let rt: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    rt = setTimeout(() => reject(new Error(`timeout after ${ms}ms: ${label}`)), ms);
+  });
+  return Promise.race([p.then((v) => { if (rt) clearTimeout(rt); return v; }, (e) => { if (rt) clearTimeout(rt); throw e; }), timeout]);
+}
+
 async function fetchBooru(url: string, init?: RequestInit): Promise<Response> {
   return await proxyService.fetchWithFallback(url, init);
 }
@@ -135,7 +147,7 @@ export class BooruApiService {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
-        return await fetchBooru(url, { ...init, signal: ctrl.signal });
+        return await withHardTimeout(fetchBooru(url, { ...init, signal: ctrl.signal }), timeoutMs, url);
       } finally {
         clearTimeout(t);
       }
