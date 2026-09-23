@@ -237,7 +237,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       {
         name: 'PHweb',
         url: `${PORNHUB_BASE}/video?o=mv&page=1`,
-        headers: { 'User-Agent': PORNHUB_UA, Referer: `${PORNHUB_BASE}/`, Cookie: 'accessAgeDisclaimerPH=1; platform=pc' },
+        headers: { 'User-Agent': PORNHUB_UA, Referer: `${PORNHUB_BASE}/` },
         parse: (html) => parsePornhubHtmlListing(html, stubSource('pornhub', PORNHUB_BASE)).length,
       },
       {

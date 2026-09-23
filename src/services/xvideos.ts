@@ -16,7 +16,7 @@ export const XVIDEOS_BASE = 'https://www.xvideos.com';
 
 /** Arama/liste HTML'i için desktop UA (mobil UA farklı markup döndürebilir). */
 export const XVIDEOS_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
 
 export type XVideosSort = 'relevance' | 'uploaddate' | 'rating' | 'length' | 'views' | 'random';
 export type XVideosDatef = 'today' | 'week' | 'month' | '3month' | '6month' | 'all';

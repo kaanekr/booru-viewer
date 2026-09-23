@@ -69,15 +69,50 @@ class ProxyService {
   }
 
   /**
-   * Dirençli fetch: önce direkt (toggle açıksa proxy), ağ kopması veya
+   * Dirençli fetch: önce direkt (toggle açıksa proxy), ağ kopması, takılma veya
    * 403/429/5xx'te kayıtlı worker varsa tek seferlik proxy'den tekrar dener.
+   * Direkt bacakta da hard-timeout ile socket asılı kalmalarını engeller.
    * 404'te denemez (aday yoklama mantığı bozulmasın).
    */
+  private initPromise: Promise<void> | null = null;
+
+  async ensureInitialized(): Promise<void> {
+    if (this.isInitialized) return;
+    if (!this.initPromise) {
+      this.initPromise = this.init();
+    }
+    await this.initPromise;
+  }
+
   async fetchWithFallback(url: string, init?: RequestInit, retryTimeoutMs: number = 12000): Promise<Response> {
+    await this.ensureInitialized();
     const target = this.proxyUrl(url);
     const scrub = !/redgifs\.com/i.test(url);
     try {
-      const res = await fetch(target, init);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const sig = init?.signal as AbortSignal | undefined;
+      let directInit = init;
+      if (!sig || sig.aborted) {
+        const ctrl = new AbortController();
+        timer = setTimeout(() => ctrl.abort(), retryTimeoutMs);
+        directInit = { ...init, signal: ctrl.signal };
+      }
+      let raceTimer: ReturnType<typeof setTimeout> | undefined;
+      const hardTimeout = new Promise<Response>((_, reject) => {
+        raceTimer = setTimeout(() => reject(new Error(`fetch timeout after ${retryTimeoutMs}ms: ${url}`)), retryTimeoutMs);
+      });
+
+      let res: Response;
+      try {
+        const p = fetch(target, directInit);
+        res = await Promise.race([
+          p.then((v) => { if (raceTimer) clearTimeout(raceTimer); return v; }, (e) => { if (raceTimer) clearTimeout(raceTimer); throw e; }),
+          hardTimeout,
+        ]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+
       if (!res.ok && (res.status === 403 || res.status === 429 || res.status >= 500)) {
         const viaProxy = this.forceProxyUrl(url);
         if (viaProxy && viaProxy !== target) {

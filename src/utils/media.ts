@@ -30,7 +30,7 @@ export async function resolveRealDimensions(post: {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
     const res = await proxyService.fetchWithFallback(pageUrl, {
-      headers: { 'User-Agent': 'AnimeBoxes/1.9.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148' },
+      headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148' },
       signal: ctrl.signal,
     });
     clearTimeout(t);
@@ -315,7 +315,7 @@ export async function resolveGelbooruOriginalUrl(
  */
 export function getMediaHeaders(url: string | undefined): Record<string, string> {
   const headers: Record<string, string> = {
-    'User-Agent': 'AnimeBoxes/1.9.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148',
+    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
   };
   if (!url) return headers;
 
@@ -463,7 +463,7 @@ export async function resolvePornhubVideoUrls(
     'Accept-Language': 'en-US,en;q=0.9',
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Upgrade-Insecure-Requests': '1',
-    Cookie: 'accessAgeDisclaimerPH=1; accessPH=1; platform=pc',
+    Cookie: 'accessAgeDisclaimerPH=1; accessPH=1;',
   };
 
   // 1) Tam izleme sayfası, 2) hafif embed sayfası (viewkey gerekir)

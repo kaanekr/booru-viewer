@@ -31,7 +31,7 @@ import {
 } from './pornhub';
 import type { PornhubOrdering, PornhubVideo } from './pornhub';
 
-const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 BooruViewer/1.0';
+const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
 
 /**
  * Abort'e bağlı kalmayan hard-timeout: release build'de abort edilen fetch
@@ -135,7 +135,7 @@ export class BooruApiService {
    * istekler arası min 800ms boşluk, 429/503'te tek seferlik bekleyip tekrar dener.
    * 403 de retry edilir (DPI/bot-duvarı akış-bazlı düşürür, ikinci deneme genelde geçer).
    */
-  private async fetchWithRetry(url: string, init?: RequestInit, retries = 1, timeoutMs?: number): Promise<Response> {
+  private async fetchWithRetry(url: string, init?: RequestInit, retries = 1, timeoutMs = 12000): Promise<Response> {
     const now = Date.now();
     const wait = 800 - (now - this.lastRequestAt);
     if (wait > 0) {
@@ -143,7 +143,6 @@ export class BooruApiService {
     }
     const attempt = async (): Promise<Response> => {
       this.lastRequestAt = Date.now();
-      if (!timeoutMs) return await fetchBooru(url, init);
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
@@ -1085,7 +1084,7 @@ export class BooruApiService {
       headers['X-Redgifs-Token'] = token;
       headers['X-Authorization'] = `Bearer ${token}`;
     }
-    return await fetchBooru(url, { headers });
+    return await this.fetchWithRetry(url, { headers }, 0, 10000);
   }
 
   private async getRedGifsToken(): Promise<string> {
@@ -1396,7 +1395,7 @@ export class BooruApiService {
           'Accept-Language': 'en-US,en;q=0.9',
           Accept: 'text/html,application/xhtml+xml',
         },
-      });
+      }, 0, 8000);
       if (res.ok) {
         const html = await res.text();
         const m = extractXVideosBestMonth(html);
@@ -1461,7 +1460,7 @@ export class BooruApiService {
     for (const url of candidates) {
       let response: Response;
       try {
-        response = await this.fetchWithRetry(url, { headers });
+        response = await this.fetchWithRetry(url, { headers }, 1, 10000);
       } catch (e: any) {
         lastError = e instanceof Error ? e : new Error(String(e));
         continue;
@@ -1550,7 +1549,7 @@ export class BooruApiService {
     for (const url of candidates) {
       let response: Response;
       try {
-        response = await this.fetchWithRetry(url, { headers });
+        response = await this.fetchWithRetry(url, { headers }, 1, 10000);
       } catch (e: any) {
         lastError = e instanceof Error ? e : new Error(String(e));
         continue;
@@ -1648,7 +1647,6 @@ export class BooruApiService {
     const htmlHeaders = {
       'User-Agent': PORNHUB_UA,
       Referer: `${PORNHUB_BASE}/`,
-      Cookie: 'accessAgeDisclaimerPH=1; platform=pc',
     };
 
     // Keşfet sayfa 1: anasayfa (sitenin o an öne çıkardıkları). Başarısız
@@ -1723,9 +1721,8 @@ export class BooruApiService {
         headers: {
           'User-Agent': PORNHUB_UA,
           Referer: `${PORNHUB_BASE}/`,
-          Cookie: 'accessAgeDisclaimerPH=1; platform=pc',
         },
-      }, 1, 12000);
+      }, 0, 6000);
       if (htmlRes.ok) {
         const html = await htmlRes.text();
         const htmlPosts = parsePornhubHtmlListing(html, source);
