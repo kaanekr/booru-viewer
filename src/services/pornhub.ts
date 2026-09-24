@@ -237,7 +237,13 @@ export function parsePornhubDetail(html: string): PornhubFiles {
 
 /**
  * Pornhub HTML arama veya browse sayfasından video kartlarını ayrıştırır.
- * Her karttan doğrudan önizleme videosu (data-mediabook .webm) çekilir.
+ * Her karttan hover önizleme videosu (anchor'daki `data-webm` flipbook mp4,
+ * iOS'ta oynatılabilir) ve poster/thumb çekilir.
+ *
+ * Not (2026): eski `data-mediabook` (.webm) özniteliği siteden kalktı;
+ * yerini `data-webm="..._fb.mp4"` + `data-poster` + `data-path` aldı.
+ * Süre `<span class="bgEffect time">`, izlenme `<div class="videoViews">`,
+ * başlık `<a class="thumbnailTitle">` içindedir.
  */
 export function parsePornhubHtmlListing(html: string, source: BooruSource): BooruPost[] {
   const posts: BooruPost[] = [];
@@ -253,30 +259,41 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
     const vkey = c.slice(0, quoteEnd).trim();
     if (!vkey || seen.has(vkey)) continue;
 
-    const titleM =
-      c.match(/<span class="title">[\s\S]*?<a[^>]*title="([^"]+)"/i) ||
-      c.match(/title="([^"]+)"/i);
-    const title = titleM ? titleM[1].trim() : undefined;
+    // Önizleme videosu: önce yeni data-webm (mp4 flipbook), sonra eski data-mediabook
+    const webmM =
+      c.match(/data-webm="([^"]+)"/i) || c.match(/data-mediabook="([^"]+)"/i);
+    const previewVideo = webmM ? webmM[1].replace(/&amp;/g, '&').trim() : undefined;
 
-    const thumbAttrs = ['data-path', 'data-lazy-src', 'data-thumb_url', 'data-image', 'src'];
+    const posterM = c.match(/data-poster="([^"]+)"/i);
+    const poster = posterM ? posterM[1].replace(/&amp;/g, '&').trim() : '';
+
+    // Kapak görseli: data-path > poster > img src (blank.gif atlanır)
     let thumb = '';
-    for (const attr of thumbAttrs) {
-      const match = c.match(new RegExp(`${attr}="([^"]+)"`, 'i'));
-      if (match) {
-        const candidate = match[1].replace(/&amp;/g, '&').trim();
-        if (candidate && !candidate.includes('blank.gif')) {
-          thumb = candidate;
-          break;
-        }
+    const pathM = c.match(/data-path="([^"]+)"/i);
+    if (pathM) {
+      const candidate = pathM[1].replace(/&amp;/g, '&').trim();
+      if (candidate && !candidate.includes('blank.gif')) thumb = candidate;
+    }
+    if (!thumb && poster && !poster.includes('blank.gif')) thumb = poster;
+    if (!thumb) {
+      const imgM =
+        c.match(/<img[^>]*class="[^"]*videoThumb[^"]*"[^>]*src="([^"]+)"/i) ||
+        c.match(/<img[^>]*src="([^"]+)"/i);
+      if (imgM) {
+        const candidate = imgM[1].replace(/&amp;/g, '&').trim();
+        if (candidate && !candidate.includes('blank.gif')) thumb = candidate;
       }
     }
     if (!thumb) continue;
 
-    const mbM = c.match(/data-mediabook="([^"]+)"/i);
-    const previewVideo = mbM ? mbM[1].replace(/&amp;/g, '&').trim() : undefined;
+    const titleM =
+      c.match(/<a[^>]*class="thumbnailTitle"[^>]*>([^<]+)<\/a>/i) ||
+      c.match(/<img[^>]*alt="([^"]+)"/i) ||
+      c.match(/title="([^"]+)"/i);
+    const title = titleM ? decodeHtmlEntities(titleM[1]).trim() || undefined : undefined;
 
-    const durM = c.match(/<var class="duration">([^<]+)<\/var>/i);
-    const viewsM = c.match(/<span class="views"><var>([^<]+)<\/var>/i);
+    const durM = c.match(/<span[^>]*class="bgEffect time"[^>]*>([^<]+)<\/span>/i);
+    const viewsM = c.match(/<div[^>]*class="videoViews"[^>]*>.*?([\d.,]+[KMB]?)/is);
 
     const generalTags: string[] = [];
     if (durM) generalTags.push(`duration:${durM[1].trim()}`);
@@ -290,6 +307,7 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
       title,
       previewUrl: thumb,
       previewVideoUrl: previewVideo,
+      previewThumbUrl: poster || undefined,
       sampleUrl: previewVideo || thumb,
       originalUrl: '',
       width: 640,
@@ -313,4 +331,22 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
   }
 
   return posts;
+}
+
+/** Başlık metnindeki HTML entity'lerini çözer (&#039;, &amp; ...). */
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&#(\d+);/g, (_, n) => {
+      const cp = parseInt(n, 10);
+      return Number.isFinite(cp) ? String.fromCodePoint(cp) : _;
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => {
+      const cp = parseInt(n, 16);
+      return Number.isFinite(cp) ? String.fromCodePoint(cp) : _;
+    })
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
 }

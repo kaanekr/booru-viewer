@@ -188,7 +188,9 @@ export function normalizeBooruMediaUrl(url: string | undefined): string {
 }
 
 /**
- * Gets the ready-to-load media URL, routing through Cloudflare Worker proxy if enabled.
+ * Gets the ready-to-load media URL. Global toggle açıksa tüm trafik Worker
+ * üzerinden geçer; toggle kapalıysa sadece TLS-kırılgan host'lar
+ * (örn. api-cdn-mp4.rule34.xxx) worker kayıtlıysa seçici proxy'lenir.
  */
 export function getMediaUrl(url: string | undefined): string {
   if (!url) return '';
@@ -597,7 +599,9 @@ export async function checkMp4UpgradeAvailable(
       const targetUrl = getMediaUrl(mp4Url);
       const headers = getMediaHeaders(mp4Url);
 
-      const response = await fetch(targetUrl, {
+      // Direkt HEAD yerine seçici fallback'li fetch: TLS-kırılgan host'ta
+      // direkt koparsa kayıtlı worker üzerinden tek seferlik tekrar dener.
+      const response = await proxyService.fetchWithFallback(targetUrl, {
         method: 'HEAD',
         headers,
         signal: controller.signal,

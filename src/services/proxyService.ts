@@ -10,6 +10,35 @@ class ProxyService {
   private workerUrl: string = '';
   private isInitialized: boolean = false;
 
+  /**
+   * iOS AVPlayer'da TLS handshake'i düşüren CDN host'ları (NSURLError -1200).
+   * Canlı vaka: api-cdn-mp4.rule34.xxx üzerindeki .mp4'ler direkt bağlantıda
+   * "A TLS error caused the secure connection to fail" veriyor, Worker
+   * üzerinden aynı dosya sorunsuz oynuyor. Bu host'lar worker kayıtlıysa
+   * global toggle kapalı olsa bile seçici olarak proxy'lenir; diğer
+   * host'lar doğrudan kalır.
+   */
+  private static readonly TLS_FRAGILE_PATTERNS: RegExp[] = [
+    /api-cdn[^/]*\.rule34\.(xxx|us)/i,
+  ];
+
+  /** Ham URL TLS-kırılgan bir CDN'e mi işaret ediyor? */
+  isTlsFragileUrl(url: string | undefined): boolean {
+    if (!url || typeof url !== 'string') return false;
+    try {
+      const decoded = decodeURIComponent(url);
+      return ProxyService.TLS_FRAGILE_PATTERNS.some((re) => re.test(decoded));
+    } catch {
+      return ProxyService.TLS_FRAGILE_PATTERNS.some((re) => re.test(url));
+    }
+  }
+
+  /** Proxy'li URL mi (kendisine tekrar proxy uygulanmasın)? */
+  isProxiedUrl(url: string | undefined): boolean {
+    if (!url || !this.workerUrl) return false;
+    return url.startsWith(this.workerUrl);
+  }
+
   async init(): Promise<void> {
     try {
       const config = await StorageService.getProxyConfig();
@@ -163,9 +192,18 @@ class ProxyService {
 
   proxyUrl(originalUrl: string | undefined): string {
     if (!originalUrl) return '';
-    if (!this.isEnabled()) return originalUrl;
-    if (originalUrl.startsWith(this.workerUrl)) return originalUrl;
-    return `${this.workerUrl}?url=${encodeURIComponent(originalUrl)}`;
+    // Global toggle açıksa: tüm trafik Worker üzerinden.
+    if (this.isEnabled()) {
+      if (originalUrl.startsWith(this.workerUrl)) return originalUrl;
+      return `${this.workerUrl}?url=${encodeURIComponent(originalUrl)}`;
+    }
+    // Toggle kapalıysa: sadece TLS-kırılgan host'lar seçici proxy'lenir,
+    // diğer sonuçlar doğrudan kalır.
+    if (this.workerUrl && this.isTlsFragileUrl(originalUrl)) {
+      if (originalUrl.startsWith(this.workerUrl)) return originalUrl;
+      return `${this.workerUrl}?url=${encodeURIComponent(originalUrl)}`;
+    }
+    return originalUrl;
   }
 }
 

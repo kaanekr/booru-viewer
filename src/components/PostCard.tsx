@@ -192,6 +192,11 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   const videoSourceRef = React.useRef(videoCoverSource);
   videoSourceRef.current = videoCoverSource;
   const thumbRetryRef = React.useRef(0);
+  const thumbProxyTriedRef = React.useRef(false);
+  React.useEffect(() => {
+    thumbRetryRef.current = 0;
+    thumbProxyTriedRef.current = false;
+  }, [videoCoverSource]);
   useEventListener(videoPlayer, 'statusChange', (payload) => {
     if (payload.status === 'readyToPlay') {
       releaseSlot();
@@ -204,12 +209,31 @@ const PostCardComponent: React.FC<PostCardProps> = ({
       // Hücum anında düşen kapak: slotu bırak, gecikmeyle en fazla 2 kez dene
       releaseSlot();
       const src = videoSourceRef.current;
-      if (src && thumbRetryRef.current < 2) {
+      if (!src) return;
+      // TLS düşüşü (örn. api-cdn-mp4.rule34.xxx): ilk hatada tek seferlik
+      // seçici proxy dene, diğer kartlar doğrudan kalır.
+      if (!thumbProxyTriedRef.current && proxyService.hasWorker() && !proxyService.isProxiedUrl(src.uri)) {
+        thumbProxyTriedRef.current = true;
+        const raw = videoCoverRaw;
+        const viaProxy = raw ? proxyService.forceProxyUrl(raw) : '';
+        if (viaProxy) {
+          const proxiedSrc = { uri: getMediaUrl(viaProxy) || viaProxy, headers: getMediaHeaders(viaProxy) };
+          videoSourceRef.current = proxiedSrc as typeof src;
+          setTimeout(() => {
+            try {
+              videoPlayer.replace(proxiedSrc);
+            } catch {}
+          }, 800);
+          return;
+        }
+      }
+      if (thumbRetryRef.current < 2) {
         thumbRetryRef.current += 1;
         const delay = 1500 * thumbRetryRef.current;
         setTimeout(() => {
           try {
-            videoPlayer.replace(src);
+            const current = videoSourceRef.current;
+            if (current) videoPlayer.replace(current);
           } catch {}
         }, delay);
       }
@@ -401,6 +425,23 @@ const CardVideoPreview: React.FC<{ url: string }> = React.memo(({ url }) => {
     p.loop = true;
     p.muted = true;
     p.play();
+  });
+
+  // TLS düşüşünde tek seferlik seçici proxy fallback'i (sadece bu önizleme).
+  const proxyTriedRef = React.useRef(false);
+  React.useEffect(() => {
+    proxyTriedRef.current = false;
+  }, [url]);
+  useEventListener(player, 'statusChange', (payload) => {
+    if (payload.status !== 'error' || proxyTriedRef.current) return;
+    const currentUri = videoSource.uri;
+    if (!proxyService.hasWorker() || proxyService.isProxiedUrl(currentUri)) return;
+    proxyTriedRef.current = true;
+    const viaProxy = proxyService.forceProxyUrl(url);
+    if (!viaProxy || viaProxy === currentUri) return;
+    try {
+      player.replace({ uri: getMediaUrl(viaProxy) || viaProxy, headers: getMediaHeaders(viaProxy) });
+    } catch {}
   });
 
   return (
