@@ -537,6 +537,15 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const singleTapTimerRef = useRef<any>(null);
 
   useEffect(() => {
+    return () => {
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     let isMounted = true;
     StorageService.getImageQuality().then((q) => {
       if (isMounted) setQuality(q);
@@ -1155,8 +1164,11 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   // seçici proxy fallback'i: sadece bu video Worker üzerinden tekrar denenir,
   // diğer sonuçlar doğrudan kalır.
   const proxyFallbackDoneRef = useRef(false);
+  // Proxy yedeği de ölürse siyah ekranda kalmasın diye terminal hata durumu.
+  const [loadFailed, setLoadFailed] = useState(false);
   useEffect(() => {
     proxyFallbackDoneRef.current = false;
+    setLoadFailed(false);
   }, [url]);
 
   const player = useVideoPlayer(null, (p) => {
@@ -1166,6 +1178,10 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   });
 
   useEventListener(player, 'statusChange', (payload) => {
+    if (payload.status === 'error' && proxyFallbackDoneRef.current) {
+      setLoadFailed(true);
+      return;
+    }
     if (payload.status !== 'error' || proxyFallbackDoneRef.current) return;
     if (!proxyService.hasWorker() || proxyService.isProxiedUrl(url)) return;
     proxyFallbackDoneRef.current = true;
@@ -1391,6 +1407,20 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const progressPercent =
     duration > 0 ? Math.min(100, Math.max(0, (displayTime / duration) * 100)) : 0;
 
+  const handleRetryLoad = useCallback(() => {
+    setLoadFailed(false);
+    proxyFallbackDoneRef.current = false;
+    (async () => {
+      try {
+        await player.replaceAsync(videoSource);
+        if (!suspendedRef.current) player.play();
+      } catch (e) {
+        console.warn('[VideoPlayerView] Manual retry failed:', e);
+        setLoadFailed(true);
+      }
+    })();
+  }, [player, videoSource]);
+
   return (
     <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
       <VideoView
@@ -1403,6 +1433,29 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         startsPictureInPictureAutomatically={false}
         pointerEvents="none"
       />
+
+      {/* Yükleme iki yoldan da öldüyse siyah ekran yerine hata kartı + tekrar dene */}
+      {loadFailed && (
+        <View style={styles.unsupportedCardContainer} pointerEvents="box-none">
+          <View style={styles.unsupportedCard}>
+            <View style={styles.unsupportedHeader}>
+              <AlertCircle size={22} color="#F5A623" />
+              <Text style={styles.unsupportedTitle}>Video yüklenemedi</Text>
+            </View>
+            <Text style={styles.unsupportedDescription}>
+              Doğrudan ve proxy bağlantısı başarısız oldu. Bağlantını kontrol edip tekrar dene.
+            </Text>
+            <TouchableOpacity
+              style={styles.unsupportedButton}
+              activeOpacity={0.8}
+              onPress={handleRetryLoad}
+            >
+              <RotateCcw size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+              <Text style={styles.unsupportedButtonText}>Tekrar Dene</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       {/* Tap catcher on video to toggle video controls */}
       <TouchableWithoutFeedback onPress={handleToggleControls}>

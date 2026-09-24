@@ -1,4 +1,5 @@
 import { BooruPost, BooruSource, BooruTagGroups, BooruTagSuggestion, RedGifsNiche, TagCategory, SearchFilterConfig } from '../types/booru';
+import { asTagList } from '../utils/guards';
 import { DEFAULT_SOURCE } from './sources';
 import { proxyService } from './proxyService';
 import { StorageService } from './storage';
@@ -77,7 +78,7 @@ function mapDanbooruCategory(catNum: number): TagCategory {
 }
 
 function ensureAbsoluteUrl(url: string | undefined, baseUrl: string): string {
-  if (!url) return '';
+  if (typeof url !== 'string') return '';
   const trimmed = url.trim();
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
     return trimmed;
@@ -720,7 +721,7 @@ export class BooruApiService {
         const width = Number(item.width) || 800;
         const height = Number(item.height) || 1000;
         const aspectRatio = width > 0 && height > 0 ? width / height : 0.75;
-        const rawTags = Array.from(new Set<string>((item.tags || '').split(' ').filter(Boolean)));
+        const rawTags = Array.from(new Set<string>(asTagList(item.tags)));
 
         return {
           id: String(item.id),
@@ -744,7 +745,7 @@ export class BooruApiService {
           },
           allTags: rawTags,
           sourceLink: item.source || undefined,
-          fileExt: item.image ? item.image.split('.').pop() : undefined,
+          fileExt: typeof item.image === 'string' ? item.image.split('.').pop() : undefined,
           createdAt: item.change ? new Date(item.change * 1000).toISOString() : new Date().toISOString(),
         };
       });
@@ -794,13 +795,13 @@ export class BooruApiService {
         const height = item.image_height || 1000;
         const aspectRatio = width > 0 && height > 0 ? width / height : 0.75;
 
-        const artist = Array.from(new Set<string>(item.tag_string_artist ? item.tag_string_artist.split(' ').filter(Boolean) : []));
-        const character = Array.from(new Set<string>(item.tag_string_character ? item.tag_string_character.split(' ').filter(Boolean) : []));
-        const copyright = Array.from(new Set<string>(item.tag_string_copyright ? item.tag_string_copyright.split(' ').filter(Boolean) : []));
-        const general = Array.from(new Set<string>(item.tag_string_general ? item.tag_string_general.split(' ').filter(Boolean) : []));
-        const meta = Array.from(new Set<string>(item.tag_string_meta ? item.tag_string_meta.split(' ').filter(Boolean) : []));
+        const artist = Array.from(new Set<string>(asTagList(item.tag_string_artist)));
+        const character = Array.from(new Set<string>(asTagList(item.tag_string_character)));
+        const copyright = Array.from(new Set<string>(asTagList(item.tag_string_copyright)));
+        const general = Array.from(new Set<string>(asTagList(item.tag_string_general)));
+        const meta = Array.from(new Set<string>(asTagList(item.tag_string_meta)));
 
-        const allTags = Array.from(new Set<string>(item.tag_string ? item.tag_string.split(' ').filter(Boolean) : [...artist, ...character, ...copyright, ...general]));
+        const allTags = Array.from(new Set<string>(asTagList(item.tag_string).length > 0 ? asTagList(item.tag_string) : [...artist, ...character, ...copyright, ...general]));
 
         return {
           id: String(item.id),
@@ -869,7 +870,7 @@ export class BooruApiService {
         const height = item.height || 1000;
         const aspectRatio = width > 0 && height > 0 ? width / height : 0.75;
 
-        const rawTags = Array.from(new Set<string>((item.tags || '').split(' ').filter(Boolean)));
+        const rawTags = Array.from(new Set<string>(asTagList(item.tags)));
 
         return {
           id: String(item.id),
@@ -1236,7 +1237,7 @@ export class BooruApiService {
           // En çok içeriğe sahip farklı etiketi seç ('Big' yerine 'Big Tits')
           const top = Array.isArray(sugData)
             ? sugData
-                .filter((s: any) => s && s.text && s.text.toLowerCase() !== includeTags.toLowerCase())
+                .filter((s: any) => s && typeof s.text === 'string' && s.text.toLowerCase() !== includeTags.toLowerCase())
                 .sort((a: any, b: any) => (Number(b.gifs) || 0) - (Number(a.gifs) || 0))[0]
             : null;
           if (top?.text) {
@@ -1277,8 +1278,10 @@ export class BooruApiService {
       const sampleMedia = sdUrl || silentUrl || fullVideo;
 
       const rawTags = Array.isArray(g.tags) ? g.tags : [];
-      const generalTags = rawTags.map((t: string) => t.toLowerCase().replace(/\s+/g, '_'));
-      const artistTags = g.userName ? [g.userName] : [];
+      const generalTags = rawTags
+        .filter((t: any) => typeof t === 'string')
+        .map((t: string) => t.toLowerCase().replace(/\s+/g, '_'));
+      const artistTags = typeof g.userName === 'string' && g.userName ? [g.userName] : [];
       const metaTags = ['video', ...(g.hasAudio ? ['sound'] : [])];
       const allTags = Array.from(new Set([...artistTags, ...generalTags, ...metaTags]));
       const nicheIds = Array.isArray(g.niches)
@@ -1354,15 +1357,19 @@ export class BooruApiService {
       this.redGifsTokenExpiry = 0;
       response = await this.fetchRedGifsApi(url, await this.getRedGifsToken());
     }
-    if (!response.ok) return [];
+    if (!response.ok) {
+      // Sözleşme [] döndürür (niş yok gibi görünür); tanılama için logla
+      console.warn(`[BooruAPI] RedGifs niches HTTP ${response.status}, boş liste dönülüyor`);
+      return [];
+    }
     try {
       const data = await response.json();
       const niches = Array.isArray(data.niches) ? data.niches : [];
       return niches
-        .filter((n: any) => n && n.id)
+        .filter((n: any) => n && (typeof n.id === 'string' || typeof n.id === 'number'))
         .map((n: any) => ({
           id: String(n.id),
-          name: String(n.name || n.id),
+          name: typeof n.name === 'string' && n.name ? n.name : String(n.id),
           gifCount: Number(n.gifs) || 0,
           subscribers: Number(n.subscribers) || 0,
           thumbnail: typeof n.thumbnail === 'string' ? n.thumbnail : undefined,
@@ -1889,9 +1896,9 @@ export class BooruApiService {
         const att = p.attachments[i];
         if (!att || !att.sha256) continue;
 
-        const isVideo = att.kind === 'video' || (att.mimeType && att.mimeType.startsWith('video/'));
+        const isVideo = att.kind === 'video' || (typeof att.mimeType === 'string' && att.mimeType.startsWith('video/'));
         const ext =
-          att.originalFilename?.split('.').pop() ||
+          (typeof att.originalFilename === 'string' ? att.originalFilename.split('.').pop() : '') ||
           (isVideo ? 'mp4' : att.kind === 'gif' ? 'gif' : 'jpg');
         const thumbUrl = ensureAbsoluteUrl(`https://img.cum.st/thumbnail/${att.sha256}/preview.webp`, source.baseUrl);
         const fullMediaUrl = ensureAbsoluteUrl(`https://e1.cum.st/media/${att.sha256}/original.${ext}`, source.baseUrl);
@@ -1905,7 +1912,9 @@ export class BooruApiService {
         const generalTags = Array.from(
           new Set<string>(
             Array.isArray(p.tags)
-              ? p.tags.map((t: any) => (typeof t === 'string' ? t : t.slug || t.label))
+              ? p.tags.map((t: any) =>
+                  typeof t === 'string' ? t : t && (typeof t.slug === 'string' ? t.slug : typeof t.label === 'string' ? t.label : '')
+                ).filter(Boolean)
               : []
           )
         );
@@ -1970,19 +1979,23 @@ export class BooruApiService {
           if (response.ok) {
             const data = await response.json();
             if (Array.isArray(data) && data.length > 0) {
-              return data.slice(0, limit).map((t: any) => {
-                let cat: TagCategory = 'general';
-                if (t.category === 'artist') cat = 'artist';
-                else if (t.category === 'character') cat = 'character';
-                else if (t.category === 'copyright') cat = 'copyright';
-                else if (t.category === 'metadata') cat = 'meta';
+              return data
+                .slice(0, limit)
+                .map((t: any) => {
+                  let cat: TagCategory = 'general';
+                  if (t.category === 'artist') cat = 'artist';
+                  else if (t.category === 'character') cat = 'character';
+                  else if (t.category === 'copyright') cat = 'copyright';
+                  else if (t.category === 'metadata') cat = 'meta';
 
-                return {
-                  name: t.value || t.label,
-                  category: cat,
-                  postCount: parseInt(t.post_count, 10) || 0,
-                };
-              });
+                  const rawName = typeof t.value === 'string' ? t.value : typeof t.label === 'string' ? t.label : '';
+                  return {
+                    name: rawName,
+                    category: cat,
+                    postCount: parseInt(t.post_count, 10) || 0,
+                  };
+                })
+                .filter((s) => s.name);
             }
           }
         } catch {
@@ -2025,20 +2038,23 @@ export class BooruApiService {
             }
 
             if (tagItems.length > 0) {
-              return tagItems.slice(0, limit).map((t: any) => {
-                const typeNum = parseInt(t.type, 10);
-                let cat: TagCategory = 'general';
-                if (typeNum === 1) cat = 'artist';
-                else if (typeNum === 3) cat = 'copyright';
-                else if (typeNum === 4) cat = 'character';
-                else if (typeNum === 5) cat = 'meta';
+              return tagItems
+                .slice(0, limit)
+                .map((t: any) => {
+                  const typeNum = parseInt(t.type, 10);
+                  let cat: TagCategory = 'general';
+                  if (typeNum === 1) cat = 'artist';
+                  else if (typeNum === 3) cat = 'copyright';
+                  else if (typeNum === 4) cat = 'character';
+                  else if (typeNum === 5) cat = 'meta';
 
-                return {
-                  name: t.name,
-                  category: cat,
-                  postCount: parseInt(t.count, 10) || 0,
-                };
-              });
+                  return {
+                    name: typeof t.name === 'string' ? t.name : '',
+                    category: cat,
+                    postCount: parseInt(t.count, 10) || 0,
+                  };
+                })
+                .filter((s) => s.name);
             }
           }
         } catch {}
@@ -2054,10 +2070,10 @@ export class BooruApiService {
             const data = await response.json();
             if (Array.isArray(data)) {
               return data
-                .filter((s: any) => s && s.text)
+                .filter((s: any) => s && typeof s.text === 'string' && s.text)
                 .slice(0, limit)
                 .map((s: any) => ({
-                  name: String(s.text).toLowerCase().replace(/\s+/g, '_'),
+                  name: s.text.toLowerCase().replace(/\s+/g, '_'),
                   category: 'general' as TagCategory,
                   postCount: Number(s.gifs) || 0,
                 }));
@@ -2077,18 +2093,21 @@ export class BooruApiService {
         const data = await response.json();
         if (!Array.isArray(data)) return [];
 
-        return data.slice(0, limit).map((t: any) => {
-          let count = 0;
-          if (t.label) {
-            const match = t.label.match(/\((\d+)\)/);
-            if (match) count = parseInt(match[1], 10);
-          }
-          return {
-            name: t.value || t.label,
-            category: 'general' as TagCategory,
-            postCount: count,
-          };
-        });
+        return data
+          .slice(0, limit)
+          .map((t: any) => {
+            let count = 0;
+            if (typeof t.label === 'string') {
+              const match = t.label.match(/\((\d+)\)/);
+              if (match) count = parseInt(match[1], 10);
+            }
+            return {
+              name: typeof t.value === 'string' ? t.value : typeof t.label === 'string' ? t.label : '',
+              category: 'general' as TagCategory,
+              postCount: count,
+            };
+          })
+          .filter((s) => s.name);
       } else if (source.type === 'cumst') {
         try {
           const suggestions: BooruTagSuggestion[] = [];
@@ -2103,11 +2122,11 @@ export class BooruApiService {
             const cData = await cRes.json();
             const creatorsList = Array.isArray(cData.creators) ? cData.creators : [];
             creatorsList.forEach((c: any) => {
-              if (c.name) {
+              if (c && typeof c.name === 'string' && c.name) {
                 suggestions.push({
                   name: c.name,
                   category: 'artist' as TagCategory,
-                  postCount: c.bookmarked || 0,
+                  postCount: Number(c.bookmarked) || 0,
                 });
               }
             });
@@ -2125,15 +2144,16 @@ export class BooruApiService {
               const matchedTags = tagsList
                 .filter(
                   (t: any) =>
-                    t.slug?.toLowerCase().includes(lowerQ) ||
-                    t.label?.toLowerCase().includes(lowerQ)
+                    (typeof t.slug === 'string' && t.slug.toLowerCase().includes(lowerQ)) ||
+                    (typeof t.label === 'string' && t.label.toLowerCase().includes(lowerQ))
                 )
                 .slice(0, limit - suggestions.length)
                 .map((t: any) => ({
-                  name: t.slug || t.label,
+                  name: typeof t.slug === 'string' ? t.slug : typeof t.label === 'string' ? t.label : '',
                   category: 'general' as TagCategory,
-                  postCount: t.posts || 0,
-                }));
+                  postCount: Number(t.posts) || 0,
+                }))
+                .filter((s: { name: string }) => s.name);
               suggestions.push(...matchedTags);
             }
           }
@@ -2151,11 +2171,13 @@ export class BooruApiService {
         const data = await response.json();
         if (!Array.isArray(data)) return [];
 
-        return data.map((t: any) => ({
-          name: t.name,
-          category: mapDanbooruCategory(t.category),
-          postCount: t.post_count || 0,
-        }));
+        return data
+          .map((t: any) => ({
+            name: typeof t.name === 'string' ? t.name : '',
+            category: mapDanbooruCategory(t.category),
+            postCount: Number(t.post_count) || 0,
+          }))
+          .filter((s) => s.name);
       } else {
         const url = `${source.baseUrl}/tag.json?name=${encodeURIComponent(query.trim())}&order=count&limit=${limit}`;
         const response = await fetchBooru(url, {
@@ -2165,11 +2187,13 @@ export class BooruApiService {
         const data = await response.json();
         if (!Array.isArray(data)) return [];
 
-        return data.map((t: any) => ({
-          name: t.name,
-          category: 'general' as TagCategory,
-          postCount: t.count || 0,
-        }));
+        return data
+          .map((t: any) => ({
+            name: typeof t.name === 'string' ? t.name : '',
+            category: 'general' as TagCategory,
+            postCount: Number(t.count) || 0,
+          }))
+          .filter((s) => s.name);
       }
     } catch (e) {
       console.warn('[BooruAPI] Tag autocomplete error:', e);

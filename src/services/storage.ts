@@ -14,6 +14,26 @@ const RECENT_VIEWS_KEY = '@booru_recent_views_v2';
 
 let cachedRecentViews: BooruPost[] | null = null;
 
+/**
+ * Bozuk AsyncStorage içeriği tüm uygulamayı zehirlemesin diye şekil
+ * korumaları: parse sonucu beklenen tipte değilse güvenli varsayılan.
+ */
+function asPostArray(v: unknown): BooruPost[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter(
+    (p): p is BooruPost => !!p && typeof p === 'object' && typeof (p as any).id === 'string'
+  );
+}
+
+function asStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((t): t is string => typeof t === 'string');
+}
+
+function asString(v: unknown, fallback = ''): string {
+  return typeof v === 'string' ? v : fallback;
+}
+
 export const StorageService = {
   async getImageQuality(): Promise<ImageQuality> {
     try {
@@ -39,7 +59,7 @@ export const StorageService = {
   async getFavorites(): Promise<BooruPost[]> {
     try {
       const data = await AsyncStorage.getItem(FAVORITES_KEY);
-      return data ? JSON.parse(data) : [];
+      return data ? asPostArray(JSON.parse(data)) : [];
     } catch {
       return [];
     }
@@ -74,7 +94,7 @@ export const StorageService = {
   async getSearchHistory(): Promise<string[]> {
     try {
       const data = await AsyncStorage.getItem(HISTORY_KEY);
-      return data ? JSON.parse(data) : [];
+      return data ? asStringArray(JSON.parse(data)) : [];
     } catch {
       return [];
     }
@@ -105,7 +125,7 @@ export const StorageService = {
   async getFavoriteTags(): Promise<string[]> {
     try {
       const data = await AsyncStorage.getItem(FAVORITE_TAGS_KEY);
-      return data ? JSON.parse(data) : [];
+      return data ? asStringArray(JSON.parse(data)) : [];
     } catch {
       return [];
     }
@@ -168,7 +188,7 @@ export const StorageService = {
   async getBlacklistedTags(): Promise<string[]> {
     try {
       const data = await AsyncStorage.getItem(BLACKLISTED_TAGS_KEY);
-      return data ? JSON.parse(data) : [];
+      return data ? asStringArray(JSON.parse(data)) : [];
     } catch {
       return [];
     }
@@ -255,7 +275,10 @@ export const StorageService = {
   async getProxyConfig(): Promise<{ enabled: boolean; workerUrl: string }> {
     try {
       const data = await AsyncStorage.getItem('@booru_proxy_config_v2');
-      return data ? JSON.parse(data) : { enabled: false, workerUrl: '' };
+      if (!data) return { enabled: false, workerUrl: '' };
+      const parsed: any = JSON.parse(data);
+      if (!parsed || typeof parsed !== 'object') return { enabled: false, workerUrl: '' };
+      return { enabled: parsed.enabled === true, workerUrl: asString(parsed.workerUrl) };
     } catch {
       return { enabled: false, workerUrl: '' };
     }
@@ -264,7 +287,10 @@ export const StorageService = {
   async getGelbooruAuth(): Promise<{ userId: string; apiKey: string }> {
     try {
       const data = await AsyncStorage.getItem('@booru_gelbooru_auth_v1');
-      return data ? JSON.parse(data) : { userId: '', apiKey: '' };
+      if (!data) return { userId: '', apiKey: '' };
+      const parsed: any = JSON.parse(data);
+      if (!parsed || typeof parsed !== 'object') return { userId: '', apiKey: '' };
+      return { userId: asString(parsed.userId), apiKey: asString(parsed.apiKey) };
     } catch {
       return { userId: '', apiKey: '' };
     }
@@ -333,7 +359,7 @@ export const StorageService = {
     try {
       if (cachedRecentViews === null) {
         const data = await AsyncStorage.getItem(RECENT_VIEWS_KEY);
-        cachedRecentViews = data ? JSON.parse(data) : [];
+        cachedRecentViews = data ? asPostArray(JSON.parse(data)) : [];
       }
       if (limit !== undefined) {
         const start = offset || 0;
@@ -349,7 +375,7 @@ export const StorageService = {
     try {
       if (cachedRecentViews === null) {
         const data = await AsyncStorage.getItem(RECENT_VIEWS_KEY);
-        cachedRecentViews = data ? JSON.parse(data) : [];
+        cachedRecentViews = data ? asPostArray(JSON.parse(data)) : [];
       }
       return (cachedRecentViews || []).length;
     } catch {
@@ -363,7 +389,7 @@ export const StorageService = {
       if (cachedRecentViews === null) {
         await this.getRecentViews();
       }
-      const recent = cachedRecentViews || [];
+      const recent = asPostArray(cachedRecentViews || []);
       const filtered = recent.filter((p) => p.id !== post.id);
       const updated = [post, ...filtered].slice(0, 500);
       cachedRecentViews = updated;

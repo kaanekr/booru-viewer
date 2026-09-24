@@ -78,7 +78,7 @@ function normalizeTag(s: string): string {
 }
 
 function parseDurationToSeconds(duration: string | undefined): number {
-  if (!duration) return 0;
+  if (typeof duration !== 'string' || !duration) return 0;
   const parts = duration.split(':').map((p) => parseInt(p, 10));
   if (parts.some((n) => !Number.isFinite(n))) return 0;
   let total = 0;
@@ -93,7 +93,8 @@ function parseDurationToSeconds(duration: string | undefined): number {
  */
 export function mapPornhubVideoToPost(v: PornhubVideo, source: BooruSource): BooruPost | null {
   if (!v || !v.video_id) return null;
-  const thumb = (v.thumb || v.default_thumb || '').trim();
+  const thumbRaw = typeof v.thumb === 'string' ? v.thumb : typeof v.default_thumb === 'string' ? v.default_thumb : '';
+  const thumb = thumbRaw.trim();
   if (!thumb) return null;
 
   let width = 640;
