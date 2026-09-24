@@ -155,7 +155,13 @@ class ProxyService {
       return res;
     } catch (e) {
       const viaProxy = this.forceProxyUrl(url);
-      if (!viaProxy || (viaProxy === target && !scrub)) throw e;
+      if (!viaProxy) throw e;
+      if (viaProxy === target) {
+        // Hedef zaten proxy'liydi: aynı URL'yi tekrar çekmek trafiği
+        // ikiye katlar (özellikle timeout'ta ~24 sn). HTTP-statü bazlı
+        // nötr-header denemesi yukarıda zaten yapıldı, burada dur.
+        throw e;
+      }
       return await this.fetchViaProxy(viaProxy, init, retryTimeoutMs, scrub);
     }
   }

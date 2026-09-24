@@ -32,6 +32,7 @@ import * as Clipboard from 'expo-clipboard';
 import { BooruPost, TagCategory } from '../types/booru';
 import { StorageService, ImageQuality } from '../services/storage';
 import { resolveRealDimensions } from '../utils/media';
+import { onlyStrings } from '../utils/guards';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -196,8 +197,8 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   const allTagItems: TagItemData[] = [];
   const seen = new Set<string>();
 
-  const addCategoryTags = (tags: string[], category: TagCategory) => {
-    tags.forEach((t) => {
+  const addCategoryTags = (tags: unknown, category: TagCategory) => {
+    onlyStrings(tags).forEach((t) => {
       const clean = t.trim();
       if (clean && !seen.has(clean)) {
         seen.add(clean);
@@ -214,7 +215,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
 
   // Fallback for uncategorized
   if (allTagItems.length === 0 && post.allTags && post.allTags.length > 0) {
-    post.allTags.forEach((t) => {
+    onlyStrings(post.allTags).forEach((t) => {
       const clean = t.trim();
       if (clean && !seen.has(clean)) {
         seen.add(clean);
@@ -364,8 +365,13 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   };
 
   // Resolution data
-  const normalExt = post.sampleUrl ? post.sampleUrl.split('.').pop() || 'jpg' : 'jpg';
-  const originalExt = post.fileExt || (post.originalUrl ? post.originalUrl.split('.').pop() || 'png' : 'png');
+  const normalExt = typeof post.sampleUrl === 'string' && post.sampleUrl ? post.sampleUrl.split('.').pop() || 'jpg' : 'jpg';
+  const originalExt =
+    typeof post.fileExt === 'string' && post.fileExt
+      ? post.fileExt
+      : typeof post.originalUrl === 'string' && post.originalUrl
+        ? post.originalUrl.split('.').pop() || 'png'
+        : 'png';
   const [resolvedDims, setResolvedDims] = useState<{ w: number; h: number } | null>(null);
   const [resolvedBytes, setResolvedBytes] = useState<number | null>(null);
 

@@ -3,6 +3,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as Sharing from 'expo-sharing';
 import { BooruPost, BooruTagGroups } from '../types/booru';
 import { StorageService } from './storage';
+import { asStr, lower, urlEndsWith } from '../utils/guards';
 import { normalizeBooruMediaUrl } from '../utils/media';
 import animeboxesDefaultBackup from '../data/animeboxesBackup.json';
 
@@ -17,8 +18,8 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
   let sourceId = 'gelbooru';
   let sourceName = 'Gelbooru';
 
-  if (f.ppostUrl) {
-    const lowerUrl = f.ppostUrl.toLowerCase();
+  if (f.ppostUrl && typeof f.ppostUrl === 'string') {
+    const lowerUrl = lower(f.ppostUrl);
     if (lowerUrl.includes('gelbooru.com')) {
       sourceId = 'gelbooru';
       sourceName = 'Gelbooru';
@@ -38,8 +39,8 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
       sourceId = 'cumst';
       sourceName = 'Cum.st';
     }
-  } else if (f.preview?.url) {
-    const lowerPrev = f.preview.url.toLowerCase();
+  } else if (typeof f.preview?.url === 'string') {
+    const lowerPrev = lower(f.preview.url);
     if (lowerPrev.includes('gelbooru')) {
       sourceId = 'gelbooru';
       sourceName = 'Gelbooru';
@@ -69,7 +70,7 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
   const isVideo =
     f.file?.ext === 'mp4' ||
     f.file?.ext === 'webm' ||
-    (f.file?.url && (f.file.url.endsWith('.mp4') || f.file.url.endsWith('.webm'))) ||
+    (typeof f.file?.url === 'string' && urlEndsWith(f.file.url, '.mp4', '.webm')) ||
     rawTags.includes('video') ||
     rawTags.includes('mp4') ||
     rawTags.includes('webm') ||
@@ -103,9 +104,9 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
     meta: isVideo ? ['video'] : [],
   };
 
-  let detectedExt = f.file?.ext || f.jpeg?.ext;
-  if (!detectedExt && f.file?.url) {
-    const extMatch = f.file.url.split('?')[0].match(/\.([a-z0-9]+)$/i);
+  let detectedExt = typeof f.file?.ext === 'string' ? f.file.ext : typeof f.jpeg?.ext === 'string' ? f.jpeg.ext : undefined;
+  if (!detectedExt && typeof f.file?.url === 'string') {
+    const extMatch = asStr(f.file.url).split('?')[0].match(/\.([a-z0-9]+)$/i);
     if (extMatch) detectedExt = extMatch[1].toLowerCase();
   }
   if (!detectedExt && isVideo) {

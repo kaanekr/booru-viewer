@@ -169,7 +169,7 @@ export function getImageUris(
  * Normalizes booru media URLs (replaces deprecated CDN domains, repairs SSL issues).
  */
 export function normalizeBooruMediaUrl(url: string | undefined): string {
-  if (!url) return '';
+  if (typeof url !== 'string' || !url) return '';
   let u = url.trim();
   if (u.startsWith('//')) u = 'https:' + u;
 

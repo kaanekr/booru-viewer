@@ -8,6 +8,7 @@ import { Heart } from 'lucide-react-native';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isUnsupportedOnIOS } from '../utils/media';
+import { urlEndsWith } from '../utils/guards';
 import { proxyService } from '../services/proxyService';
 import { GridColumn, useLoadGate } from '../utils/imageLoadGate';
 
@@ -71,9 +72,9 @@ const PostCardComponent: React.FC<PostCardProps> = ({
 
   const isWebm = React.useMemo(
     () =>
-      post.fileExt?.toLowerCase() === 'webm' ||
-      Boolean(post.originalUrl && post.originalUrl.split('?')[0].toLowerCase().endsWith('.webm')) ||
-      Boolean(post.sampleUrl && post.sampleUrl.split('?')[0].toLowerCase().endsWith('.webm')),
+      (typeof post.fileExt === 'string' && post.fileExt.toLowerCase() === 'webm') ||
+      urlEndsWith(post.originalUrl, '.webm') ||
+      urlEndsWith(post.sampleUrl, '.webm'),
     [post.fileExt, post.originalUrl, post.sampleUrl]
   );
 
@@ -151,7 +152,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   // tek kapak data-previewvideo MP4'tür. expo-image MP4 gösteremez → siyah kart.
   // Görüntülenebilir resim yok ama MP4 varsa kapak sessiz video olarak oynar.
   const isMp4Url = React.useCallback(
-    (u: string | undefined) => !!u && /\.mp4($|\?)/i.test(u.split('?')[0]),
+    (u: unknown) => typeof u === 'string' && !!u && /\.mp4($|\?)/i.test(u.split('?')[0]),
     []
   );
   const hasRenderableImage = React.useMemo(
@@ -193,10 +194,20 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   videoSourceRef.current = videoCoverSource;
   const thumbRetryRef = React.useRef(0);
   const thumbProxyTriedRef = React.useRef(false);
+  // Unmount sonrası ölü oyuncuya replace() çağrılmasın diye bekleyen
+  // retry zamanlayıcıları takip edilir ve temizlenir.
+  const thumbTimersRef = React.useRef<ReturnType<typeof setTimeout>[]>([]);
   React.useEffect(() => {
     thumbRetryRef.current = 0;
     thumbProxyTriedRef.current = false;
   }, [videoCoverSource]);
+  React.useEffect(() => {
+    const timers = thumbTimersRef.current;
+    return () => {
+      timers.forEach(clearTimeout);
+      timers.length = 0;
+    };
+  }, []);
   useEventListener(videoPlayer, 'statusChange', (payload) => {
     if (payload.status === 'readyToPlay') {
       releaseSlot();
@@ -219,23 +230,27 @@ const PostCardComponent: React.FC<PostCardProps> = ({
         if (viaProxy) {
           const proxiedSrc = { uri: getMediaUrl(viaProxy) || viaProxy, headers: getMediaHeaders(viaProxy) };
           videoSourceRef.current = proxiedSrc as typeof src;
-          setTimeout(() => {
-            try {
-              videoPlayer.replace(proxiedSrc);
-            } catch {}
-          }, 800);
+          thumbTimersRef.current.push(
+            setTimeout(() => {
+              try {
+                videoPlayer.replace(proxiedSrc);
+              } catch {}
+            }, 800)
+          );
           return;
         }
       }
       if (thumbRetryRef.current < 2) {
         thumbRetryRef.current += 1;
         const delay = 1500 * thumbRetryRef.current;
-        setTimeout(() => {
-          try {
-            const current = videoSourceRef.current;
-            if (current) videoPlayer.replace(current);
-          } catch {}
-        }, delay);
+        thumbTimersRef.current.push(
+          setTimeout(() => {
+            try {
+              const current = videoSourceRef.current;
+              if (current) videoPlayer.replace(current);
+            } catch {}
+          }, delay)
+        );
       }
     }
   });
@@ -256,26 +271,34 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     } catch {}
   }, [videoActive, useVideoCover, videoPlayer]);
 
+  // onError ping-pong koruması: denenmiş URI'ler tekrar denenmez, en fazla
+  // 3 farklı URI (direkt + fallback + proxy). primaryRaw değişince sıfırlanır.
+  const triedUrisRef = React.useRef<Set<string>>(new Set());
   React.useEffect(() => {
+    triedUrisRef.current = new Set();
     setCurrentUri(getMediaUrl(primaryRaw));
   }, [primaryRaw]);
 
   const handleImageError = React.useCallback(() => {
     releaseSlot();
+    const tried = triedUrisRef.current;
+    if (currentUri) tried.add(currentUri);
+    if (tried.size > 3) return;
+    const candidates: string[] = [];
     if (fallbackRaw) {
       const fallbackUrl = getMediaUrl(fallbackRaw);
-      if (fallbackUrl && fallbackUrl !== currentUri) {
-        setCurrentUri(fallbackUrl);
-        return;
-      }
+      if (fallbackUrl) candidates.push(fallbackUrl);
     }
     // Direkt kapak da öldüyse ve worker kayıtlıysa proxy üzerinden tekrar dene
     if (proxyService.hasWorker()) {
       const raw = primaryRaw || post.previewUrl || '';
       const viaProxy = raw ? getMediaUrl(proxyService.forceProxyUrl(raw)) : '';
-      if (viaProxy && viaProxy !== currentUri) {
-        setCurrentUri(viaProxy);
-      }
+      if (viaProxy) candidates.push(viaProxy);
+    }
+    const next = candidates.find((u) => u && !tried.has(u));
+    if (next) {
+      tried.add(next);
+      setCurrentUri(next);
     }
   }, [fallbackRaw, currentUri, releaseSlot, primaryRaw, post.previewUrl]);
 

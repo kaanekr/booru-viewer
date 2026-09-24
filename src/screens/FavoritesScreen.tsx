@@ -41,6 +41,7 @@ import { StorageService } from '../services/storage';
 import { BackupService } from '../services/backupService';
 import { AVAILABLE_SOURCES } from '../services/sources';
 import { BooruPost, TagCategory } from '../types/booru';
+import { asStrOr, lower, onlyStrings } from '../utils/guards';
 import { PostCard } from '../components/PostCard';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { pushViewer } from '../navigation/rootNavigation';
@@ -172,30 +173,30 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     const categories = new Map<string, TagCategory>();
 
     favorites.forEach((post) => {
-      if (post.tags) {
-        (post.tags.artist || []).forEach((t) => {
+      if (post.tags && typeof post.tags === 'object') {
+        onlyStrings(post.tags.artist).forEach((t) => {
           const k = t.trim().toLowerCase();
           if (k) categories.set(k, 'artist');
         });
-        (post.tags.character || []).forEach((t) => {
+        onlyStrings(post.tags.character).forEach((t) => {
           const k = t.trim().toLowerCase();
           if (k) categories.set(k, 'character');
         });
-        (post.tags.copyright || []).forEach((t) => {
+        onlyStrings(post.tags.copyright).forEach((t) => {
           const k = t.trim().toLowerCase();
           if (k) categories.set(k, 'copyright');
         });
-        (post.tags.meta || []).forEach((t) => {
+        onlyStrings(post.tags.meta).forEach((t) => {
           const k = t.trim().toLowerCase();
           if (k) categories.set(k, 'meta');
         });
-        (post.tags.general || []).forEach((t) => {
+        onlyStrings(post.tags.general).forEach((t) => {
           const k = t.trim().toLowerCase();
           if (k && !categories.has(k)) categories.set(k, 'general');
         });
       }
 
-      (post.allTags || []).forEach((t) => {
+      onlyStrings(post.allTags).forEach((t) => {
         const clean = t.trim().toLowerCase();
         if (clean) {
           counts.set(clean, (counts.get(clean) || 0) + 1);
@@ -214,12 +215,12 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     const map = new Map<string, { id: string; name: string; count: number }>();
 
     favorites.forEach((post) => {
-      const rawSid = (post.sourceId || post.sourceName || 'unknown').toLowerCase();
+      const rawSid = lower(post.sourceId) || lower(post.sourceName) || 'unknown';
       const canonical = AVAILABLE_SOURCES.find(
         (s) => s.id.toLowerCase() === rawSid || s.name.toLowerCase() === rawSid
       );
       const sid = canonical ? canonical.id.toLowerCase() : rawSid;
-      const sname = canonical ? canonical.name : post.sourceName || post.sourceId || 'Diğer';
+      const sname = canonical ? canonical.name : asStrOr(post.sourceName, asStrOr(post.sourceId, 'Diğer'));
       const existing = map.get(sid);
       if (existing) {
         existing.count += 1;
@@ -269,8 +270,8 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     let result = favorites.filter((post) => {
       // 1. Kaynak Filtresi
       if (selectedSource !== 'all') {
-        const postSourceId = (post.sourceId || '').toLowerCase();
-        const postSourceName = (post.sourceName || '').toLowerCase();
+        const postSourceId = lower(post.sourceId);
+        const postSourceName = lower(post.sourceName);
         if (postSourceId !== selectedSource && postSourceName !== selectedSource) {
           return false;
         }
@@ -278,8 +279,8 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
 
       // 2. Medya Türü Filtresi
       if (mediaTypeFilter !== 'all') {
-        const rawMedia = (post.originalUrl || post.sampleUrl || post.previewUrl || '').toLowerCase();
-        const ext = (post.fileExt || '').toLowerCase();
+        const rawMedia = lower(post.originalUrl) || lower(post.sampleUrl) || lower(post.previewUrl) || '';
+        const ext = lower(post.fileExt);
         const isVid = ['mp4', 'webm', 'mov', 'm4v'].includes(ext) || rawMedia.endsWith('.mp4') || rawMedia.endsWith('.webm') || rawMedia.endsWith('.mov');
         const isGif = ext === 'gif' || rawMedia.endsWith('.gif');
         if (mediaTypeFilter === 'video' && !isVid) return false;
@@ -289,13 +290,13 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
 
       // 3. Rating / Güvenlik Filtresi
       if (ratingFilter !== 'all') {
-        const r = (post.rating || '').toLowerCase();
+        const r = lower(post.rating);
         if (ratingFilter === 'safe' && r !== 's' && r !== 'safe' && r !== 'general') return false;
         if (ratingFilter === 'questionable' && r !== 'q' && r !== 'questionable' && r !== 'sensitive') return false;
         if (ratingFilter === 'explicit' && r !== 'e' && r !== 'explicit') return false;
       }
 
-      const postAllTags = (post.allTags || []).map((t) => t.toLowerCase());
+      const postAllTags = onlyStrings(post.allTags).map((t) => t.toLowerCase());
 
       // 4. Seçili Çoklu Etiketler Filtresi (AND veya OR modu)
       if (selectedTags.length > 0) {
