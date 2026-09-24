@@ -61,7 +61,7 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
     }
   }
 
-  const rawTags = (f.tags || '')
+  const rawTags = (Array.isArray(f.tags) ? f.tags.join(' ') : typeof f.tags === 'string' ? f.tags : '')
     .split(/\s+/)
     .map((t: string) => t.trim().toLowerCase())
     .filter(Boolean);
@@ -134,6 +134,78 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
   };
 }
 
+/**
+ * Kendi dışa aktarma formatımız (exportBackup) BooruPost dizisi yazar.
+ * Bu şekil doğrudan normalize edilip geçirilir.
+ */
+function isBooruPostShape(f: any): boolean {
+  if (!f || typeof f !== 'object') return false;
+  return (
+    typeof f.previewUrl === 'string' ||
+    typeof f.sampleUrl === 'string' ||
+    typeof f.originalUrl === 'string'
+  );
+}
+
+function normalizeBooruPost(f: any): BooruPost {
+  const previewUrl = normalizeBooruMediaUrl(typeof f.previewUrl === 'string' ? f.previewUrl : '');
+  const sampleUrl = normalizeBooruMediaUrl(typeof f.sampleUrl === 'string' ? f.sampleUrl : previewUrl);
+  const originalUrl = normalizeBooruMediaUrl(typeof f.originalUrl === 'string' ? f.originalUrl : sampleUrl);
+
+  let sourceId: string = typeof f.sourceId === 'string' && f.sourceId ? f.sourceId : '';
+  let sourceName: string = typeof f.sourceName === 'string' && f.sourceName ? f.sourceName : '';
+  if (!sourceId || !sourceName) {
+    const haystack = `${previewUrl} ${sampleUrl} ${originalUrl} ${typeof f.sourceLink === 'string' ? f.sourceLink : ''} ${typeof f.id === 'string' ? f.id : ''}`.toLowerCase();
+    const inferred = inferSourceFromHaystack(haystack);
+    if (inferred) {
+      if (!sourceId) sourceId = inferred.id;
+      if (!sourceName) sourceName = inferred.name;
+    }
+  }
+  if (!sourceId) sourceId = 'gelbooru';
+  if (!sourceName) sourceName = 'Gelbooru';
+
+  const width = Number(f.width) > 0 ? Number(f.width) : 800;
+  const height = Number(f.height) > 0 ? Number(f.height) : 1000;
+
+  const tg = f.tags && typeof f.tags === 'object' ? f.tags : {};
+  const strArr = (v: any): string[] => (Array.isArray(v) ? v.filter((t) => typeof t === 'string') : []);
+  const tags: BooruTagGroups = {
+    artist: strArr(tg.artist),
+    character: strArr(tg.character),
+    copyright: strArr(tg.copyright),
+    general: strArr(tg.general),
+    meta: strArr(tg.meta),
+  };
+  const allTags = Array.isArray(f.allTags)
+    ? f.allTags.filter((t: any) => typeof t === 'string')
+    : [...tags.artist, ...tags.character, ...tags.copyright, ...tags.general];
+
+  const r = typeof f.rating === 'string' ? f.rating.toLowerCase() : 's';
+  const rating: 's' | 'q' | 'e' | 'g' = r === 'e' || r === 'explicit' ? 'e' : r === 'q' || r === 'questionable' ? 'q' : r === 'g' ? 'g' : 's';
+
+  return {
+    id: typeof f.id === 'string' && f.id ? f.id : `${sourceId}_${Math.random().toString(36).substring(2, 10)}`,
+    sourceId,
+    sourceName,
+    previewUrl,
+    sampleUrl,
+    originalUrl,
+    width,
+    height,
+    aspectRatio: width > 0 && height > 0 ? width / height : 0.75,
+    rating,
+    score: Number(f.score) || 0,
+    favCount: Number(f.favCount) || 0,
+    tags,
+    allTags,
+    sourceLink: typeof f.sourceLink === 'string' ? f.sourceLink : undefined,
+    fileExt: typeof f.fileExt === 'string' && f.fileExt ? f.fileExt : 'jpg',
+    fileSize: Number(f.fileSize) > 0 ? Number(f.fileSize) : undefined,
+    createdAt: typeof f.createdAt === 'string' && f.createdAt ? f.createdAt : new Date().toISOString(),
+  };
+}
+
 function inferSourceFromHaystack(haystack: string): { id: string; name: string } | null {
   if (!haystack) return null;
   if (haystack.includes('gelbooru')) return { id: 'gelbooru', name: 'Gelbooru' };
@@ -147,27 +219,42 @@ function inferSourceFromHaystack(haystack: string): { id: string; name: string }
 
 export const BackupService = {
   /**
-   * Parse AnimeBoxes backup and extract posts, starred tags, search history, banned tags
+   * Parse backup and extract posts, starred tags, search history, banned tags.
+   * İki formatı kabul eder:
+   * - AnimeBoxes (.abbj): favorites[].preview.url + tags string + searchHistory[].searchText
+   * - Kendi dışa aktarmamız (exportBackup): favorites[] BooruPost + favoriteTags/blacklistedTags string dizileri
    */
   parseAnimeBoxesBackup(backupData: any): {
     posts: BooruPost[];
     starredTags: string[];
     searchHistory: string[];
     bannedTags: string[];
+    recentViews: BooruPost[];
   } {
     const rawFavs = Array.isArray(backupData?.favorites) ? backupData.favorites : [];
-    const posts = rawFavs.map(mapAnimeBoxesFavoriteToBooruPost);
+    const posts = rawFavs
+      .filter((f: any) => f && typeof f === 'object')
+      .map((f: any) => (isBooruPostShape(f) ? normalizeBooruPost(f) : mapAnimeBoxesFavoriteToBooruPost(f)));
 
     const rawHistory = Array.isArray(backupData?.searchHistory) ? backupData.searchHistory : [];
+    const cleanText = (v: any): string =>
+      typeof v === 'string' ? v.trim().toLowerCase().replace(/\s+/g, ' ') : '';
     const starredTags = rawHistory
-      .filter((h: any) => h && h.starred && h.searchText)
-      .map((h: any) => h.searchText.trim().toLowerCase().replace(/\s+/g, ' '))
+      .filter((h: any) => h && (typeof h === 'string' || (h.starred && h.searchText)))
+      .map((h: any) => (typeof h === 'string' ? cleanText(h) : cleanText(h.searchText)))
       .filter(Boolean);
 
     const searchHistory = rawHistory
-      .filter((h: any) => h && h.searchText)
-      .map((h: any) => h.searchText.trim().toLowerCase().replace(/\s+/g, ' '))
+      .map((h: any) => (typeof h === 'string' ? cleanText(h) : h && h.searchText ? cleanText(h.searchText) : ''))
       .filter(Boolean);
+
+    // Kendi formatımızdaki etiket listeleri (string dizileri)
+    const ownFavTags = Array.isArray(backupData?.favoriteTags)
+      ? backupData.favoriteTags.map(cleanText).filter(Boolean)
+      : [];
+    const ownBanned = Array.isArray(backupData?.blacklistedTags)
+      ? backupData.blacklistedTags.map(cleanText).filter(Boolean)
+      : [];
 
     const bannedTags = Array.isArray(backupData?.bannedTags)
       ? backupData.bannedTags
@@ -175,11 +262,17 @@ export const BackupService = {
           .filter(Boolean)
       : [];
 
+    const rawRecent = Array.isArray(backupData?.recentViews) ? backupData.recentViews : [];
+    const recentViews = rawRecent
+      .filter((f: any) => f && typeof f === 'object' && isBooruPostShape(f))
+      .map(normalizeBooruPost);
+
     return {
       posts,
-      starredTags: Array.from(new Set<string>(starredTags)),
+      starredTags: Array.from(new Set<string>([...starredTags, ...ownFavTags])),
       searchHistory: Array.from(new Set<string>(searchHistory)),
-      bannedTags: Array.from(new Set<string>(bannedTags)),
+      bannedTags: Array.from(new Set<string>([...bannedTags, ...ownBanned])),
+      recentViews,
     };
   },
 
@@ -187,11 +280,12 @@ export const BackupService = {
    * Import parsed AnimeBoxes data into the app's AsyncStorage
    */
   async importBackupData(backupData: any): Promise<ImportResult> {
-    const { posts, starredTags, searchHistory, bannedTags } = this.parseAnimeBoxesBackup(backupData);
+    const { posts, starredTags, searchHistory, bannedTags, recentViews } = this.parseAnimeBoxesBackup(backupData);
 
-    // 0. Merge Recent Views (favoriler tarihe göre en yeniden eskiye: dateAdded desc)
+    // 0. Merge Recent Views (favoriler tarihe göre en yeniden eskiye: dateAdded desc).
+    // Yedekte recentViews varsa onlar da birleştirilir.
     try {
-      const sortedByDate = [...posts].sort((a, b) => {
+      const sortedByDate = [...posts, ...recentViews].sort((a, b) => {
         const ta = a.createdAt ? Date.parse(a.createdAt) : 0;
         const tb = b.createdAt ? Date.parse(b.createdAt) : 0;
         return tb - ta;
@@ -272,7 +366,12 @@ export const BackupService = {
 
       const fileAsset = result.assets[0];
       const pickedFile = new File(fileAsset.uri);
-      const fileContent = await pickedFile.text();
+      let fileContent: string;
+      try {
+        fileContent = await pickedFile.text();
+      } catch {
+        fileContent = pickedFile.textSync();
+      }
 
       const parsedJson = JSON.parse(fileContent);
       return await this.importBackupData(parsedJson);
