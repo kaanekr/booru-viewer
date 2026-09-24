@@ -14,8 +14,10 @@ import {
   Text,
   TouchableOpacity,
   TouchableWithoutFeedback,
+  useWindowDimensions,
   View,
 } from 'react-native';
+import * as ScreenOrientation from 'expo-screen-orientation';
 import { useEvent, useEventListener } from 'expo';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -36,6 +38,7 @@ import {
   VolumeX,
   AlertCircle,
   ExternalLink,
+  Smartphone,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BooruPost } from '../types/booru';
@@ -58,7 +61,7 @@ import {
   resolvePornhubVideoUrls,
 } from '../utils/media';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const { width: DEFAULT_SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
 
 /** Bayt + toplamdan '1.2 / 4.5 MB' metni */
@@ -101,6 +104,8 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   dismissOnTagPress = true,
   onIndexChange,
 }) => {
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const isLandscape = windowWidth > windowHeight;
   const insets = useSafeAreaInsets();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [showControls, setShowControls] = useState(true);
@@ -113,11 +118,26 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   const flatListRef = useRef<FlatList>(null);
 
   // Animated slide value for interactive edge swipe back
-  const translateX = useRef(new Animated.Value(SCREEN_WIDTH)).current;
+  const translateX = useRef(new Animated.Value(DEFAULT_SCREEN_WIDTH)).current;
+
+  useEffect(() => {
+    // Serbest mod sadece medya görüntüleyici açıkken verilir
+    return () => {
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+    };
+  }, []);
 
   useEffect(() => {
     onIndexChange?.(currentIndex);
   }, [currentIndex, onIndexChange]);
+
+  // Döndürmede sayfa genişliği değişince aktif sayfaya geri hizala
+  useEffect(() => {
+    flatListRef.current?.scrollToOffset({
+      offset: currentIndex * windowWidth,
+      animated: false,
+    });
+  }, [windowWidth]);
 
   useEffect(() => {
     if (suspended) {
@@ -139,14 +159,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
         translateX.setValue(0);
       } else {
         // Slide in smoothly from right
-        translateX.setValue(SCREEN_WIDTH);
-        Animated.spring(translateX, {
-          toValue: 0,
-          damping: 28,
-          stiffness: 240,
-          mass: 0.9,
-          useNativeDriver: true,
-        }).start();
+        translateX.setValue(0);
       }
     }
   }, [visible, initialIndex, enterAnimation, asScreen]);
@@ -208,7 +221,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       return;
     }
     Animated.timing(translateX, {
-      toValue: SCREEN_WIDTH,
+      toValue: windowWidth,
       duration: 220,
       useNativeDriver: true,
     }).start(() => {
@@ -232,7 +245,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
           if (gesture.dx > 80 || gesture.vx > 0.4) {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             Animated.timing(translateX, {
-              toValue: SCREEN_WIDTH,
+              toValue: windowWidth,
               duration: 180,
               useNativeDriver: true,
             }).start(() => {
@@ -267,6 +280,21 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   const toggleDetails = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setShowDetailsSheet((prev) => !prev);
+  };
+
+  const toggleOrientation = async () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    try {
+      const current = await ScreenOrientation.getOrientationAsync();
+      const isLandscapeCurrent =
+        current === ScreenOrientation.Orientation.LANDSCAPE_LEFT ||
+        current === ScreenOrientation.Orientation.LANDSCAPE_RIGHT;
+      if (isLandscapeCurrent) {
+        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
+      } else {
+        await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE_RIGHT);
+      }
+    } catch {}
   };
 
   const toggleSlideshow = () => {
@@ -304,12 +332,12 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             initialNumToRender={1}
             removeClippedSubviews
             getItemLayout={(_, index) => ({
-              length: SCREEN_WIDTH,
-              offset: SCREEN_WIDTH * index,
+              length: windowWidth,
+              offset: windowWidth * index,
               index,
             })}
             onMomentumScrollEnd={(e) => {
-              const newIndex = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
+              const newIndex = Math.round(e.nativeEvent.contentOffset.x / windowWidth);
               if (newIndex !== currentIndex && newIndex >= 0 && newIndex < posts.length) {
                 setCurrentIndex(newIndex);
               }
@@ -320,6 +348,8 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
                 isActive={index === currentIndex}
                 suspended={suspended}
                 forceFull={previewOriginalId === item.id}
+                screenWidth={windowWidth}
+                screenHeight={windowHeight}
                 onToggleControls={handleToggleControls}
                 onOpenDetails={() => setShowDetailsSheet(true)}
                 onClose={handleDismissWithSlide}
@@ -352,15 +382,36 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
                 </Text>
               </View>
 
-              {/* Top Right Spacer to balance header */}
-              <View style={styles.topSpacer} />
+              {/* Top Right Info Button */}
+              <TouchableOpacity
+                style={[styles.circleBtn, showDetailsSheet && styles.circleBtnActive]}
+                onPress={toggleDetails}
+                hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
+                activeOpacity={0.7}
+              >
+                <Info size={22} color={showDetailsSheet ? GOLD_ACCENT : '#FFFFFF'} />
+              </TouchableOpacity>
             </View>
           )}
 
-          {/* 3. BOTTOM ACTION BAR (Left: Heart, Center: Slideshow, Right: Info) */}
+          {/* 3. BOTTOM ACTION BAR (Left: Orientation, Right: Heart) */}
           {showControls && (
             <View style={[styles.bottomActionBar, { bottom: Math.max(insets.bottom, 20) }]}>
-              {/* Left Heart '♡' Button */}
+              {/* Left Orientation Button */}
+              <TouchableOpacity
+                style={styles.circleBtn}
+                onPress={toggleOrientation}
+                activeOpacity={0.7}
+                accessibilityLabel="Yatay/Dikey mod"
+              >
+                <Smartphone
+                  size={22}
+                  color="#FFFFFF"
+                  style={isLandscape ? { transform: [{ rotate: '90deg' }] } : undefined}
+                />
+              </TouchableOpacity>
+
+              {/* Right Heart '♡' Button */}
               <TouchableOpacity
                 style={[styles.circleBtn, isFav && styles.circleBtnFavActive]}
                 onPress={handleToggleFav}
@@ -371,28 +422,6 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
                   color={isFav ? '#FF4D4F' : '#FFFFFF'}
                   fill={isFav ? '#FF4D4F' : 'transparent'}
                 />
-              </TouchableOpacity>
-
-              {/* Center Slideshow Button */}
-              <TouchableOpacity
-                style={[styles.circleBtn, isPlayingSlideshow && styles.circleBtnActive]}
-                onPress={toggleSlideshow}
-                activeOpacity={0.7}
-              >
-                {isPlayingSlideshow ? (
-                  <Pause size={20} color={GOLD_ACCENT} />
-                ) : (
-                  <Play size={20} color="#FFFFFF" fill="#FFFFFF" style={{ marginLeft: 2 }} />
-                )}
-              </TouchableOpacity>
-
-              {/* Right Info 'ⓘ' Button */}
-              <TouchableOpacity
-                style={[styles.circleBtn, showDetailsSheet && styles.circleBtnActive]}
-                onPress={toggleDetails}
-                activeOpacity={0.7}
-              >
-                <Info size={22} color={showDetailsSheet ? GOLD_ACCENT : '#FFFFFF'} />
               </TouchableOpacity>
             </View>
           )}
@@ -459,6 +488,8 @@ interface PostPageItemProps {
   suspended?: boolean;
   /** Info modalındaki Original satırından tek seferlik full önizleme */
   forceFull?: boolean;
+  screenWidth: number;
+  screenHeight: number;
   onToggleControls: () => void;
   onOpenDetails: () => void;
   onClose: () => void;
@@ -472,6 +503,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   isActive,
   suspended = false,
   forceFull = false,
+  screenWidth,
+  screenHeight,
   onToggleControls,
   onOpenDetails,
   onClose,
@@ -630,8 +663,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     const w = realDims?.w || post.width || 0;
     const h = realDims?.h || post.height || 0;
     if (!w || !h) return 4.5;
-    return Math.max(2, Math.max(w / SCREEN_WIDTH, h / SCREEN_HEIGHT));
-  }, [realDims, post.width, post.height]);
+    return Math.max(2, Math.max(w / screenWidth, h / screenHeight));
+  }, [realDims, post.width, post.height, screenWidth, screenHeight]);
 
   // Detaydan çözülen URL (XVideos taze mp4/HLS, Gelbooru original) video
   // adaylarına katılır; çözülene dek post'un kendi URL'leri kullanılır.
@@ -750,15 +783,15 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       scrollRef.current.scrollResponderZoomTo({
         x: 0,
         y: 0,
-        width: SCREEN_WIDTH,
-        height: SCREEN_HEIGHT,
+        width: screenWidth,
+        height: screenHeight,
         animated: false,
       });
       isZoomedRef.current = false;
       setIsZoomed(false);
       onZoomChange?.(false);
     }
-  }, [isActive, onZoomChange]);
+  }, [isActive, onZoomChange, screenWidth, screenHeight]);
 
   // Swipe Down to Dismiss tracking (only active when not zoomed)
   const handleScroll = (e: any) => {
@@ -827,8 +860,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         scrollRef.current?.scrollResponderZoomTo({
           x: 0,
           y: 0,
-          width: SCREEN_WIDTH,
-          height: SCREEN_HEIGHT,
+          width: screenWidth,
+          height: screenHeight,
           animated: true,
         });
         isZoomedRef.current = false;
@@ -838,8 +871,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         // Double Tap: çözünürlüğe göre net zoom (3x'i geçmez, düşük çözünürlükte tavana uyar)
         const tapZoom = Math.min(3, maxZoom);
         const { locationX, locationY } = event.nativeEvent;
-        const targetWidth = SCREEN_WIDTH / tapZoom;
-        const targetHeight = SCREEN_HEIGHT / tapZoom;
+        const targetWidth = screenWidth / tapZoom;
+        const targetHeight = screenHeight / tapZoom;
         const targetX = Math.max(0, locationX - targetWidth / 2);
         const targetY = Math.max(0, locationY - targetHeight / 2);
 
@@ -869,8 +902,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   return (
     <ScrollView
       ref={scrollRef}
-      style={styles.pageScroll}
-      contentContainerStyle={styles.fullscreenImageViewport}
+      style={{ width: screenWidth, height: screenHeight }}
+      contentContainerStyle={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000', alignItems: 'center', justifyContent: 'center' }}
       showsVerticalScrollIndicator={false}
       showsHorizontalScrollIndicator={false}
       maximumZoomScale={canPlayVideo ? 1 : maxZoom}
@@ -883,7 +916,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       onScrollEndDrag={handleScrollEndDrag}
     >
       <TouchableWithoutFeedback onPress={handleImageTouch}>
-        <View style={styles.fullscreenImageViewport}>
+        <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
           {/* PH bot-duvarı yedeği çözüm sırasında loader'ın arkasında çalışır. */}
           {pornhubWebviewOn &&
           !resolvedOriginalUrl &&
@@ -911,6 +944,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
             <VideoPlayerView
               url={activeVideoUrl}
               suspended={suspended}
+              screenWidth={screenWidth}
+              screenHeight={screenHeight}
               onLoaded={() => setSampleLoading(false)}
               onScrubbingChange={(scrubbing) => {
                 setIsScrubbingActive(scrubbing);
@@ -957,7 +992,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                   headers: getMediaHeaders(placeholderMediaUrl),
                 }}
                 placeholderContentFit="contain"
-                style={styles.fullImage}
+                style={{ width: screenWidth, height: screenHeight }}
                 contentFit="contain"
                 contentPosition="center"
                 priority={shouldMountFull ? 'normal' : 'high'}
@@ -981,7 +1016,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                     cacheKey: `${fullMediaUrl}:full-original`,
                   }}
                   style={[
-                    styles.fullImage,
+                    { width: screenWidth, height: screenHeight },
                     styles.fullImageLayer,
                     { opacity: fullLoaded ? 1 : 0 },
                   ]}
@@ -1083,6 +1118,8 @@ const setSessionVideoMuted = (muted: boolean) => {
 interface VideoPlayerViewProps {
   url: string;
   suspended?: boolean;
+  screenWidth: number;
+  screenHeight: number;
   onLoaded?: () => void;
   onScrubbingChange?: (isScrubbing: boolean) => void;
 }
@@ -1091,6 +1128,8 @@ interface VideoPlayerViewProps {
 const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   url,
   suspended = false,
+  screenWidth,
+  screenHeight,
   onLoaded,
   onScrubbingChange,
 }) => {
@@ -1329,9 +1368,9 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     duration > 0 ? Math.min(100, Math.max(0, (displayTime / duration) * 100)) : 0;
 
   return (
-    <View style={styles.videoWrapper}>
+    <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
       <VideoView
-        style={styles.fullImage}
+        style={{ width: screenWidth, height: screenHeight }}
         player={player}
         contentFit="contain"
         nativeControls={false}
@@ -1546,28 +1585,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   pageScroll: {
-    width: SCREEN_WIDTH,
     flex: 1,
   },
   fullscreenImageViewport: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
+    flex: 1,
     backgroundColor: '#000000',
     alignItems: 'center',
     justifyContent: 'center',
   },
   fullImage: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
+    flex: 1,
   },
   fullImageLayer: {
     position: 'absolute',
     top: 0,
     left: 0,
+    right: 0,
+    bottom: 0,
   },
   videoWrapper: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT,
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1746,7 +1783,7 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 24,
     paddingHorizontal: 16,
     paddingTop: 12,
-    maxHeight: SCREEN_HEIGHT * 0.7,
+    maxHeight: '75%',
     borderTopWidth: 1,
     borderTopColor: 'rgba(255, 255, 255, 0.12)',
   },
