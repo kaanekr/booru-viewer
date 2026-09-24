@@ -181,8 +181,8 @@ function MainApp() {
             options={{
               headerShown: false,
               animation: 'slide_from_right',
+              // iOS ScrollView/FlatList çakışması nedeniyle edge-only geri jesti
               gestureEnabled: true,
-              fullScreenGestureEnabled: true,
             }}
           />
           <RootStack.Screen
@@ -192,7 +192,6 @@ function MainApp() {
               headerShown: false,
               animation: 'slide_from_right',
               gestureEnabled: true,
-              fullScreenGestureEnabled: true,
             }}
           />
         </RootStack.Navigator>
