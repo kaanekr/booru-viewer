@@ -258,11 +258,18 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
       c.match(/title="([^"]+)"/i);
     const title = titleM ? titleM[1].trim() : undefined;
 
-    const thumbM =
-      c.match(/src="([^"]+)"/i) ||
-      c.match(/data-thumb_url="([^"]+)"/i) ||
-      c.match(/data-image="([^"]+)"/i);
-    const thumb = thumbM ? thumbM[1].trim() : '';
+    const thumbAttrs = ['data-path', 'data-lazy-src', 'data-thumb_url', 'data-image', 'src'];
+    let thumb = '';
+    for (const attr of thumbAttrs) {
+      const match = c.match(new RegExp(`${attr}="([^"]+)"`, 'i'));
+      if (match) {
+        const candidate = match[1].replace(/&amp;/g, '&').trim();
+        if (candidate && !candidate.includes('blank.gif')) {
+          thumb = candidate;
+          break;
+        }
+      }
+    }
     if (!thumb) continue;
 
     const mbM = c.match(/data-mediabook="([^"]+)"/i);

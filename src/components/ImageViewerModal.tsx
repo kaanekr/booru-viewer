@@ -492,6 +492,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const [quality, setQuality] = useState<ImageQuality>('auto');
   const [resolvedOriginalUrl, setResolvedOriginalUrl] = useState<string | null>(null);
   const [pornhubWebviewOn, setPornhubWebviewOn] = useState(false);
+  const [videoResolveFailed, setVideoResolveFailed] = useState(false);
   const [realDims, setRealDims] = useState<{ w: number; h: number } | null>(null);
   const [isZoomed, setIsZoomed] = useState(false);
   const [hasUpgradedToFull, setHasUpgradedToFull] = useState(false);
@@ -517,6 +518,16 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
 
     setResolvedOriginalUrl(null);
     setPornhubWebviewOn(false);
+    setVideoResolveFailed(false);
+
+    // PH detay HTML'i ~1 MB: yalnız aktif sayfayı çöz. Komşuları aynı anda
+    // parse etmek JS thread'ini saniyelerce bloke edip kontrolleri geciktirir.
+    if (post.sourceId === 'pornhub' && !isActive) {
+      return () => {
+        alive = false;
+        abortCtrl.abort();
+      };
+    }
 
     // Eğer post zaten sample'dan farklı gerçek bir originalUrl'e sahipse fetch etme
     // Not: XHamster ve XVideos süreli token/geçici preview taşıdığı için her zaman detaydan taze çözülür
@@ -575,12 +586,13 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       alive = false;
       abortCtrl.abort();
     };
-  }, [post.id, post.sourceId, post.sourceLink, post.originalUrl, post.sampleUrl]);
+  }, [isActive, post.id, post.sourceId, post.sourceLink, post.originalUrl, post.sampleUrl]);
 
   useEffect(() => {
     setIsZoomed(false);
     isZoomedRef.current = false;
     setPornhubWebviewOn(false);
+    setVideoResolveFailed(false);
     setHasUpgradedToFull(false);
     setSampleLoading(true);
     setSampleLoaded(false);
@@ -693,6 +705,12 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const canPlayVideo =
     isVideo && videoCandidates.length > 0 && (!isWebmOnlyOnIOS || Boolean(upgradedMp4Url));
   const activeVideoUrl = upgradedMp4Url ? getMediaUrl(upgradedMp4Url) : mediaUrl;
+  const isResolvingPornhubVideo =
+    post.sourceId === 'pornhub' &&
+    isActive &&
+    Boolean(post.sourceLink) &&
+    !resolvedOriginalUrl &&
+    !videoResolveFailed;
 
   const uris = useMemo(() => getImageUris(post, quality), [post, quality]);
 
@@ -866,7 +884,30 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     >
       <TouchableWithoutFeedback onPress={handleImageTouch}>
         <View style={styles.fullscreenImageViewport}>
-          {canPlayVideo && isActive ? (
+          {/* PH bot-duvarı yedeği çözüm sırasında loader'ın arkasında çalışır. */}
+          {pornhubWebviewOn &&
+          !resolvedOriginalUrl &&
+          isActive &&
+          post.sourceId === 'pornhub' &&
+          post.sourceLink ? (
+            <PornhubWebViewResolver
+              pageUrl={post.sourceLink}
+              onResolve={(files) => {
+                if (files) {
+                  setResolvedOriginalUrl(files.high || files.hls || files.low || null);
+                } else {
+                  setVideoResolveFailed(true);
+                }
+                setPornhubWebviewOn(false);
+              }}
+            />
+          ) : null}
+
+          {isResolvingPornhubVideo ? (
+            <View style={styles.loaderCenter} pointerEvents="none">
+              <ActivityIndicator size="large" color={Colors.dark.primary} />
+            </View>
+          ) : canPlayVideo && isActive ? (
             <VideoPlayerView
               url={activeVideoUrl}
               suspended={suspended}
@@ -878,22 +919,6 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
             />
           ) : (
             <>
-              {/* Pornhub bot-duvarı yedeği: hızlı yol çözemezse gizli WebView çözer */}
-              {pornhubWebviewOn &&
-              !resolvedOriginalUrl &&
-              isActive &&
-              post.sourceId === 'pornhub' &&
-              post.sourceLink ? (
-                <PornhubWebViewResolver
-                  pageUrl={post.sourceLink}
-                  onResolve={(files) => {
-                    if (files) {
-                      setResolvedOriginalUrl(files.high || files.hls || files.low || null);
-                    }
-                    setPornhubWebviewOn(false);
-                  }}
-                />
-              ) : null}
               {/* Sample ilk yükleme göstergesi: sample henüz boyanmamışken ve full yüklenmemişken */}
               {sampleLoading && !sampleLoaded && !fullLoaded && (
                 <View style={styles.loaderCenter} pointerEvents="none">
@@ -1076,6 +1101,8 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const [duration, setDuration] = useState(0);
   const [timelineWidth, setTimelineWidth] = useState(0);
   const hideTimerRef = useRef<any>(null);
+  const suspendedRef = useRef(suspended);
+  suspendedRef.current = suspended;
 
   const videoSource = useMemo(
     () => ({
@@ -1085,12 +1112,36 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     [url]
   );
 
-  const player = useVideoPlayer(videoSource, (p) => {
+  const player = useVideoPlayer(null, (p) => {
     p.loop = true;
     p.muted = sessionVideoMuted;
     p.timeUpdateEventInterval = 0.25;
-    p.play();
   });
+
+  useEffect(() => {
+    let isCurrent = true;
+
+    if (!videoSource.uri) {
+      return () => {
+        isCurrent = false;
+      };
+    }
+
+    (async () => {
+      try {
+        await player.replaceAsync(videoSource);
+        if (isCurrent && !suspendedRef.current) {
+          player.play();
+        }
+      } catch (error) {
+        if (isCurrent) console.warn('[VideoPlayerView] Async source failed:', error);
+      }
+    })();
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [player, videoSource]);
 
   useEffect(() => {
     if (suspended) {
