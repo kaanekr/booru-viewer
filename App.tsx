@@ -10,6 +10,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { StatusBar } from 'expo-status-bar';
 import { Compass, Search, Heart, SlidersHorizontal } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import * as ScreenOrientation from 'expo-screen-orientation';
 
 import { SecurityService } from './src/services/securityService';
 import { proxyService } from './src/services/proxyService';
@@ -122,6 +123,7 @@ function MainApp() {
 
   // Initialize proxy & security lock synchronously before rendering
   useEffect(() => {
+    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
     async function initApp() {
       try {
         const [, isPasscodeSet] = await Promise.all([
