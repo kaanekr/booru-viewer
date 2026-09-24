@@ -96,7 +96,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
 
   const initialUri = React.useMemo(() => getMediaUrl(primaryRaw), [primaryRaw]);
   const [currentUri, setCurrentUri] = React.useState<string>(initialUri);
-  const [isPreviewActive, setIsPreviewActive] = React.useState(false);
+  const [touchPreviewActive, setTouchPreviewActive] = React.useState(false);
   const [activeThumbIndex, setActiveThumbIndex] = React.useState(0);
 
   const previewVideoUrl = post.previewVideoUrl;
@@ -109,6 +109,10 @@ const PostCardComponent: React.FC<PostCardProps> = ({
       : undefined;
   const previewThumbs = post.previewThumbs;
   const secondaryThumb = post.previewThumbUrl;
+
+  const hasPreview = Boolean(playablePreviewUrl || (previewThumbs && previewThumbs.length > 0) || secondaryThumb);
+  // Kart ekrandaysa (videoActive) veya kullanıcı karta dokunuyorsa önizleme aktif
+  const isPreviewActive = (videoActive && hasPreview) || touchPreviewActive;
 
   const touchTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const activePreviewTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -275,18 +279,18 @@ const PostCardComponent: React.FC<PostCardProps> = ({
       delayPressIn={0}
       pressRetentionOffset={{ top: 200, bottom: 200, left: 100, right: 100 }}
       onPressIn={() => {
-        if (playablePreviewUrl || previewThumbs || secondaryThumb) {
+        if (hasPreview) {
           clearTouchTimer();
           clearActivePreviewTimer();
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-          setIsPreviewActive(true);
+          setTouchPreviewActive(true);
         }
       }}
       onPressOut={() => {
         clearTouchTimer();
         clearActivePreviewTimer();
         activePreviewTimerRef.current = setTimeout(() => {
-          setIsPreviewActive(false);
+          setTouchPreviewActive(false);
         }, 1200);
       }}
       style={[styles.container, { width: COLUMN_WIDTH, height: cardHeight }]}
