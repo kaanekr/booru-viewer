@@ -777,7 +777,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
             <Text style={styles.sectionTitle}>Ağ & Bypass (Cloudflare Relay)</Text>
           </View>
           <Text style={styles.sectionDescription}>
-            ISS sansürlerini VPN'e gerek kalmadan aşmak için Cloudflare Worker ters proxy köprüsünü etkinleştirin.
+            ISS sansürlerini VPN'e gerek kalmadan aşmak için Cloudflare Worker ters proxy köprüsünü etkinleştirin. Kapalıyken bile TLS düşüren host'lar (örn. api-cdn-mp4.rule34.xxx) kayıtlı Worker üzerinden seçici olarak geçilir; diğer sonuçlar doğrudan kalır.
           </Text>
 
           <View style={styles.card}>
@@ -786,7 +786,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
               <View style={styles.switchInfo}>
                 <Text style={styles.switchTitle}>Gömülü Proxy Köprüsü</Text>
                 <Text style={styles.switchSub}>
-                  {proxyEnabled ? 'Aktif (Tüm trafik Worker üzerinden geçer)' : 'Devre Dışı'}
+                  {proxyEnabled ? 'Aktif (Tüm trafik Worker üzerinden geçer)' : 'Devre Dışı (yalnızca TLS düşen videolar Worker üzerinden geçilir)'}
                 </Text>
               </View>
               <Switch

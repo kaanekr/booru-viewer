@@ -21,6 +21,7 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 import { useEvent, useEventListener } from 'expo';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
+import { proxyService } from '../services/proxyService';
 import * as Haptics from 'expo-haptics';
 import {
   Heart,
@@ -1150,11 +1151,34 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     }),
     [url]
   );
+  // TLS düşüşünde (örn. api-cdn-mp4.rule34.xxx NSURLError -1200) tek seferlik
+  // seçici proxy fallback'i: sadece bu video Worker üzerinden tekrar denenir,
+  // diğer sonuçlar doğrudan kalır.
+  const proxyFallbackDoneRef = useRef(false);
+  useEffect(() => {
+    proxyFallbackDoneRef.current = false;
+  }, [url]);
 
   const player = useVideoPlayer(null, (p) => {
     p.loop = true;
     p.muted = sessionVideoMuted;
     p.timeUpdateEventInterval = 0.25;
+  });
+
+  useEventListener(player, 'statusChange', (payload) => {
+    if (payload.status !== 'error' || proxyFallbackDoneRef.current) return;
+    if (!proxyService.hasWorker() || proxyService.isProxiedUrl(url)) return;
+    proxyFallbackDoneRef.current = true;
+    const viaProxy = proxyService.forceProxyUrl(url);
+    if (!viaProxy || viaProxy === url) return;
+    (async () => {
+      try {
+        await player.replaceAsync({ uri: viaProxy, headers: getMediaHeaders(viaProxy) });
+        if (!suspendedRef.current) player.play();
+      } catch (e) {
+        console.warn('[VideoPlayerView] Proxy fallback failed:', e);
+      }
+    })();
   });
 
   useEffect(() => {
