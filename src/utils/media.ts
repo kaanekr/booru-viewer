@@ -399,6 +399,20 @@ export async function resolveXVideosVideoUrls(
 }
 
 /**
+ * Post'un video olup olmadığı (uzantı + URL). Viewer'da geri-jest
+ * seçimi ve kenar alanı koşulu için tek kaynak.
+ */
+export function isVideoPost(
+  post: { fileExt?: string; originalUrl?: string; sampleUrl?: string } | null | undefined
+): boolean {
+  if (!post) return false;
+  const ext = (post.fileExt || '').toLowerCase();
+  if (['mp4', 'webm', 'mov', 'm4v', 'm3u8'].includes(ext)) return true;
+  const src = (post.originalUrl || post.sampleUrl || '').split('?')[0].toLowerCase();
+  return /\.(mp4|webm|mov|m4v|m3u8)$/.test(src);
+}
+
+/**
  * XHamster video linkinden tam çözünürlüklü oynatılabilir video dosyalarını çözer.
  * (mp4 + HLS, öncelik: high → low → hls).
  */
@@ -468,10 +482,13 @@ export async function resolvePornhubVideoUrls(
     Cookie: 'accessAgeDisclaimerPH=1; accessPH=1;',
   };
 
-  // 1) Tam izleme sayfası, 2) hafif embed sayfası (viewkey gerekir)
-  const urls = [post.sourceLink];
+  // 1) Hafif embed sayfası önce (viewkey varsa), 2) tam izleme sayfası.
+  // Embed yüzlerce KB daha küçüktür: indirme + parse maliyeti düşer,
+  // video daha erken başlar. Embed'de mediaDefinitions yoksa watch'a düşülür.
+  const urls: string[] = [];
   const keyM = post.sourceLink.match(/viewkey=([a-z0-9]+)/i);
   if (keyM && keyM[1]) urls.push(`${PORNHUB_BASE}/embed/${keyM[1]}`);
+  urls.push(post.sourceLink);
 
   try {
     for (const pageUrl of urls) {

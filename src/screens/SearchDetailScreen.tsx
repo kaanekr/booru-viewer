@@ -25,7 +25,11 @@ export const SearchDetailScreen: React.FC<Props> = ({ route, navigation }) => {
       initialMode="replace"
       initialFilter={clearedTag ? undefined : initialFilter}
       onClearInitialTag={() => setClearedTag(true)}
-      onBackPress={() => navigation.goBack()}
+      onBackPress={() => {
+        if (navigation.canGoBack()) {
+          navigation.goBack();
+        }
+      }}
     />
   );
 };

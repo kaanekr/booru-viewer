@@ -55,6 +55,7 @@ import {
   getMediaUrl,
   getVideoCandidates,
   isUnsupportedOnIOS,
+  isVideoPost,
   resolveGelbooruOriginalUrl,
   resolveRealDimensions,
   resolveXVideosVideoUrls,
@@ -89,6 +90,8 @@ interface ImageViewerModalProps {
   suspended?: boolean;
   dismissOnTagPress?: boolean;
   onIndexChange?: (index: number) => void;
+  /** Video timeline scrub durumu üst katmana bildirilir (geri jesti kilidi için). */
+  onScrubbingChange?: (isScrubbing: boolean) => void;
 }
 
 export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
@@ -104,6 +107,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   suspended = false,
   dismissOnTagPress = true,
   onIndexChange,
+  onScrubbingChange,
 }) => {
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const isLandscape = windowWidth > windowHeight;
@@ -119,7 +123,8 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   const flatListRef = useRef<FlatList>(null);
 
   // Animated slide value for interactive edge swipe back
-  const translateX = useRef(new Animated.Value(DEFAULT_SCREEN_WIDTH)).current;
+  // asScreen'de 0'dan başlar: ilk karede ekran dışında flash olmasın.
+  const translateX = useRef(new Animated.Value(asScreen ? 0 : DEFAULT_SCREEN_WIDTH)).current;
 
   useEffect(() => {
     // Serbest mod sadece medya görüntüleyici açıkken verilir
@@ -130,6 +135,9 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 
   useEffect(() => {
     onIndexChange?.(currentIndex);
+    // Sayfa değişince kaydırma kilidini sıfırla: zoom/scrub sırasında
+    // unmount olan sayfa kilidi takılı bırakabiliyordu.
+    setIsGalleryScrollEnabled(true);
   }, [currentIndex, onIndexChange]);
 
   // Döndürmede sayfa genişliği değişince aktif sayfaya geri hizala
@@ -143,8 +151,12 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   useEffect(() => {
     if (suspended) {
       setIsPlayingSlideshow(false);
+    } else if (visible) {
+      // Odağa dönünce kontrolleri geri getir: gizli kalıp tap'in
+      // yutulduğu "kontroller gitti" durumunu sıfırlar.
+      setShowControls(true);
     }
-  }, [suspended]);
+  }, [suspended, visible]);
 
   useEffect(() => {
     if (visible) {
@@ -166,6 +178,9 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   }, [visible, initialIndex, enterAnimation, asScreen]);
 
   const currentPost = posts[currentIndex] || posts[0];
+  // Video sayfalarında özel kenar geri alanı devrede (native jest kapalı);
+  // fotoğrafta native jest çalışır, bu alan kapalıdır.
+  const currentIsVideo = isVideoPost(currentPost);
 
   useEffect(() => {
     if (currentPost) {
@@ -173,7 +188,9 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     }
 
     // Prefetch next 2 and previous 1 images with sample resolution into disk cache to avoid OOM
-    if (visible && posts.length > 0) {
+    // Arka plandaki (suspended) ekranlar prefetch yapmaz: üst üste binen
+    // istekler JS thread'ini kitleyip kontrolleri geciktiriyordu.
+    if (visible && !suspended && posts.length > 0) {
       const neighbors = [
         posts[currentIndex + 1],
         posts[currentIndex + 2],
@@ -192,7 +209,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
         }
       });
     }
-  }, [currentPost, currentIndex, visible, posts]);
+  }, [currentPost, currentIndex, visible, suspended, posts]);
 
   // Slideshow timer
   useEffect(() => {
@@ -230,7 +247,10 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     });
   };
 
-  // Interactive edge swipe gesture (Tracks finger live and reveals underlying previous screen)
+  // Interactive edge swipe gesture. Modal modda görünüm parmağı takip eder
+  // (arkada transparan backdrop + gerçek önceki ekran vardır). Stack modunda
+  // takip siyah boşluk gösterirdi: eşik beklenir, bırakınca native
+  // animasyonlu pop çalışır ve önceki ekran görünür.
   const edgePanResponder = useMemo(
     () =>
       PanResponder.create({
@@ -238,13 +258,17 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
         onMoveShouldSetPanResponder: (_, gesture) =>
           gesture.dx > 8 && Math.abs(gesture.dy) < 35,
         onPanResponderMove: (_, gesture) => {
-          if (gesture.dx > 0) {
+          if (!asScreen && gesture.dx > 0) {
             translateX.setValue(gesture.dx);
           }
         },
         onPanResponderRelease: (_, gesture) => {
           if (gesture.dx > 80 || gesture.vx > 0.4) {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            if (asScreen) {
+              onClose();
+              return;
+            }
             Animated.timing(translateX, {
               toValue: windowWidth,
               duration: 180,
@@ -252,7 +276,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             }).start(() => {
               onClose();
             });
-          } else {
+          } else if (!asScreen) {
             Animated.spring(translateX, {
               toValue: 0,
               damping: 24,
@@ -262,7 +286,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
           }
         },
       }),
-    [translateX, onClose]
+    [translateX, onClose, asScreen]
   );
 
   if (!visible || !posts || posts.length === 0) return null;
@@ -303,6 +327,34 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     setIsPlayingSlideshow((prev) => !prev);
   };
 
+  // Stabil callbackler: her render'da yeni kimlik üretilince PostPageItem
+  // içindeki effect'ler gereksiz tetikleniyordu.
+  // Senkron native kilit: scrub/zoom başlayınca state güncellemesi
+  // re-render köprüsünden geçene kadar yatay pager parmağı native tarafta
+  // kapıp sayfa kaydırabiliyor. setNativeProps köprüyü beklemeden native
+  // scroller'ı durdurur; state tutarlılık için aynen durur.
+  const setGalleryScrollSynchronously = useCallback((enabled: boolean) => {
+    setIsGalleryScrollEnabled(enabled);
+    try {
+      const list: any = flatListRef.current as any;
+      const nativeRef = list?.getNativeScrollRef?.() ?? list;
+      nativeRef?.setNativeProps?.({ scrollEnabled: enabled });
+    } catch {}
+  }, []);
+  const handleZoomChange = useCallback(
+    (isZoomed: boolean) => {
+      setGalleryScrollSynchronously(!isZoomed);
+    },
+    [setGalleryScrollSynchronously]
+  );
+  const handleScrubbingChange = useCallback(
+    (isScrubbing: boolean) => {
+      setGalleryScrollSynchronously(!isScrubbing);
+      onScrubbingChange?.(isScrubbing);
+    },
+    [setGalleryScrollSynchronously, onScrubbingChange]
+  );
+
   const viewerBody = (
     <View style={asScreen ? styles.container : styles.modalBackdrop}>
         {/* Animated Container */}
@@ -310,11 +362,14 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
           style={[
             styles.container,
             {
-              transform: asScreen ? [] : [{ translateX }],
+              transform: [{ translateX }],
             },
           ]}
         >
-          {!asScreen && (
+          {/* Sol kenar geri alanı: modal modunda ve video sayfalarında
+              (native jest kapalıyken). Alt 150px video timeline şeridi
+              kapsam dışı: şeritte başlayan parmak seek yapar, çıkış olmaz. */}
+          {(!asScreen || currentIsVideo) && (
             <View style={styles.leftEdgeGestureArea} {...edgePanResponder.panHandlers} />
           )}
 
@@ -355,8 +410,8 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
                 onOpenDetails={() => setShowDetailsSheet(true)}
                 onClose={handleDismissWithSlide}
                 onTagPress={onTagPress}
-                onZoomChange={(isZoomed) => setIsGalleryScrollEnabled(!isZoomed)}
-                onScrubbingChange={(isScrubbing) => setIsGalleryScrollEnabled(!isScrubbing)}
+                onZoomChange={handleZoomChange}
+                onScrubbingChange={handleScrubbingChange}
               />
             )}
           />
@@ -525,6 +580,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const [isCheckingUpgrade, setIsCheckingUpgrade] = useState(false);
   const [quality, setQuality] = useState<ImageQuality>('auto');
   const [resolvedOriginalUrl, setResolvedOriginalUrl] = useState<string | null>(null);
+  // Çözümleme ölürse "Tekrar Dene" bu sayacı artırıp effect'i yeniden koşturur.
+  const [resolveNonce, setResolveNonce] = useState(0);
   const [pornhubWebviewOn, setPornhubWebviewOn] = useState(false);
   const [videoResolveFailed, setVideoResolveFailed] = useState(false);
   const [realDims, setRealDims] = useState<{ w: number; h: number } | null>(null);
@@ -562,6 +619,15 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     setResolvedOriginalUrl(null);
     setPornhubWebviewOn(false);
     setVideoResolveFailed(false);
+
+    // Arka plandaki ekran (üstte SearchDetail varken) detay çözümlemez:
+    // aynı anda N ekranın resolve etmesi thread'i kitleyip dokunmatiği öldürüyordu.
+    if (suspended) {
+      return () => {
+        alive = false;
+        abortCtrl.abort();
+      };
+    }
 
     // PH detay HTML'i ~1 MB: yalnız aktif sayfayı çöz. Komşuları aynı anda
     // parse etmek JS thread'ini saniyelerce bloke edip kontrolleri geciktirir.
@@ -629,13 +695,26 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       alive = false;
       abortCtrl.abort();
     };
-  }, [isActive, post.id, post.sourceId, post.sourceLink, post.originalUrl, post.sampleUrl]);
+  }, [isActive, suspended, resolveNonce, post.id, post.sourceId, post.sourceLink, post.originalUrl, post.sampleUrl]);
+
+  // Sigorta: fetch + WebView toplamı 30 sn'yi geçerse spinner'ı öldürüp
+  // Tekrar Dene kartını göster. (Asılı bağlantıda hiçbir dal sonlanmayabiliyordu.)
+  useEffect(() => {
+    if (post.sourceId !== 'pornhub' || !isActive || suspended) return;
+    if (resolvedOriginalUrl || videoResolveFailed) return;
+    const t = setTimeout(() => {
+      setPornhubWebviewOn(false);
+      setVideoResolveFailed(true);
+    }, 30000);
+    return () => clearTimeout(t);
+  }, [isActive, suspended, resolvedOriginalUrl, videoResolveFailed, post.sourceId, post.id]);
 
   useEffect(() => {
     setIsZoomed(false);
     isZoomedRef.current = false;
     setPornhubWebviewOn(false);
     setVideoResolveFailed(false);
+    setResolveNonce(0);
     setHasUpgradedToFull(false);
     setSampleLoading(true);
     setSampleLoaded(false);
@@ -649,7 +728,13 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   // Gerçek çözünürlük: zoom tavanı hesabı için (oturum cache'li, tek seferlik).
   // Scrape placeholder (800x1000) yerine post sayfasındaki gerçek WxH.
   useEffect(() => {
-    if (!isActive) return;
+    if (!isActive || suspended) return;
+    // Video sitelerinde (PH/XV/XH) izleme sayfasında boyut bilgisi yok;
+    // ölçü listeden gelir (PH 640x360). Bu fetch, video açılışındaki
+    // çift sayfa indirmenin yarısıydı — atlanınca kasma azalır.
+    if (post.sourceId === 'pornhub' || post.sourceId === 'xvideos' || post.sourceId === 'xhamster') {
+      return;
+    }
     let alive = true;
     setRealDims(null);
     resolveRealDimensions(post)
@@ -660,7 +745,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     return () => {
       alive = false;
     };
-  }, [isActive, post.id, post.sourceLink, post.originalUrl, post.sampleUrl]);
+  }, [isActive, suspended, post.id, post.sourceLink, post.originalUrl, post.sampleUrl]);
 
   /**
    * Çözünürlüğe göre net zoom tavanı: contain-fit'te 1:1 piksele denk gelen
@@ -685,8 +770,14 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       ),
     [post, resolvedOriginalUrl]
   );
+  // Çözülmüş orijinal akış (PH HLS vb.) her zaman birincildir: sıralama
+  // mp4'ü m3u8'ten üstün tuttuğu için kapak flipbook'u (_fb.mp4) gerçek
+  // videoyu eziyor, sadece önizleme oynuyordu.
   const primaryCandidate =
-    videoCandidates.length > 0 ? videoCandidates[0] : post.originalUrl || post.sampleUrl || post.previewUrl;
+    resolvedOriginalUrl ||
+    (videoCandidates.length > 0
+      ? videoCandidates[0]
+      : post.originalUrl || post.sampleUrl || post.previewUrl);
   const mediaUrl = getMediaUrl(primaryCandidate);
 
   const cleanMedia = primaryCandidate ? primaryCandidate.split('?')[0].toLowerCase() : '';
@@ -931,6 +1022,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           {pornhubWebviewOn &&
           !resolvedOriginalUrl &&
           isActive &&
+          !suspended &&
           post.sourceId === 'pornhub' &&
           post.sourceLink ? (
             <PornhubWebViewResolver
@@ -1100,6 +1192,47 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                   </View>
                 </View>
               )}
+              {/* PH çözümleme öldüyse sessiz kapak yerine kart: tekrar dene / kaynakta aç */}
+              {post.sourceId === 'pornhub' &&
+              isActive &&
+              !suspended &&
+              videoResolveFailed &&
+              !resolvedOriginalUrl &&
+              !canPlayVideo ? (
+                <View style={styles.unsupportedCardContainer} pointerEvents="box-none">
+                  <View style={styles.unsupportedCard}>
+                    <View style={styles.unsupportedHeader}>
+                      <AlertCircle size={22} color="#F5A623" />
+                      <Text style={styles.unsupportedTitle}>Video çözümlenemedi</Text>
+                    </View>
+                    <Text style={styles.unsupportedDescription}>
+                      Pornhub akışı alınamadı. Tekrar dene veya kaynak sitede izle.
+                    </Text>
+                    <View style={{ flexDirection: 'row', gap: 8 }}>
+                      <TouchableOpacity
+                        style={styles.unsupportedButton}
+                        activeOpacity={0.8}
+                        onPress={() => {
+                          setVideoResolveFailed(false);
+                          setPornhubWebviewOn(false);
+                          setResolveNonce((n) => n + 1);
+                        }}
+                      >
+                        <RotateCcw size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                        <Text style={styles.unsupportedButtonText}>Tekrar Dene</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.unsupportedButton, { backgroundColor: '#2A2E3B' }]}
+                        activeOpacity={0.8}
+                        onPress={handleOpenSource}
+                      >
+                        <ExternalLink size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                        <Text style={styles.unsupportedButtonText}>Kaynakta Aç</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+              ) : null}
             </>
           )}
         </View>
@@ -1150,6 +1283,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const [duration, setDuration] = useState(0);
   const [timelineWidth, setTimelineWidth] = useState(0);
   const hideTimerRef = useRef<any>(null);
+  const wasPlayingRef = useRef(false);
   const suspendedRef = useRef(suspended);
   suspendedRef.current = suspended;
 
@@ -1183,7 +1317,11 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       return;
     }
     if (payload.status !== 'error' || proxyFallbackDoneRef.current) return;
-    if (!proxyService.hasWorker() || proxyService.isProxiedUrl(url)) return;
+    if (!proxyService.hasWorker() || proxyService.isProxiedUrl(url)) {
+      // Yedek yol yok: sessiz siyah ekranda kalmasın, hata kartını göster.
+      setLoadFailed(true);
+      return;
+    }
     proxyFallbackDoneRef.current = true;
     const viaProxy = proxyService.forceProxyUrl(url);
     if (!viaProxy || viaProxy === url) return;
@@ -1224,9 +1362,26 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
 
   useEffect(() => {
     if (suspended) {
-      player.pause();
+      try {
+        wasPlayingRef.current = player.playing;
+      } catch {
+        wasPlayingRef.current = false;
+      }
+      try {
+        player.pause();
+      } catch {}
+    } else {
+      // Odağa dönünce kontrolleri geri getir + oynatılıyorsa devam et.
+      // Donmuş video + gizli kontrol "kontroller gitti" hissi veriyordu.
+      setShowControls(true);
+      if (wasPlayingRef.current && !loadFailed) {
+        wasPlayingRef.current = false;
+        try {
+          player.play();
+        } catch {}
+      }
     }
-  }, [suspended, player]);
+  }, [suspended, player, loadFailed]);
 
   // Sync mute state with session preference across videos
   useEffect(() => {
@@ -1263,6 +1418,9 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     }
     if (isPlaying) {
       hideTimerRef.current = setTimeout(() => {
+        // Scrub ortasında gizleme: overlay unmount olur, gesture terminate
+        // olur, pager kilidi açılıp parmağı takip ederdi.
+        if (isScrubbingRef.current) return;
         setShowControls(false);
       }, 3500);
     }
@@ -1385,6 +1543,8 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
 
         onPanResponderMove: (evt) => {
           updateScrubFromPageX(evt.nativeEvent.pageX, false);
+          // Native taraf kilidi düşürürse her harekette yeniden vur.
+          onScrubbingChange?.(true);
         },
 
         onPanResponderRelease: (evt) => {
@@ -1569,7 +1729,9 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     top: 75,
-    bottom: 85,
+    // Alt 150px video timeline şerididir: geri alanı burayı kapsamaz,
+    // şerit üstünde başlayan parmak scrub'a gider, çıkış olmaz.
+    bottom: 150,
     width: 28,
     zIndex: 999,
   },

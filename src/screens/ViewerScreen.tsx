@@ -2,10 +2,11 @@ import React, { useEffect, useState } from 'react';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useIsFocused } from '@react-navigation/native';
 import type { RootStackParamList } from '../navigation/types';
-import { getCachedPosts } from '../navigation/postsCache';
+import { deleteCachedPosts, getCachedPosts } from '../navigation/postsCache';
 import { pushSearchDetail } from '../navigation/rootNavigation';
 import { ImageViewerModal } from '../components/ImageViewerModal';
 import { StorageService } from '../services/storage';
+import { isVideoPost } from '../utils/media';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Viewer'>;
 
@@ -22,14 +23,29 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
 
   useEffect(() => {
-    if (posts.length === 0) {
+    if (posts.length === 0 && navigation.canGoBack()) {
       navigation.goBack();
     }
   }, [posts.length, navigation]);
 
+  // Kapanınca cache girişini sil — gir-çık tekrarında harita şişmez.
+  useEffect(() => {
+    return () => {
+      deleteCachedPosts(postsKey);
+    };
+  }, [postsKey]);
+
   useEffect(() => {
     setCurrentIndex(initialIndex);
   }, [initialIndex]);
+
+  // Fotoğrafta native geri jesti (eskisi gibi). Videoda native jest kapalı:
+  // kenar şeridi timeline'ın üzerine de uzanıp yanlış çıkış yaratıyordu;
+  // onun yerine timeline'ı dışlayan özel kenar alanı çalışır.
+  const currentIsVideo = isVideoPost(posts[currentIndex]);
+  useEffect(() => {
+    navigation.setOptions({ gestureEnabled: !currentIsVideo });
+  }, [currentIsVideo, navigation]);
 
   useEffect(() => {
     if (posts[currentIndex]) {
@@ -50,7 +66,12 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
       onIndexChange={setCurrentIndex}
       suspended={!isFocused}
       dismissOnTagPress={false}
-      onClose={() => navigation.goBack()}
+      onClose={() => {
+        // Çift dokunma/kaydırma yarışında ikinci goBack boşa düşerdi.
+        if (navigation.canGoBack()) {
+          navigation.goBack();
+        }
+      }}
       onTagPress={(tag) => pushSearchDetail([tag], originFilter)}
       onAddTagToSearch={(tag) => pushSearchDetail([...base, tag], originFilter)}
       onExcludeTagFromSearch={(tag) =>

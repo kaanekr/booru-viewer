@@ -47,8 +47,9 @@ import { BackupService } from '../services/backupService';
 import { SecurityService, BiometryType } from '../services/securityService';
 import { PasscodeModal, PasscodeModalMode } from '../components/PasscodeModal';
 import { clearCachedPosts } from '../navigation/postsCache';
+import { navigationRef } from '../navigation/rootNavigation';
 import { useSource } from '../context/SourceContext';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, StackActions } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
 
 const GOLD_ACCENT = '#F5A623';
@@ -168,6 +169,18 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const handleSourceChange = (source: BooruSource) => {
     Haptics.selectionAsync();
     onSelectSource(source);
+    // Sunucu değişince biriken Viewer/SearchDetail ekranlarını kapat:
+    // arka planda canlı kalan oyuncular + resolve istekleri donmaya
+    // ve kontrollerin tepki vermemesine yol açıyordu.
+    // Birikme yoksa (zaten en üstte) dispatch etme — POP_TO_TOP uyarısı verir.
+    try {
+      if (navigationRef.isReady()) {
+        const state = navigationRef.getState();
+        if (state && state.routes.length > 1) {
+          navigationRef.dispatch(StackActions.popToTop());
+        }
+      }
+    } catch {}
   };
 
   const handleQualityChange = async (quality: ImageQuality) => {

@@ -183,8 +183,6 @@ function MainApp() {
             options={{
               headerShown: false,
               animation: 'slide_from_right',
-              // iOS ScrollView/FlatList çakışması nedeniyle edge-only geri jesti
-              gestureEnabled: true,
             }}
           />
           <RootStack.Screen
