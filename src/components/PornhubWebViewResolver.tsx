@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
 import { parsePornhubDetail } from '../services/pornhub';
 import type { PornhubFiles } from '../services/pornhub';
@@ -16,6 +16,20 @@ interface Props {
  */
 export const PornhubWebViewResolver: React.FC<Props> = ({ pageUrl, onResolve }) => {
   const doneRef = useRef(false);
+  const onResolveRef = useRef(onResolve);
+  onResolveRef.current = onResolve;
+
+  // Sayfa bağlantısı asılı kalırsa ne mesaj ne hata gelir: mutlak tavanla
+  // resolver'ı her durumda sonlandır, spinner sonsuza dönmesin.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (!doneRef.current) {
+        doneRef.current = true;
+        onResolveRef.current(null);
+      }
+    }, 20000);
+    return () => clearTimeout(t);
+  }, [pageUrl]);
 
   const injected = useMemo(
     () => `(function(){
@@ -28,12 +42,12 @@ export const PornhubWebViewResolver: React.FC<Props> = ({ pageUrl, onResolve }) 
           if (i >= 0) {
             window.ReactNativeWebView.postMessage(JSON.stringify({ ok: true, chunk: html.slice(i, i + 40000) }));
             clearInterval(timer);
-          } else if (tries >= 25) {
+          } else if (tries >= 15) {
             window.ReactNativeWebView.postMessage(JSON.stringify({ ok: false, reason: 'nomedia:' + document.title }));
             clearInterval(timer);
           }
         } catch (e) {
-          if (tries >= 25) {
+          if (tries >= 15) {
             window.ReactNativeWebView.postMessage(JSON.stringify({ ok: false, reason: 'error' }));
             clearInterval(timer);
           }
@@ -62,6 +76,30 @@ export const PornhubWebViewResolver: React.FC<Props> = ({ pageUrl, onResolve }) 
     }
   };
 
+  const failFast = () => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    onResolve(null);
+  };
+
+  // Android'de onHttpError alt-kaynak (reklam/tracker) hatalarında da
+  // ateşlenir; sadece ana sayfa ölürse vazgeç, yoksa resolver gereksiz
+  // ölür ve gerçek video hiç gelmez.
+  const handleHttpError = (e: any) => {
+    try {
+      const failedUrl = String(e?.nativeEvent?.url || '');
+      if (
+        failedUrl &&
+        failedUrl !== pageUrl &&
+        !pageUrl.startsWith(failedUrl) &&
+        !failedUrl.startsWith(pageUrl)
+      ) {
+        return;
+      }
+    } catch {}
+    failFast();
+  };
+
   return (
     <WebView
       source={{ uri: pageUrl }}
@@ -73,6 +111,9 @@ export const PornhubWebViewResolver: React.FC<Props> = ({ pageUrl, onResolve }) 
       mediaPlaybackRequiresUserAction={false}
       injectedJavaScript={injected}
       onMessage={handleMessage}
+      // Sayfa yüklenemezse 15 sn'lik poll'u bekleme: ağır WebView'i hemen kaldır.
+      onError={failFast}
+      onHttpError={handleHttpError}
     />
   );
 };

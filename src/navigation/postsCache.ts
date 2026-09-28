@@ -24,6 +24,11 @@ export function getCachedPosts(key: string): BooruPost[] {
   return cache.get(key) ?? [];
 }
 
+/** Ekran kapanınca kendi girişini siler — harita şişmez. */
+export function deleteCachedPosts(key: string): void {
+  cache.delete(key);
+}
+
 export function clearCachedPosts(): void {
   cache.clear();
 }
