@@ -4,7 +4,7 @@ import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEventListener } from 'expo';
 import * as Haptics from 'expo-haptics';
-import { Heart } from 'lucide-react-native';
+import { Heart, Volume2 } from 'lucide-react-native';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isUnsupportedOnIOS } from '../utils/media';
@@ -412,6 +412,14 @@ const PostCardComponent: React.FC<PostCardProps> = ({
             <Text style={styles.scoreText}>★ {post.score}</Text>
           </View>
         )}
+
+        {/* Sesli klip rozeti: RedGifs hasAudio bilgisini meta 'sound' olarak taşır,
+            önizlemeler sessiz oynadığı için kullanıcı bunu karttan görsün. */}
+        {post.tags.meta?.includes('sound') && (
+          <View style={styles.soundBadge}>
+            <Volume2 size={10} color="#FFFFFF" />
+          </View>
+        )}
       </View>
 
       {/* File type badge if webm/gif/mp4/zip */}
@@ -541,6 +549,15 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 10,
     fontWeight: '800',
+  },
+  soundBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: 6,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    borderRadius: 6,
   },
   scoreBadge: {
     backgroundColor: 'rgba(0, 0, 0, 0.65)',

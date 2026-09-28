@@ -10,21 +10,35 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Layers, RefreshCw, AlertCircle } from 'lucide-react-native';
+import { Layers, RefreshCw, AlertCircle, Flame } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { booruApi } from '../services/booruApi';
-import { BooruPost, BooruSource } from '../types/booru';
+import { BooruPost, BooruSource, DEFAULT_FILTER_CONFIG, SearchFilterConfig, RedGifsTrendingTag } from '../types/booru';
 import { PostCard } from '../components/PostCard';
-import { pushViewer } from '../navigation/rootNavigation';
+import { TagChip } from '../components/TagChip';
+import { pushViewer, pushSearchDetail } from '../navigation/rootNavigation';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl } from '../utils/media';
 import { useVisibleIds, CardLayout } from '../utils/gridVisibility';
 import { useSource } from '../context/SourceContext';
-import { StorageService } from '../services/storage';
+import { StorageService, FeedOrder } from '../services/storage';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const GOLD_ACCENT = '#F5A623';
+
+/** Keşfet sırası seçenekleri. RedGifs order=değerlerine birebir karşılık gelir. */
+const FEED_ORDER_OPTIONS: { key: string; label: string; order: FeedOrder }[] = [
+  { key: 'trending', label: 'Trend', order: { sortBy: 'default', timeRange: 'all' } },
+  { key: 'latest', label: 'En Yeni', order: { sortBy: 'id', timeRange: 'all' } },
+  { key: 'top7', label: 'Haftalık Top', order: { sortBy: 'score', timeRange: '1w' } },
+  { key: 'top28', label: 'Aylık Top', order: { sortBy: 'score', timeRange: '1m' } },
+];
+
+function feedOrderKey(order: FeedOrder): string {
+  return `${order.sortBy}|${order.timeRange}`;
+}
 
 interface FeedScreenProps {
   navigation?: any;
@@ -61,7 +75,27 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+  // Keşfet sırası: yalnız RedGifs'te seçilebilir (order parametresi orada anlamlı)
+  const [feedOrder, setFeedOrder] = useState<FeedOrder>(FEED_ORDER_OPTIONS[0].order);
+  // RedGifs trend etiketleri: sabit trending akışına çeşitlilik katan satır
+  const [trendingTags, setTrendingTags] = useState<RedGifsTrendingTag[]>([]);
   const isFocused = useIsFocused();
+  const isRedGifs = activeSource.type === 'redgifs';
+
+  useEffect(() => {
+    if (!isRedGifs) {
+      setTrendingTags([]);
+      return;
+    }
+    let cancelled = false;
+    booruApi.fetchRedGifsTrendingTags(20).then((tags) => {
+      if (!cancelled) setTrendingTags(tags);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isRedGifs, activeSource.id]);
+
   // Video kapaklar sadece ekrandayken oynar (kasılmayı önler)
   const [visibleIds, updateVisible] = useVisibleIds();
 
@@ -80,7 +114,12 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
         if (pageNum === 1 && !isRefresh) setLoading(true);
         setError(null);
 
-        const newPosts = await booruApi.fetchPosts(pageNum, 24);
+        const feedFilter: SearchFilterConfig = {
+          ...DEFAULT_FILTER_CONFIG,
+          sortBy: feedOrder.sortBy,
+          timeRange: feedOrder.timeRange,
+        };
+        const newPosts = await booruApi.fetchPosts(pageNum, 24, '', feedFilter);
 
         // 429/boş sayfada sessizce dur: footer loader takılı kalmasın
         if (newPosts.length === 0 && pageNum > 1) {
@@ -125,31 +164,48 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
         setRefreshing(false);
       }
     },
-    []
+    [feedOrder]
   );
 
   const scrollViewRef = useRef<ScrollView>(null);
   const scrollOffsetRef = useRef(0);
-  const lastSourceIdRef = useRef<string | null>(null);
   const loadMoreGuardRef = useRef(0);
+  // Kaynak veya sıra değiştiyse baştan yükle. Saklanan sıra async okunduğu
+  // için "hazır" olmadan ilk istek atılmaz (aksi halde her açılışta Trend
+  // yüklenip kullanıcının tercihi ikinci turda gelirdi).
+  const [feedOrderReady, setFeedOrderReady] = useState(false);
+  const feedKey = `${activeSource.id}|${feedOrderKey(feedOrder)}`;
 
   useEffect(() => {
-    if (lastSourceIdRef.current === null) {
-      lastSourceIdRef.current = activeSource.id;
-      loadPosts(1);
-    } else if (lastSourceIdRef.current !== activeSource.id) {
-      lastSourceIdRef.current = activeSource.id;
-      setPage(1);
-      scrollOffsetRef.current = 0;
-      loadPosts(1);
-    }
-  }, [activeSource.id, loadPosts]);
+    StorageService.getFeedOrder().then((saved) => {
+      if (saved) setFeedOrder(saved);
+      setFeedOrderReady(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!feedOrderReady) return;
+    booruApi.resetFeedSeen();
+    setPage(1);
+    scrollOffsetRef.current = 0;
+    scrollViewRef.current?.scrollTo({ y: 0, animated: false });
+    loadPosts(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feedKey, feedOrderReady]);
+
+  const handleSelectOrder = (order: FeedOrder) => {
+    if (feedOrderKey(order) === feedOrderKey(feedOrder)) return;
+    Haptics.selectionAsync();
+    setFeedOrder(order);
+    StorageService.setFeedOrder(order);
+  };
 
   const handleRefresh = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRefreshing(true);
     setPage(1);
     scrollOffsetRef.current = 0;
+    booruApi.resetFeedSeen();
     await loadPosts(1, true);
   };
 
@@ -162,9 +218,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
       return;
     }
     setLoadingMore(true);
-    const nextPage = page + 1;
-    setPage(nextPage);
-    loadPosts(nextPage).finally(() => {
+    setPage((p) => p + 1);
+    loadPosts(page + 1).finally(() => {
       loadMoreGuardRef.current = 0;
     });
   };
@@ -229,7 +284,9 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           }}
         >
           <Text style={styles.headerTitle}>Keşfet</Text>
-          <Text style={styles.headerSubtitle}>En yeni anime ve çizimler</Text>
+          <Text style={styles.headerSubtitle}>
+            {isRedGifs ? 'Video klipleri ve animasyonlar' : 'En yeni anime ve çizimler'}
+          </Text>
         </TouchableOpacity>
 
         {showSourcePicker && (
@@ -248,6 +305,61 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           </TouchableOpacity>
         )}
       </View>
+
+      {/* Sıra seçici: yalnız RedGifs'te anlamlı (order= trending/latest/top7/top28) */}
+      {isRedGifs && (
+        <View style={styles.orderBar}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.orderBarContent}
+          >
+            {FEED_ORDER_OPTIONS.map((opt) => {
+              const isSelected = feedOrderKey(opt.order) === feedOrderKey(feedOrder);
+              return (
+                <TouchableOpacity
+                  key={opt.key}
+                  style={[styles.orderChip, isSelected && styles.orderChipActive]}
+                  onPress={() => handleSelectOrder(opt.order)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.orderChipText, isSelected && styles.orderChipTextActive]}>
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+
+      {/* Trend etiketleri: günlük değişen sıcak aramalar, tek dokunuşla akışa */}
+      {isRedGifs && trendingTags.length > 0 && (
+        <View style={styles.trendingBar}>
+          <View style={styles.trendingHeaderRow}>
+            <Flame size={13} color={GOLD_ACCENT} />
+            <Text style={styles.trendingHeaderText}>Trend Etiketler</Text>
+          </View>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.trendingContent}
+          >
+            {trendingTags.map((t) => (
+              <TagChip
+                key={`rg-trend-${t.name}`}
+                name={t.name}
+                count={t.count || undefined}
+                size="sm"
+                onPress={(name) => {
+                  Haptics.selectionAsync();
+                  pushSearchDetail([name]);
+                }}
+              />
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       {/* Main Content */}
       {loading ? (
@@ -411,6 +523,60 @@ const styles = StyleSheet.create({
     color: Colors.dark.text,
     fontSize: 12,
     fontWeight: '700',
+  },
+  orderBar: {
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.07)',
+    paddingBottom: 10,
+  },
+  orderBarContent: {
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  orderChip: {
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 20,
+    backgroundColor: '#181A22',
+    borderWidth: 1,
+    borderColor: '#292D3B',
+  },
+  orderChipActive: {
+    backgroundColor: GOLD_ACCENT,
+    borderColor: GOLD_ACCENT,
+  },
+  orderChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.dark.textSecondary,
+  },
+  orderChipTextActive: {
+    color: '#111216',
+    fontWeight: '700',
+  },
+  trendingBar: {
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.07)',
+    paddingBottom: 8,
+  },
+  trendingHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 6,
+  },
+  trendingHeaderText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.dark.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  trendingContent: {
+    paddingHorizontal: 16,
+    paddingVertical: 2,
   },
   scrollView: {
     flex: 1,

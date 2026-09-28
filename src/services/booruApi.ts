@@ -1,4 +1,4 @@
-import { BooruPost, BooruSource, BooruTagGroups, BooruTagSuggestion, RedGifsNiche, TagCategory, SearchFilterConfig } from '../types/booru';
+import { BooruPost, BooruSource, BooruTagGroups, BooruTagSuggestion, RedGifsNiche, RedGifsTrendingTag, TagCategory, SearchFilterConfig } from '../types/booru';
 import { asTagList } from '../utils/guards';
 import { DEFAULT_SOURCE } from './sources';
 import { proxyService } from './proxyService';
@@ -411,7 +411,15 @@ export class BooruApiService {
       } else if (source.type === 'cumst') {
         return await this.fetchCumStPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'redgifs') {
-        return await this.fetchRedGifsPosts(source, page, limit, tags, filter);
+        const posts = await this.fetchRedGifsPosts(source, page, limit, tags, filter);
+        // Keşfet akışında (etiketsiz) sayfa çakışmalarını eler: trending
+        // sayfaları aynı gönderileri tekrarlayabiliyor. Arama sonuçları
+        // etkilenmez.
+        const isFeed = !tags.trim() && !(filter && (filter.tags.length > 0 || filter.user?.trim()));
+        if (!isFeed) return posts;
+        const fresh = posts.filter((p) => !this.feedSeenIds.has(p.id));
+        fresh.forEach((p) => this.feedSeenIds.add(p.id));
+        return fresh;
       } else if (source.type === 'xvideos') {
         return await this.fetchXVideosPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else if (source.type === 'xhamster') {
@@ -1071,6 +1079,8 @@ export class BooruApiService {
 
   private redGifsToken: string | null = null;
   private redGifsTokenExpiry: number = 0;
+  /** Keşfet akışında gösterilmiş gönderi id'leri (sayfa çakışmalarını eler). */
+  private feedSeenIds = new Set<string>();
 
   private async fetchRedGifsApi(url: string, token?: string): Promise<Response> {
     const headers: Record<string, string> = {
@@ -1081,9 +1091,9 @@ export class BooruApiService {
       'Cache-Control': 'no-store, no-cache',
     };
     if (token) {
+      // RedGifs tek başlık bekliyor; üç varyantı birden göndermek WAF'a
+      // kırmaya çalışan bir dolambaçtı.
       headers['Authorization'] = `Bearer ${token}`;
-      headers['X-Redgifs-Token'] = token;
-      headers['X-Authorization'] = `Bearer ${token}`;
     }
     return await this.fetchWithRetry(url, { headers }, 0, 10000);
   }
@@ -1092,6 +1102,14 @@ export class BooruApiService {
     const now = Date.now();
     if (this.redGifsToken && now < this.redGifsTokenExpiry) {
       return this.redGifsToken;
+    }
+
+    // Kayıtlı token hâlâ geçerliyse auth turu hiç yapılmaz
+    const cached = await StorageService.getRedGifsTokenCache();
+    if (cached) {
+      this.redGifsToken = cached.token;
+      this.redGifsTokenExpiry = cached.expiry;
+      return cached.token;
     }
 
     const authRes = await this.fetchRedGifsApi('https://api.redgifs.com/v2/auth/temporary');
@@ -1109,7 +1127,26 @@ export class BooruApiService {
     this.redGifsToken = token;
     // Mobil IP değişimlerine karşı TTL'i 30 dakikada tutuyoruz
     this.redGifsTokenExpiry = now + 30 * 60 * 1000;
+    // Soğuk açılışta auth turu atılmasın
+    StorageService.setRedGifsTokenCache(token, this.redGifsTokenExpiry).catch(() => {});
     return token;
+  }
+
+  /**
+   * RedGifs token'ını arka planda hazırlar. Uygulama açılışında çağrılır:
+   * Keşfet ekranı auth turunu beklemez.
+   */
+  async warmupRedGifs(): Promise<void> {
+    try {
+      await this.getRedGifsToken();
+    } catch (e) {
+      console.warn('[BooruAPI] RedGifs warmup başarısız:', e);
+    }
+  }
+
+  /** Keşfet akışı yeniden başlatılırken (kaynak/sıra değişimi, pull-to-refresh). */
+  resetFeedSeen(): void {
+    this.feedSeenIds.clear();
   }
 
   private async fetchRedGifsPosts(
@@ -1147,8 +1184,8 @@ export class BooruApiService {
     // 'user:<ad>' yazımı filtredeki Kullanıcı alanıyla aynı mekanikle çalışır
     const userToken = tokens.find((t) => !t.startsWith('-') && t.toLowerCase().startsWith('user:'));
     const tokenUsername = userToken ? userToken.substring(5).trim() : '';
-    // Sunucuya ham haliyle gönderilir: RedGifs kısmi eşleşme yapar ('ana', 'blond')
-    // ama '_' ile yarım kalan çok kelimeli etikette ('big_t') 0 döner; boşluk korunmalı
+    // Sunucuya ham yazımıyla gider: RedGifs kısmi eşleşme yapar ('ana' -> 'anal'),
+    // '_' ile yarım kalan çok kelimeli etikette ('big_t') 0 döner.
     const includeTags = includeTokens.map((t) => t.trim()).filter(Boolean).join(' ');
 
     let authToken = '';
@@ -1222,54 +1259,33 @@ export class BooruApiService {
     }
 
     const data = await response.json();
-    let gifs = Array.isArray(data.gifs) ? data.gifs : [];
+    const gifs = Array.isArray(data.gifs) ? data.gifs : [];
 
-    // Etiket araması boş dönerse bulanık çözüm: önce suggest ile en alakalı
-    // etikete tamamla ('big t' -> 'Big Tits'), sonra tekrar ara
-    if (gifs.length === 0 && !searchUsername && !nicheId && includeTags && excludeTags.length === 0) {
-      try {
-        // '_' içeren yarım etiket suggest'te bulunamaz; boşluklu dene ('big_t' -> 'big t')
-        const sugQuery = includeTags.replace(/_/g, ' ').trim() || includeTags;
-        const sugUrl = `https://api.redgifs.com/v2/search/suggest?query=${encodeURIComponent(sugQuery)}`;
-        const sugRes = await this.fetchRedGifsApi(sugUrl, authToken);
-        if (sugRes.ok) {
-          const sugData = await sugRes.json();
-          // En çok içeriğe sahip farklı etiketi seç ('Big' yerine 'Big Tits')
-          const top = Array.isArray(sugData)
-            ? sugData
-                .filter((s: any) => s && typeof s.text === 'string' && s.text.toLowerCase() !== includeTags.toLowerCase())
-                .sort((a: any, b: any) => (Number(b.gifs) || 0) - (Number(a.gifs) || 0))[0]
-            : null;
-          if (top?.text) {
-            const retryUrl = `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}&tags=${encodeURIComponent(top.text)}`;
-            const retryRes = await this.fetchRedGifsApi(retryUrl, authToken);
-            if (retryRes.ok) {
-              const retryData = await retryRes.json();
-              if (Array.isArray(retryData.gifs) && retryData.gifs.length > 0) {
-                gifs = retryData.gifs;
-              }
-            }
-          }
-        }
-      } catch {}
-    }
+    const posts = this.mapRedGifsGifs(source, gifs);
 
-    // Hâlâ boşsa ve sorgu tek kelimeyse kullanıcı adı olabilir;
-    // kullanıcı endpoint'ine düş (örn. arama kutusuna 'white_l0ad' yazılması)
-    if (gifs.length === 0 && !searchUsername && !nicheId && includeTokens.length === 1 && excludeTags.length === 0) {
-      try {
-        const userUrl = `https://api.redgifs.com/v2/users/${encodeURIComponent(includeTokens[0])}/search?page=${page}&count=${count}&order=latest&type=g`;
-        const userRes = await this.fetchRedGifsApi(userUrl, authToken);
-        if (userRes.ok) {
-          const userData = await userRes.json();
-          if (Array.isArray(userData.gifs) && userData.gifs.length > 0) {
-            gifs = userData.gifs;
-          }
-        }
-      } catch {}
-    }
+    // İstemci tarafı filtreleme: kullanıcı/niche+etiket birlikteliğinde veya '-tag'
+    // dışlamalarında sunucu filtrelemez; burada elenir
+    const filterTokens = nicheId ? remainingTokens : includeTokens;
+    const needsClientFilter =
+      excludeTags.length > 0 || ((searchUsername || nicheId) && filterTokens.length > 0);
+    if (!needsClientFilter) return posts;
 
-    const posts: BooruPost[] = gifs.map((g: any) => {
+    const includeNorm = filterTokens.map(normTag).filter(Boolean);
+    return posts.filter((p) => {
+      const hay = p.allTags.map(normTag);
+      if (excludeTags.some((t) => hay.includes(t))) return false;
+      if ((searchUsername || nicheId) && includeNorm.some((t) => !hay.includes(t))) return false;
+      // '-niche:<id>' dışlaması: bu kategorideki gönderiyi ele
+      if (nicheExcludes.length > 0 && p.niches?.some((n) => nicheExcludes.includes(normTag(n)))) return false;
+      // '-user:<ad>' dışlaması: bu hesabın gönderisini ele
+      if (userExcludes.length > 0 && p.tags.artist?.some((a) => userExcludes.includes(a.trim().toLowerCase()))) return false;
+      return true;
+    });
+  }
+
+  /** RedGifs API'sinden gelen ham gif kayıtlarını BooruPost'a çevirir. */
+  private mapRedGifsGifs(source: BooruSource, gifs: any[]): BooruPost[] {
+    return gifs.map((g: any) => {
       const hdUrl = g.urls?.hd || '';
       const sdUrl = g.urls?.sd || '';
       const silentUrl = g.urls?.silent || '';
@@ -1284,7 +1300,7 @@ export class BooruApiService {
       const artistTags = typeof g.userName === 'string' && g.userName ? [g.userName] : [];
       const metaTags = ['video', ...(g.hasAudio ? ['sound'] : [])];
       const allTags = Array.from(new Set([...artistTags, ...generalTags, ...metaTags]));
-      const nicheIds = Array.isArray(g.niches)
+      const nicheIds: string[] = Array.isArray(g.niches)
         ? Array.from(new Set(g.niches.map((n: any) => String(n).trim().toLowerCase()).filter(Boolean)))
         : [];
 
@@ -1320,25 +1336,48 @@ export class BooruApiService {
         niches: nicheIds.length > 0 ? nicheIds : undefined,
       };
     });
+  }
 
-    // İstemci tarafı filtreleme: kullanıcı/niche+etiket birlikteliğinde veya '-tag'
-    // dışlamalarında sunucu filtrelemez; burada elenir
-    const filterTokens = nicheId ? remainingTokens : includeTokens;
-    const needsClientFilter =
-      excludeTags.length > 0 || ((searchUsername || nicheId) && filterTokens.length > 0);
-    if (!needsClientFilter) return posts;
+  private redGifsTrendingTagsCache: { at: number; tags: RedGifsTrendingTag[] } | null = null;
 
-    const includeNorm = filterTokens.map(normTag).filter(Boolean);
-    return posts.filter((p) => {
-      const hay = p.allTags.map(normTag);
-      if (excludeTags.some((t) => hay.includes(t))) return false;
-      if ((searchUsername || nicheId) && includeNorm.some((t) => !hay.includes(t))) return false;
-      // '-niche:<id>' dışlaması: bu kategorideki gönderiyi ele
-      if (nicheExcludes.length > 0 && p.niches?.some((n) => nicheExcludes.includes(normTag(n)))) return false;
-      // '-user:<ad>' dışlaması: bu hesabın gönderisini ele
-      if (userExcludes.length > 0 && p.tags.artist?.some((a) => userExcludes.includes(a.trim().toLowerCase()))) return false;
-      return true;
-    });
+  /**
+   * RedGifs trend arama terimleri: `/v2/tags/trending` → `{tags:[{name,count}]}`
+   * (canlı doğrulandı). Sabit trending akışını çeşitlendiren yüzey; etiketler
+   * günlük değişir. 30 dakika bellek cache'i — her açılışta bir istek.
+   */
+  async fetchRedGifsTrendingTags(limit: number = 20): Promise<RedGifsTrendingTag[]> {
+    const now = Date.now();
+    if (this.redGifsTrendingTagsCache && now - this.redGifsTrendingTagsCache.at < 30 * 60 * 1000) {
+      return this.redGifsTrendingTagsCache.tags;
+    }
+
+    const url = 'https://api.redgifs.com/v2/tags/trending';
+    try {
+      let token = await this.getRedGifsToken();
+      let response = await this.fetchRedGifsApi(url, token);
+      if (response.status === 401) {
+        this.redGifsToken = null;
+        this.redGifsTokenExpiry = 0;
+        token = await this.getRedGifsToken();
+        response = await this.fetchRedGifsApi(url, token);
+      }
+      if (!response.ok) {
+        // Satır boş kalır, akış çalışmaya devam eder
+        console.warn(`[BooruAPI] RedGifs trending tags HTTP ${response.status}`);
+        return [];
+      }
+      const data: any = await response.json();
+      const raw: any[] = Array.isArray(data?.tags) ? data.tags : [];
+      const tags = raw
+        .filter((t: any) => t && typeof t.name === 'string' && t.name.trim().length > 0)
+        .map((t: any) => ({ name: String(t.name).trim(), count: Number(t.count) || 0 }))
+        .slice(0, limit);
+      this.redGifsTrendingTagsCache = { at: now, tags };
+      return tags;
+    } catch (e) {
+      console.warn('[BooruAPI] RedGifs trending tags hatası:', e);
+      return [];
+    }
   }
 
   /**

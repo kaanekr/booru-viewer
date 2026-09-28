@@ -14,6 +14,7 @@ import * as ScreenOrientation from 'expo-screen-orientation';
 
 import { SecurityService } from './src/services/securityService';
 import { proxyService } from './src/services/proxyService';
+import { booruApi } from './src/services/booruApi';
 import { LockScreen } from './src/components/LockScreen';
 import { Colors } from './src/theme/colors';
 
@@ -117,12 +118,13 @@ function MainTabsNavigator() {
 }
 
 function MainApp() {
-  const { isReady: isSourceReady } = useSource();
+  const { isReady: isSourceReady, activeSource } = useSource();
   const [isAppReady, setIsAppReady] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
 
   // Initialize proxy & security lock synchronously before rendering
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
     async function initApp() {
       try {
@@ -130,6 +132,12 @@ function MainApp() {
           proxyService.init(),
           SecurityService.isPasscodeEnabled(),
         ]);
+
+        // RedGifs her istekte geçici token ister; kaynak hazır olur olmaz
+        // ısıtılırsa Keşfet auth turunu beklemez.
+        if (activeSource.type === 'redgifs') {
+          booruApi.warmupRedGifs();
+        }
 
         if (isPasscodeSet) {
           setIsLocked(true);

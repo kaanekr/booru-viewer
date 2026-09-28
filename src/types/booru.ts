@@ -64,6 +64,12 @@ export interface RedGifsNiche {
   thumbnail?: string;
 }
 
+/** RedGifs trend arama terimleri (Keşfet'teki etiket satırı). */
+export interface RedGifsTrendingTag {
+  name: string;
+  count: number;
+}
+
 export type SortOption = 'default' | 'id' | 'score' | 'rating' | 'user' | 'height' | 'width';
 export type TimeRangeOption = 'all' | '1d' | '1w' | '1m' | '1y';
 export type RatingFilterOption = 'all' | 'safe' | 'questionable' | 'explicit';
