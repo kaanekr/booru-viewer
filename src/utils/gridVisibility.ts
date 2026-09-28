@@ -20,7 +20,11 @@ export function useVisibleIds() {
       layouts: Map<string, CardLayout>,
       offsetY: number,
       viewportH: number,
-      margin: number = 700
+      // Varsayılan pay 0: videoActive yalnız EKRANDAKİ kartlara verilir.
+      // 700px pay önceden kullanılıyordu; ekranda görünmeyen kartlar da
+      // oynatıcı açıp boşuna decoder/bandwidth harcıyordu (RedGifs'te her
+      // kartta önizleme videosu var). Görsel değişim yok, oyuncu sayısı yarıya iner.
+      margin: number = 0
     ) => {
       const top = offsetY - margin;
       const bottom = offsetY + viewportH + margin;

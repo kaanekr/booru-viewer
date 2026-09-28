@@ -1014,6 +1014,19 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
           </ScrollView>
         </View>
 
+        {/* RedGifs: sunucu etiket dışlama/tahmin yapmıyor; niş ve kullanıcı
+          açık öneklerle aranır, küçük ipucu satırı bunu gösterir. */}
+        {activeSource.type === 'redgifs' && (
+          <View style={styles.syntaxHintBar}>
+            <Text style={styles.syntaxHintText}>
+              Etiket: <Text style={styles.syntaxHintMono}>etiket</Text> · Niş:{' '}
+              <Text style={styles.syntaxHintMono}>niche:id</Text> · Kullanıcı:{' '}
+              <Text style={styles.syntaxHintMono}>user:ad</Text> · Dışla:{' '}
+              <Text style={styles.syntaxHintMono}>-etiket</Text>
+            </Text>
+          </View>
+        )}
+
         {/* Autocomplete Dropdown overlay - only when search input is focused */}
         {isInputFocused && suggestions.length > 0 && (
           <View style={styles.suggestionsContainer}>
@@ -1381,6 +1394,18 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: 'rgba(255, 255, 255, 0.07)',
     paddingBottom: 10,
+  },
+  syntaxHintBar: {
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  syntaxHintText: {
+    fontSize: 11,
+    color: Colors.dark.textMuted,
+  },
+  syntaxHintMono: {
+    color: GOLD_ACCENT,
+    fontWeight: '700',
   },
   quickFiltersContent: {
     paddingHorizontal: 16,

@@ -1,8 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BooruPost } from '../types/booru';
+import { BooruPost, SortOption, TimeRangeOption } from '../types/booru';
 import { DEFAULT_SOURCE } from './sources';
 
 export type ImageQuality = 'preview' | 'auto' | 'full';
+
+/** Keşfet akışının sıralaması (RedGifs: trend / en yeni / top7 / top28). */
+export interface FeedOrder {
+  sortBy: SortOption;
+  timeRange: TimeRangeOption;
+}
 
 const FAVORITES_KEY = '@booru_favorites_v2';
 const HISTORY_KEY = '@booru_search_history_v2';
@@ -11,6 +17,11 @@ const FAVORITE_TAGS_KEY = '@booru_favorite_tags_v2';
 const BLACKLISTED_TAGS_KEY = '@booru_blacklisted_tags_v2';
 const IMAGE_QUALITY_KEY = '@booru_image_quality_v2';
 const RECENT_VIEWS_KEY = '@booru_recent_views_v2';
+const FEED_ORDER_KEY = '@booru_feed_order_v2';
+const REDGIFS_TOKEN_KEY = '@booru_redgifs_token_v2';
+
+const VALID_SORT: SortOption[] = ['default', 'id', 'score', 'rating', 'user', 'height', 'width'];
+const VALID_RANGE: TimeRangeOption[] = ['all', '1d', '1w', '1m', '1y'];
 
 let cachedRecentViews: BooruPost[] | null = null;
 
@@ -269,6 +280,54 @@ export const StorageService = {
       await AsyncStorage.setItem(SOURCE_KEY, sourceId);
     } catch (e) {
       console.warn('Error saving active source:', e);
+    }
+  },
+
+  /** Keşfet sırası: null dönerse kayıtlı tercih yok (kaynak varsayılanı). */
+  async getFeedOrder(): Promise<FeedOrder | null> {
+    try {
+      const data = await AsyncStorage.getItem(FEED_ORDER_KEY);
+      if (!data) return null;
+      const parsed: any = JSON.parse(data);
+      if (!VALID_SORT.includes(parsed?.sortBy) || !VALID_RANGE.includes(parsed?.timeRange)) {
+        return null;
+      }
+      return { sortBy: parsed.sortBy, timeRange: parsed.timeRange };
+    } catch {
+      return null;
+    }
+  },
+
+  async setFeedOrder(order: FeedOrder): Promise<void> {
+    try {
+      await AsyncStorage.setItem(FEED_ORDER_KEY, JSON.stringify(order));
+    } catch (e) {
+      console.warn('Error saving feed order:', e);
+    }
+  },
+
+  /**
+   * RedGifs geçici token'ı. Soğuk açılışta auth isteği yapmamak için
+   * süre bilgisiyle birlikte saklanır; süresi geçen kayıt kullanılmaz.
+   */
+  async getRedGifsTokenCache(): Promise<{ token: string; expiry: number } | null> {
+    try {
+      const data = await AsyncStorage.getItem(REDGIFS_TOKEN_KEY);
+      if (!data) return null;
+      const parsed: any = JSON.parse(data);
+      if (typeof parsed?.token !== 'string' || typeof parsed?.expiry !== 'number') return null;
+      if (parsed.expiry <= Date.now()) return null;
+      return { token: parsed.token, expiry: parsed.expiry };
+    } catch {
+      return null;
+    }
+  },
+
+  async setRedGifsTokenCache(token: string, expiry: number): Promise<void> {
+    try {
+      await AsyncStorage.setItem(REDGIFS_TOKEN_KEY, JSON.stringify({ token, expiry }));
+    } catch (e) {
+      console.warn('Error saving redgifs token:', e);
     }
   },
 
