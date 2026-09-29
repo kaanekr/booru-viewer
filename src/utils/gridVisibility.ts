@@ -47,3 +47,56 @@ export function useVisibleIds() {
 
   return [visibleIds, updateVisible] as const;
 }
+
+/**
+ * Saf pencere hesabı (test edilebilir): pencere içindeki id'ler.
+ */
+export function computeWindowIds(
+  layouts: Map<string, CardLayout>,
+  offsetY: number,
+  viewportH: number,
+  margin: number
+): Set<string> {
+  const top = offsetY - margin;
+  const bottom = offsetY + viewportH + margin;
+  const next = new Set<string>();
+  layouts.forEach((r, id) => {
+    if (r.y + r.h >= top && r.y <= bottom) next.add(id);
+  });
+  return next;
+}
+
+/**
+ * Mount penceresi: ekrandaki kartlar + alt/üst overscan içindeki kartlar
+ * mount edilir, uzak kartlar yer tutucu View'e düşer (unmount).
+ * ScrollView tüm listeyi mountladığında (n=120+) her kart hook, timer,
+ * resim ve bazen video oyuncu tutar; JS köprüsü ve bellek dolar, dokunma
+ * kuyruğu yetişemez. Pencere mount sayısını ~20'de tutar, kaydırma
+ * yüksekliği yer tutucularla korunur.
+ */
+export function useMountedIds(overscan: number = 1500) {
+  const [mountedIds, setMountedIds] = useState<Set<string> | null>(null);
+  const keyRef = useRef('');
+
+  const updateMounted = useCallback(
+    (
+      layouts: Map<string, CardLayout>,
+      offsetY: number,
+      viewportH: number,
+      margin: number = overscan
+    ) => {
+      const next = computeWindowIds(layouts, offsetY, viewportH, margin);
+      let key = '';
+      next.forEach((id) => {
+        key += id + ',';
+      });
+      if (key !== keyRef.current) {
+        keyRef.current = key;
+        setMountedIds(next);
+      }
+    },
+    [overscan]
+  );
+
+  return [mountedIds, updateMounted] as const;
+}

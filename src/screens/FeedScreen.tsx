@@ -21,9 +21,11 @@ import { pushViewer, pushSearchDetail } from '../navigation/rootNavigation';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl } from '../utils/media';
-import { useVisibleIds, CardLayout } from '../utils/gridVisibility';
+import { useVisibleIds, useMountedIds, CardLayout } from '../utils/gridVisibility';
 import { useSource } from '../context/SourceContext';
+import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { StorageService, FeedOrder } from '../services/storage';
+import { updateFreezeProbe } from '../utils/freezeProbe';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -80,7 +82,16 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   // RedGifs trend etiketleri: sabit trending akışına çeşitlilik katan satır
   const [trendingTags, setTrendingTags] = useState<RedGifsTrendingTag[]>([]);
   const isFocused = useIsFocused();
+  const mediaAllowed = useMediaPlaybackAllowed();
   const isRedGifs = activeSource.type === 'redgifs';
+  const feedKey = `${activeSource.id}|${feedOrderKey(feedOrder)}`;
+  const feedKeyRef = useRef(feedKey);
+  feedKeyRef.current = feedKey;
+  const requestIdRef = useRef(0);
+  const requestPendingRef = useRef(false);
+  const hasMoreRef = useRef(true);
+  const postsRef = useRef(posts);
+  useEffect(() => { updateFreezeProbe({ feedCount: posts.length }); }, [posts.length]);
 
   useEffect(() => {
     if (!isRedGifs) {
@@ -98,6 +109,9 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
   // Video kapaklar sadece ekrandayken oynar (kasılmayı önler)
   const [visibleIds, updateVisible] = useVisibleIds();
+  // Mount penceresi: uzak kartlar yer tutucuya düşer, oyuncu/timer/resim bırakır.
+  // null = henüz hesaplanmadı (ilk boya), tüm kartlar render edilir.
+  const [mountedIds, updateMounted] = useMountedIds();
 
   // Kapağa dönünce fav setini tazele — viewer'da favlanan anında rozetlenir
   useEffect(() => {
@@ -110,6 +124,11 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
   const loadPosts = useCallback(
     async (pageNum: number, isRefresh: boolean = false) => {
+      if (pageNum > 1 && (requestPendingRef.current || !hasMoreRef.current)) return;
+      const requestId = ++requestIdRef.current;
+      requestPendingRef.current = true;
+      if (pageNum === 1) hasMoreRef.current = true;
+      const isCurrent = () => requestId === requestIdRef.current && feedKey === feedKeyRef.current;
       try {
         if (pageNum === 1 && !isRefresh) setLoading(true);
         setError(null);
@@ -120,10 +139,12 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           timeRange: feedOrder.timeRange,
         };
         const newPosts = await booruApi.fetchPosts(pageNum, 24, '', feedFilter);
+        // Kaynak/sıra değişirken biten eski istek yeni listenin üstüne yazamaz.
+        if (!isCurrent()) return;
 
         // 429/boş sayfada sessizce dur: footer loader takılı kalmasın
         if (newPosts.length === 0 && pageNum > 1) {
-          setPage(pageNum - 1);
+          hasMoreRef.current = false;
           return;
         }
 
@@ -139,42 +160,42 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           }
         });
 
-        setPosts((prev) => {
-          if (pageNum === 1) return newPosts;
-          const existingIds = new Set(prev.map((p) => p.id));
-          const uniqueNew = newPosts.filter((p) => !existingIds.has(p.id));
-          // API aynı sayfayı döndürdüyse sayacı geri al
-          if (uniqueNew.length === 0) {
-            setPage(pageNum - 1);
-            return prev;
-          }
-          return [...prev, ...uniqueNew];
+        const previous = pageNum === 1 ? [] : postsRef.current;
+        const existingIds = new Set(previous.map((p) => p.id));
+        const uniqueNew = newPosts.filter((p) => {
+          if (existingIds.has(p.id)) return false;
+          existingIds.add(p.id);
+          return true;
         });
+        if (uniqueNew.length === 0) hasMoreRef.current = false;
+        postsRef.current = [...previous, ...uniqueNew];
+        setPosts(postsRef.current);
+        setPage(pageNum);
       } catch (err: any) {
+        if (!isCurrent()) return;
         console.warn('[FeedScreen] loadPosts error:', err);
-        // Yükleme hatasında sayacı geri al ki sonraki kaydırma aynı sayfayı denesin
-        if (pageNum > 1) {
-          setPage(pageNum - 1);
-        } else {
+        // Sayfa yalnız başarıda ilerler; hata sonrası aynı sayfa denenebilir.
+        if (pageNum === 1) {
           setError(err?.message || 'Görseller yüklenirken bir hata oluştu.');
         }
       } finally {
-        setLoading(false);
-        setLoadingMore(false);
-        setRefreshing(false);
+        if (isCurrent()) {
+          requestPendingRef.current = false;
+          setLoading(false);
+          setLoadingMore(false);
+          setRefreshing(false);
+        }
       }
     },
-    [feedOrder]
+    [feedOrder, feedKey]
   );
 
   const scrollViewRef = useRef<ScrollView>(null);
   const scrollOffsetRef = useRef(0);
-  const loadMoreGuardRef = useRef(0);
   // Kaynak veya sıra değiştiyse baştan yükle. Saklanan sıra async okunduğu
   // için "hazır" olmadan ilk istek atılmaz (aksi halde her açılışta Trend
   // yüklenip kullanıcının tercihi ikinci turda gelirdi).
   const [feedOrderReady, setFeedOrderReady] = useState(false);
-  const feedKey = `${activeSource.id}|${feedOrderKey(feedOrder)}`;
 
   useEffect(() => {
     StorageService.getFeedOrder().then((saved) => {
@@ -186,10 +207,13 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   useEffect(() => {
     if (!feedOrderReady) return;
     booruApi.resetFeedSeen();
+    postsRef.current = [];
+    setPosts([]);
     setPage(1);
     scrollOffsetRef.current = 0;
     scrollViewRef.current?.scrollTo({ y: 0, animated: false });
     loadPosts(1);
+    return () => { requestIdRef.current++; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [feedKey, feedOrderReady]);
 
@@ -210,18 +234,9 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   };
 
   const handleLoadMore = () => {
-    if (loadingMore || loading || refreshing) return;
-    // Stale page guard: rapid scroll ateşlerinde çift yükleme olmasın
-    loadMoreGuardRef.current += 1;
-    if (loadMoreGuardRef.current > 1) {
-      loadMoreGuardRef.current -= 1;
-      return;
-    }
+    if (!isFocused || loadingMore || loading || refreshing || requestPendingRef.current || !hasMoreRef.current) return;
     setLoadingMore(true);
-    setPage((p) => p + 1);
-    loadPosts(page + 1).finally(() => {
-      loadMoreGuardRef.current = 0;
-    });
+    void loadPosts(page + 1);
   };
 
   const isCloseToBottom = ({
@@ -263,15 +278,16 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   // Liste değişince ilk ekranın videoları hemen oynasın
   useEffect(() => {
     updateVisible(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT);
+    updateMounted(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [posts]);
 
-  const handleCardPress = (post: BooruPost) => {
+  const handleCardPress = useCallback((post: BooruPost) => {
     const idx = posts.findIndex((p) => p.id === post.id);
     if (idx >= 0) {
       pushViewer(posts, idx, [], undefined);
     }
-  };
+  }, [posts]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -434,6 +450,11 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
               nativeEvent.contentOffset.y,
               nativeEvent.layoutMeasurement.height
             );
+            updateMounted(
+              layoutMapRef.current,
+              nativeEvent.contentOffset.y,
+              nativeEvent.layoutMeasurement.height
+            );
             if (isCloseToBottom(nativeEvent)) {
               handleLoadMore();
             }
@@ -443,28 +464,44 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           {/* 2-Column Masonry Grid */}
           <View style={styles.gridContainer}>
             <View style={styles.column}>
-              {leftColumn.map((post) => (
-                <PostCard
-                  key={`feed-${post.id}`}
-                  post={post}
-                  onPress={handleCardPress}
-                  favoriteIds={favoriteIds}
-                  column="left"
-                  videoActive={visibleIds.has(post.id)}
-                />
-              ))}
+              {leftColumn.map((post) =>
+                mountedIds && !mountedIds.has(post.id) ? (
+                  <View
+                    key={`feed-${post.id}`}
+                    style={{ height: layoutMap.get(post.id)?.h ?? 320 }}
+                  />
+                ) : (
+                  <PostCard
+                    key={`feed-${post.id}`}
+                    post={post}
+                    onPress={handleCardPress}
+                    favoriteIds={favoriteIds}
+                    column="left"
+                    screenActive={isFocused && mediaAllowed}
+                    videoActive={visibleIds.has(post.id)}
+                  />
+                )
+              )}
             </View>
             <View style={styles.column}>
-              {rightColumn.map((post) => (
-                <PostCard
-                  key={`feed-${post.id}`}
-                  post={post}
-                  onPress={handleCardPress}
-                  favoriteIds={favoriteIds}
-                  column="right"
-                  videoActive={visibleIds.has(post.id)}
-                />
-              ))}
+              {rightColumn.map((post) =>
+                mountedIds && !mountedIds.has(post.id) ? (
+                  <View
+                    key={`feed-${post.id}`}
+                    style={{ height: layoutMap.get(post.id)?.h ?? 320 }}
+                  />
+                ) : (
+                  <PostCard
+                    key={`feed-${post.id}`}
+                    post={post}
+                    onPress={handleCardPress}
+                    favoriteIds={favoriteIds}
+                    column="right"
+                    screenActive={isFocused && mediaAllowed}
+                    videoActive={visibleIds.has(post.id)}
+                  />
+                )
+              )}
             </View>
           </View>
 

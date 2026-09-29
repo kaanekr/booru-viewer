@@ -39,6 +39,7 @@ import { Image } from 'expo-image';
 import { BooruSource } from '../types/booru';
 import { AVAILABLE_SOURCES } from '../services/sources';
 import { StorageService, ImageQuality } from '../services/storage';
+import { setGridPreviewsEnabled } from '../utils/gridPreviews';
 import { proxyService } from '../services/proxyService';
 import { PORNHUB_UA, PORNHUB_BASE, parsePornhubHtmlListing } from '../services/pornhub';
 import { XVIDEOS_UA, XVIDEOS_BASE, parseXVideosListing } from '../services/xvideos';
@@ -96,6 +97,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
   const [isTestingProxy, setIsTestingProxy] = useState(false);
   const [proxyTestResult, setProxyTestResult] = useState<string | null>(null);
   const [imageQuality, setImageQuality] = useState<ImageQuality>('auto');
+  const [gridPreviews, setGridPreviews] = useState(true);
   const [blacklistedTags, setBlacklistedTags] = useState<string[]>([]);
   const [gelbooruUserId, setGelbooruUserId] = useState('');
   const [gelbooruApiKey, setGelbooruApiKey] = useState('');
@@ -126,6 +128,10 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
       proxyService.setConfig(config.enabled, config.workerUrl);
     });
     StorageService.getImageQuality().then(setImageQuality);
+    StorageService.getGridPreviews().then((v) => {
+      setGridPreviews(v);
+      setGridPreviewsEnabled(v);
+    });
     StorageService.getGelbooruAuth().then((auth) => {
       setGelbooruUserId(auth.userId || '');
       setGelbooruApiKey(auth.apiKey || '');
@@ -187,6 +193,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
     Haptics.selectionAsync();
     setImageQuality(quality);
     await StorageService.setImageQuality(quality);
+  };
+
+  const handleToggleGridPreviews = async (val: boolean) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    setGridPreviews(val);
+    setGridPreviewsEnabled(val);
+    await StorageService.setGridPreviews(val);
   };
 
   const handleSaveGelbooruAuth = async () => {
@@ -533,6 +546,25 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
                 </TouchableOpacity>
               );
             })}
+          </View>
+
+          <View style={[styles.card, { marginTop: 12 }]}>
+            <View style={styles.switchRow}>
+              <View style={styles.switchInfo}>
+                <Text style={styles.switchTitle}>Video Önizlemeler</Text>
+                <Text style={styles.switchSub}>
+                  {gridPreviews
+                    ? 'Açık (kartlar kaydırırken otomatik oynar)'
+                    : 'Kapalı (yalnızca statik kapak, daha az veri ve yük)'}
+                </Text>
+              </View>
+              <Switch
+                value={gridPreviews}
+                onValueChange={handleToggleGridPreviews}
+                trackColor={{ false: '#2C2D35', true: GOLD_ACCENT }}
+                thumbColor="#FFFFFF"
+              />
+            </View>
           </View>
         </View>
 
