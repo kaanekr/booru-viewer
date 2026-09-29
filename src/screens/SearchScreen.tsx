@@ -49,7 +49,8 @@ import { pushViewer } from '../navigation/rootNavigation';
 import { SearchFilterModal } from '../components/SearchFilterModal';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl } from '../utils/media';
-import { useVisibleIds, CardLayout } from '../utils/gridVisibility';
+import { useVisibleIds, useMountedIds, CardLayout } from '../utils/gridVisibility';
+import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { useSource } from '../context/SourceContext';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -116,11 +117,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const [searchError, setSearchError] = useState<string | null>(null);
   // Video kapaklar sadece ekrandayken oynar (kasılmayı önler)
   const [visibleIds, updateVisible] = useVisibleIds();
+  // Mount penceresi: uzak sonuçlar yer tutucuya düşer (bkz. FeedScreen).
+  const [mountedIds, updateMounted] = useMountedIds();
   const searchOffsetRef = useRef(0);
   // RedGifs niches (kategoriler)
   const [niches, setNiches] = useState<RedGifsNiche[]>([]);
   const [nichesLoading, setNichesLoading] = useState(false);
   const isFocused = useIsFocused();
+  const mediaAllowed = useMediaPlaybackAllowed();
 
   // Kapağa dönünce fav setini tazele — viewer'da favlanan anında rozetlenir
   useEffect(() => {
@@ -579,6 +583,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   // Sonuç değişince ilk ekranın videoları hemen oynasın
   useEffect(() => {
     updateVisible(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT);
+    updateMounted(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [results]);
 
@@ -1098,6 +1103,11 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                   contentOffset.y,
                   layoutMeasurement.height
                 );
+                updateMounted(
+                  layoutMapRef.current,
+                  contentOffset.y,
+                  layoutMeasurement.height
+                );
                 if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 900) {
                   loadMoreResults();
                 }
@@ -1156,38 +1166,54 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               {/* 2-Column Masonry Grid */}
               <View style={styles.gridContainer}>
                 <View style={styles.column}>
-                  {leftColumn.map((post) => (
-                    <PostCard
-                      key={`search-${post.id}`}
-                      post={post}
-                      favoriteIds={favoriteIds}
-                      column="left"
-                      videoActive={visibleIds.has(post.id)}
-                      onPress={(p) => {
-                        const idx = results.findIndex((item) => item.id === p.id);
-                        if (idx >= 0) {
-                          pushViewer(results, idx, filterConfig.tags, filterConfig);
-                        }
-                      }}
-                    />
-                  ))}
+                  {leftColumn.map((post) =>
+                    mountedIds && !mountedIds.has(post.id) ? (
+                      <View
+                        key={`search-${post.id}`}
+                        style={{ height: layoutMap.get(post.id)?.h ?? 320 }}
+                      />
+                    ) : (
+                      <PostCard
+                        key={`search-${post.id}`}
+                        post={post}
+                        favoriteIds={favoriteIds}
+                        column="left"
+                        screenActive={isFocused && mediaAllowed && !isFilterModalOpen}
+                        videoActive={visibleIds.has(post.id)}
+                        onPress={(p) => {
+                          const idx = results.findIndex((item) => item.id === p.id);
+                          if (idx >= 0) {
+                            pushViewer(results, idx, filterConfig.tags, filterConfig);
+                          }
+                        }}
+                      />
+                    )
+                  )}
                 </View>
                 <View style={styles.column}>
-                  {rightColumn.map((post) => (
-                    <PostCard
-                      key={`search-${post.id}`}
-                      post={post}
-                      favoriteIds={favoriteIds}
-                      column="right"
-                      videoActive={visibleIds.has(post.id)}
-                      onPress={(p) => {
-                        const idx = results.findIndex((item) => item.id === p.id);
-                        if (idx >= 0) {
-                          pushViewer(results, idx, filterConfig.tags, filterConfig);
-                        }
-                      }}
-                    />
-                  ))}
+                  {rightColumn.map((post) =>
+                    mountedIds && !mountedIds.has(post.id) ? (
+                      <View
+                        key={`search-${post.id}`}
+                        style={{ height: layoutMap.get(post.id)?.h ?? 320 }}
+                      />
+                    ) : (
+                      <PostCard
+                        key={`search-${post.id}`}
+                        post={post}
+                        favoriteIds={favoriteIds}
+                        column="right"
+                        screenActive={isFocused && mediaAllowed && !isFilterModalOpen}
+                        videoActive={visibleIds.has(post.id)}
+                        onPress={(p) => {
+                          const idx = results.findIndex((item) => item.id === p.id);
+                          if (idx >= 0) {
+                            pushViewer(results, idx, filterConfig.tags, filterConfig);
+                          }
+                        }}
+                      />
+                    )
+                  )}
                 </View>
               </View>
 
