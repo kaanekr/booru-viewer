@@ -1079,6 +1079,8 @@ export class BooruApiService {
 
   private redGifsToken: string | null = null;
   private redGifsTokenExpiry: number = 0;
+  private redGifsTokenScope = '';
+  private redGifsTokenRequest: { scope: string; id: symbol; promise: Promise<string> } | null = null;
   /** Keşfet akışında gösterilmiş gönderi id'leri (sayfa çakışmalarını eler). */
   private feedSeenIds = new Set<string>();
 
@@ -1098,38 +1100,57 @@ export class BooruApiService {
     return await this.fetchWithRetry(url, { headers }, 0, 10000);
   }
 
-  private async getRedGifsToken(): Promise<string> {
+  private async getRedGifsToken(rejectedToken?: string): Promise<string> {
+    await proxyService.ensureInitialized();
+    const scope = proxyService.isEnabled() ? proxyService.getWorkerUrl() : 'direct';
+    // Geç gelen başka bir 401, daha yeni ve geçerli token'ı silemez.
+    if (rejectedToken && this.redGifsToken === rejectedToken && this.redGifsTokenScope === scope) {
+      this.redGifsToken = null;
+      this.redGifsTokenExpiry = 0;
+    }
     const now = Date.now();
-    if (this.redGifsToken && now < this.redGifsTokenExpiry) {
+    if (this.redGifsToken && this.redGifsTokenScope === scope && now < this.redGifsTokenExpiry) {
       return this.redGifsToken;
     }
-
-    // Kayıtlı token hâlâ geçerliyse auth turu hiç yapılmaz
-    const cached = await StorageService.getRedGifsTokenCache();
-    if (cached) {
-      this.redGifsToken = cached.token;
-      this.redGifsTokenExpiry = cached.expiry;
-      return cached.token;
+    if (this.redGifsTokenRequest?.scope === scope) {
+      return this.redGifsTokenRequest.promise;
     }
 
-    const authRes = await this.fetchRedGifsApi('https://api.redgifs.com/v2/auth/temporary');
-    if (!authRes.ok) {
-      const errText = await authRes.text().catch(() => '');
-      throw new Error(`RedGifs auth başarısız (${authRes.status}): ${errText}`);
+    // Token gönderen bağlantıya bağlıdır. Diske yazıp başka açılışta/IP'de
+    // kullanma: 401 sonrası aynı kayıt tekrar okunarak WrongSender döngüsü oluşuyordu.
+    const id = Symbol(scope);
+    const promise = (async () => {
+      const authRes = await this.fetchRedGifsApi('https://api.redgifs.com/v2/auth/temporary');
+      if (!authRes.ok) {
+        const errText = await authRes.text().catch(() => '');
+        throw new Error(`RedGifs auth başarısız (${authRes.status}): ${errText}`);
+      }
+      const data = await authRes.json();
+      if (typeof data?.token !== 'string' || !data.token) {
+        throw new Error('RedGifs token alınamadı (boş yanıt)');
+      }
+      if (this.redGifsTokenRequest?.id === id) {
+        this.redGifsToken = data.token;
+        this.redGifsTokenExpiry = Date.now() + 30 * 60 * 1000;
+        this.redGifsTokenScope = scope;
+      }
+      return data.token as string;
+    })();
+    this.redGifsTokenRequest = { scope, id, promise };
+    try {
+      return await promise;
+    } finally {
+      if (this.redGifsTokenRequest?.promise === promise) this.redGifsTokenRequest = null;
     }
+  }
 
-    const data = await authRes.json();
-    if (!data?.token) {
-      throw new Error('RedGifs token alınamadı (boş yanıt)');
-    }
-
-    const token = data.token as string;
-    this.redGifsToken = token;
-    // Mobil IP değişimlerine karşı TTL'i 30 dakikada tutuyoruz
-    this.redGifsTokenExpiry = now + 30 * 60 * 1000;
-    // Soğuk açılışta auth turu atılmasın
-    StorageService.setRedGifsTokenCache(token, this.redGifsTokenExpiry).catch(() => {});
-    return token;
+  private async fetchAuthenticatedRedGifs(url: string): Promise<Response> {
+    const token = await this.getRedGifsToken();
+    const response = await this.fetchRedGifsApi(url, token);
+    if (response.status !== 401) return response;
+    const refreshed = await this.getRedGifsToken(token);
+    // Bir yenileme hakkı: kalıcı ağ/proxy sorunu sonsuz auth döngüsü oluşturmaz.
+    return this.fetchRedGifsApi(url, refreshed);
   }
 
   /**
@@ -1188,14 +1209,6 @@ export class BooruApiService {
     // '_' ile yarım kalan çok kelimeli etikette ('big_t') 0 döner.
     const includeTags = includeTokens.map((t) => t.trim()).filter(Boolean).join(' ');
 
-    let authToken = '';
-    try {
-      authToken = await this.getRedGifsToken();
-    } catch (authErr: any) {
-      console.warn('[BooruAPI] RedGifs auth token error:', authErr);
-      throw new Error(`RedGifs kimlik doğrulama başarısız: ${authErr?.message || authErr}`);
-    }
-
     // Sıralama belirleme (RedGifs Order değerleri: trending, latest, score, top7, top28, top)
     let order = 'trending';
     if (filter?.sortBy === 'id') {
@@ -1237,15 +1250,7 @@ export class BooruApiService {
       ? `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}&tags=${encodeURIComponent(includeTags)}`
       : `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}`;
 
-    let response = await this.fetchRedGifsApi(searchUrl, authToken);
-
-    // 401 durumunda token'ı sıfırlayıp 1 kez yeniden dene
-    if (response.status === 401) {
-      this.redGifsToken = null;
-      this.redGifsTokenExpiry = 0;
-      authToken = await this.getRedGifsToken();
-      response = await this.fetchRedGifsApi(searchUrl, authToken);
-    }
+    const response = await this.fetchAuthenticatedRedGifs(searchUrl);
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
@@ -1353,14 +1358,7 @@ export class BooruApiService {
 
     const url = 'https://api.redgifs.com/v2/tags/trending';
     try {
-      let token = await this.getRedGifsToken();
-      let response = await this.fetchRedGifsApi(url, token);
-      if (response.status === 401) {
-        this.redGifsToken = null;
-        this.redGifsTokenExpiry = 0;
-        token = await this.getRedGifsToken();
-        response = await this.fetchRedGifsApi(url, token);
-      }
+      const response = await this.fetchAuthenticatedRedGifs(url);
       if (!response.ok) {
         // Satır boş kalır, akış çalışmaya devam eder
         console.warn(`[BooruAPI] RedGifs trending tags HTTP ${response.status}`);
@@ -1385,17 +1383,11 @@ export class BooruApiService {
    * Kütüphanede doğrudan karşılığı yok; /v2/niches uçları canlı doğrulandı.
    */
   async fetchRedGifsNiches(query?: string): Promise<RedGifsNiche[]> {
-    const token = await this.getRedGifsToken();
     const q = query?.trim();
     const url = q
       ? `https://api.redgifs.com/v2/niches?query=${encodeURIComponent(q)}`
       : 'https://api.redgifs.com/v2/niches/trending?page=1&count=20';
-    let response = await this.fetchRedGifsApi(url, token);
-    if (response.status === 401) {
-      this.redGifsToken = null;
-      this.redGifsTokenExpiry = 0;
-      response = await this.fetchRedGifsApi(url, await this.getRedGifsToken());
-    }
+    const response = await this.fetchAuthenticatedRedGifs(url);
     if (!response.ok) {
       // Sözleşme [] döndürür (niş yok gibi görünür); tanılama için logla
       console.warn(`[BooruAPI] RedGifs niches HTTP ${response.status}, boş liste dönülüyor`);
@@ -2101,10 +2093,9 @@ export class BooruApiService {
         return [];
       } else if (source.type === 'redgifs') {
         try {
-          const token = await this.getRedGifsToken();
           // Kütüphanedeki fetch_tag_suggestions karşılığı (canlı doğrulandı)
           const url = `https://api.redgifs.com/v2/search/suggest?query=${encodeURIComponent(query.trim())}`;
-          const response = await this.fetchRedGifsApi(url, token);
+          const response = await this.fetchAuthenticatedRedGifs(url);
           if (response.ok) {
             const data = await response.json();
             if (Array.isArray(data)) {

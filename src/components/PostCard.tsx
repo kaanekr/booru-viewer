@@ -4,13 +4,15 @@ import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEventListener } from 'expo';
 import * as Haptics from 'expo-haptics';
-import { Heart, Volume2 } from 'lucide-react-native';
+import { Heart, Play, Volume2 } from 'lucide-react-native';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isUnsupportedOnIOS } from '../utils/media';
 import { urlEndsWith } from '../utils/guards';
 import { proxyService } from '../services/proxyService';
 import { GridColumn, useLoadGate } from '../utils/imageLoadGate';
+import { trackGridPlayer, recordFreezeEvent } from '../utils/freezeProbe';
+import { useGridPreviewsEnabled } from '../utils/gridPreviews';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const COLUMN_WIDTH = (SCREEN_WIDTH - 36) / 2;
@@ -25,6 +27,8 @@ interface PostCardProps {
   column?: GridColumn;
   /** Görünürlük kancasından: true ise video kapak oynar, false ise durur */
   videoActive?: boolean;
+  /** Sekme/stack odağı kaybolunca dokunma önizlemesi dahil tüm medya durur. */
+  screenActive?: boolean;
 }
 
 const getRatingColor = (rating: string | undefined) => {
@@ -55,6 +59,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   favoriteIds,
   column,
   videoActive = false,
+  screenActive = true,
 }) => {
   // Kapı açılmadan resim mount olmaz: iki sütun bağlantı slotlarını adil paylaşır
   const [canLoad, releaseSlot] = useLoadGate(column);
@@ -101,11 +106,15 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   const [activeThumbIndex, setActiveThumbIndex] = React.useState(0);
 
   const previewVideoUrl = post.previewVideoUrl;
+  // Ayarlar'daki anahtar: kapalıysa kart statik kapakta kalır, oyuncu kurulmaz.
+  const previewsEnabled = useGridPreviewsEnabled();
   // iOS AVPlayer WebM açamaz (PH mediabook .webm): oynatıcıya verilirse
   // siyah kart + AVFoundation "Cannot Open" uyarıları. iOS'ta WebM
   // önizleme yok sayılır, kapak/slayt fallback'i devreye girer.
   const playablePreviewUrl =
-    previewVideoUrl && !(Platform.OS === 'ios' && isUnsupportedOnIOS(previewVideoUrl))
+    previewVideoUrl &&
+    !urlEndsWith(previewVideoUrl, '.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif') &&
+    !(Platform.OS === 'ios' && isUnsupportedOnIOS(previewVideoUrl))
       ? previewVideoUrl
       : undefined;
   const previewThumbs = post.previewThumbs;
@@ -113,7 +122,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
 
   const hasPreview = Boolean(playablePreviewUrl || (previewThumbs && previewThumbs.length > 0) || secondaryThumb);
   // Kart ekrandaysa (videoActive) veya kullanıcı karta dokunuyorsa önizleme aktif
-  const isPreviewActive = (videoActive && hasPreview) || touchPreviewActive;
+  const isPreviewActive = previewsEnabled && screenActive && ((videoActive && hasPreview) || touchPreviewActive);
 
   const touchTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const activePreviewTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -137,16 +146,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
       clearActivePreviewTimer();
     };
   }, []);
-  React.useEffect(() => {
-    if (!isPreviewActive || !previewThumbs || previewThumbs.length <= 1) {
-      setActiveThumbIndex(0);
-      return;
-    }
-    const timer = setInterval(() => {
-      setActiveThumbIndex((prev) => (prev + 1) % previewThumbs.length);
-    }, 500);
-    return () => clearInterval(timer);
-  }, [isPreviewActive, previewThumbs]);
+  // Slayt zamanlayıcısı aşağıda (video yolu belli olduktan sonra) kurulur.
 
   // XHamster liste HTML'i ekran-dışı kartlarda statik kapak vermez (skeleton);
   // tek kapak data-previewvideo MP4'tür. expo-image MP4 gösteremez → siyah kart.
@@ -169,107 +169,48 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   }, [hasRenderableImage, post.previewUrl, post.sampleUrl, post.originalUrl, isMp4Url]);
   const useVideoCover = Boolean(videoCoverRaw);
 
-  const videoCoverSource = React.useMemo(() => {
-    // Kaynak kapı açılana kadar null: ~50 oyuncu aynı anda yüklenmeye
-    // hücum edip ilk kartları boğuyordu. Kapı (6 slot) yüklemeyi seriye bağlar.
-    if (!videoCoverRaw || !canLoad) return null;
-    const url = getMediaUrl(videoCoverRaw);
-    if (!url) return null;
-    return { uri: url, headers: getMediaHeaders(url) };
-  }, [videoCoverRaw, canLoad]);
+  // Tek kart, tek oynatıcı. Gerçek önizleme videosu varsa o oynar
+  // (XHamster/XVideos akıcı MP4); slayt yalnız videosuz kartın fallback'i.
+  // useVideoPlayer(null) bile native oyuncu oluşturur; kanca yalnız aşağıdaki
+  // koşullu çocukta bulunur. Görünmeyen kart hiçbir oyuncu tutmaz.
+  const motionUrl = useVideoCover ? videoCoverRaw : playablePreviewUrl;
+  const [failedMotionUrl, setFailedMotionUrl] = React.useState<string>();
+  const handleMotionError = React.useCallback(() => {
+    setFailedMotionUrl(motionUrl);
+    releaseSlot();
+  }, [motionUrl, releaseSlot]);
+  const showVideo = previewsEnabled && canLoad && screenActive && (videoActive || touchPreviewActive)
+    && !!motionUrl && motionUrl !== failedMotionUrl;
 
-  const videoPlayer = useVideoPlayer(videoCoverSource, (p) => {
-    p.loop = true;
-    p.muted = true;
-    // Otomatik oynatma YOK: videoActive + readyToPlay birlikte karar verir.
-  });
-  // Kapak hazır olunca (ilk kare) kapı slotunu bırak (8sn emniyeti zaten var).
-  // Hazır olma anında kart görünürse oynat: ilk ekrandaki kartlarda play()
-  // çağrısı oyuncu yüklenmeden boşa gidebildiği için burada tekrar deniyoruz.
-  const videoActiveRef = React.useRef(videoActive);
-  videoActiveRef.current = videoActive;
-  const useVideoCoverRef = React.useRef(useVideoCover);
-  useVideoCoverRef.current = useVideoCover;
-  const videoSourceRef = React.useRef(videoCoverSource);
-  videoSourceRef.current = videoCoverSource;
-  const thumbRetryRef = React.useRef(0);
-  const thumbProxyTriedRef = React.useRef(false);
-  // Unmount sonrası ölü oyuncuya replace() çağrılmasın diye bekleyen
-  // retry zamanlayıcıları takip edilir ve temizlenir.
-  const thumbTimersRef = React.useRef<ReturnType<typeof setTimeout>[]>([]);
   React.useEffect(() => {
-    thumbRetryRef.current = 0;
-    thumbProxyTriedRef.current = false;
-  }, [videoCoverSource]);
+    // Ekran dışındaki video kapağı resim kuyruğunu 8 saniye tutmasın.
+    if (canLoad && useVideoCover && !showVideo) releaseSlot();
+  }, [canLoad, useVideoCover, showVideo, releaseSlot]);
+
   React.useEffect(() => {
-    const timers = thumbTimersRef.current;
-    return () => {
-      timers.forEach(clearTimeout);
-      timers.length = 0;
-    };
-  }, []);
-  useEventListener(videoPlayer, 'statusChange', (payload) => {
-    if (payload.status === 'readyToPlay') {
-      releaseSlot();
-      if (videoActiveRef.current && useVideoCoverRef.current) {
-        try {
-          videoPlayer.play();
-        } catch {}
-      }
-    } else if (payload.status === 'error') {
-      // Hücum anında düşen kapak: slotu bırak, gecikmeyle en fazla 2 kez dene
-      releaseSlot();
-      const src = videoSourceRef.current;
-      if (!src) return;
-      // TLS düşüşü (örn. api-cdn-mp4.rule34.xxx): ilk hatada tek seferlik
-      // seçici proxy dene, diğer kartlar doğrudan kalır.
-      if (!thumbProxyTriedRef.current && proxyService.hasWorker() && !proxyService.isProxiedUrl(src.uri)) {
-        thumbProxyTriedRef.current = true;
-        const raw = videoCoverRaw;
-        const viaProxy = raw ? proxyService.forceProxyUrl(raw) : '';
-        if (viaProxy) {
-          const proxiedSrc = { uri: getMediaUrl(viaProxy) || viaProxy, headers: getMediaHeaders(viaProxy) };
-          videoSourceRef.current = proxiedSrc as typeof src;
-          thumbTimersRef.current.push(
-            setTimeout(() => {
-              try {
-                videoPlayer.replace(proxiedSrc);
-              } catch {}
-            }, 800)
-          );
-          return;
-        }
-      }
-      if (thumbRetryRef.current < 2) {
-        thumbRetryRef.current += 1;
-        const delay = 1500 * thumbRetryRef.current;
-        thumbTimersRef.current.push(
-          setTimeout(() => {
-            try {
-              const current = videoSourceRef.current;
-              if (current) videoPlayer.replace(current);
-            } catch {}
-          }, delay)
-        );
-      }
+    if (!screenActive) {
+      clearTouchTimer();
+      clearActivePreviewTimer();
+      setTouchPreviewActive(false);
     }
-  });
-  useEventListener(videoPlayer, 'playingChange', (payload) => {
-    if (payload.isPlaying) releaseSlot();
-  });
+  }, [screenActive]);
 
-  // Sadece ekrandaki video kapak oynar: ebeveyn videoActive'i görünürlüğe
-  // göre sürer. Resim kartlarda etkisiz.
   React.useEffect(() => {
-    if (!useVideoCover) return;
-    try {
-      if (videoActive) {
-        videoPlayer.play();
-      } else {
-        videoPlayer.pause();
-      }
-    } catch {}
-  }, [videoActive, useVideoCover, videoPlayer]);
+    // Video yolu aktifken slayt zamanlayıcısı çalışmaz: hem gereksiz
+    // re-render (500ms'de bir) hem de kapak altında görünmez kare değişimi olurdu.
+    if (showVideo) {
+      setActiveThumbIndex(0);
+      return;
+    }
+    if (!isPreviewActive || !previewThumbs || previewThumbs.length <= 1) {
+      setActiveThumbIndex(0);
+      return;
+    }
+    const timer = setInterval(() => {
+      setActiveThumbIndex((prev) => (prev + 1) % previewThumbs.length);
+    }, 500);
+    return () => clearInterval(timer);
+  }, [isPreviewActive, previewThumbs, showVideo]);
 
   // onError ping-pong koruması: denenmiş URI'ler tekrar denenmez, en fazla
   // 3 farklı URI (direkt + fallback + proxy). primaryRaw değişince sıfırlanır.
@@ -326,7 +267,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
       delayPressIn={0}
       pressRetentionOffset={{ top: 200, bottom: 200, left: 100, right: 100 }}
       onPressIn={() => {
-        if (hasPreview) {
+        if (previewsEnabled && screenActive && (hasPreview || useVideoCover)) {
           clearTouchTimer();
           clearActivePreviewTimer();
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -342,16 +283,12 @@ const PostCardComponent: React.FC<PostCardProps> = ({
       }}
       style={[styles.container, { width: COLUMN_WIDTH, height: cardHeight }]}
     >
-      {canLoad && useVideoCover ? (
-        <VideoView
-          player={videoPlayer}
-          style={styles.image}
-          contentFit="cover"
-          nativeControls={false}
-          allowsPictureInPicture={false}
-          fullscreenOptions={{ enable: false }}
-        />
-      ) : canLoad && imageSource ? (
+      {useVideoCover && !showVideo && (
+        <View style={styles.videoPlaceholder} pointerEvents="none">
+          <Play size={30} color={Colors.dark.textMuted} />
+        </View>
+      )}
+      {canLoad && !useVideoCover && imageSource ? (
         <Image
           source={imageSource}
           style={styles.image}
@@ -366,8 +303,8 @@ const PostCardComponent: React.FC<PostCardProps> = ({
         />
       ) : null}
 
-      {isPreviewActive && playablePreviewUrl ? (
-        <CardVideoPreview url={playablePreviewUrl} />
+      {showVideo && motionUrl ? (
+        <CardVideoPreview key={motionUrl} url={motionUrl} onReady={releaseSlot} onError={handleMotionError} />
       ) : isPreviewActive && previewThumbs && previewThumbs.length > 0 ? (
         <Image
           source={{
@@ -443,7 +380,12 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   );
 };
 
-const CardVideoPreview: React.FC<{ url: string }> = React.memo(({ url }) => {
+const CardVideoPreview: React.FC<{
+  url: string;
+  onReady: () => void;
+  onError: () => void;
+}> = React.memo(({ url, onReady, onError }) => {
+  React.useEffect(() => trackGridPlayer(), []);
   const videoSource = React.useMemo(
     () => ({
       uri: getMediaUrl(url) || url,
@@ -455,24 +397,34 @@ const CardVideoPreview: React.FC<{ url: string }> = React.memo(({ url }) => {
   const player = useVideoPlayer(videoSource, (p) => {
     p.loop = true;
     p.muted = true;
+    p.audioMixingMode = 'mixWithOthers';
     p.play();
   });
 
   // TLS düşüşünde tek seferlik seçici proxy fallback'i (sadece bu önizleme).
   const proxyTriedRef = React.useRef(false);
+  const mountedRef = React.useRef(true);
   React.useEffect(() => {
-    proxyTriedRef.current = false;
-  }, [url]);
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   useEventListener(player, 'statusChange', (payload) => {
-    if (payload.status !== 'error' || proxyTriedRef.current) return;
+    if (payload.status === 'readyToPlay') onReady();
+    if (payload.status !== 'error') return;
+    recordFreezeEvent('grid-player-error');
     const currentUri = videoSource.uri;
-    if (!proxyService.hasWorker() || proxyService.isProxiedUrl(currentUri)) return;
+    if (proxyTriedRef.current || !proxyService.hasWorker() || proxyService.isProxiedUrl(currentUri)) {
+      onError();
+      return;
+    }
     proxyTriedRef.current = true;
     const viaProxy = proxyService.forceProxyUrl(url);
-    if (!viaProxy || viaProxy === currentUri) return;
-    try {
-      player.replace({ uri: getMediaUrl(viaProxy) || viaProxy, headers: getMediaHeaders(viaProxy) });
-    } catch {}
+    if (!viaProxy || viaProxy === currentUri) {
+      onError();
+      return;
+    }
+    player.replaceAsync({ uri: getMediaUrl(viaProxy) || viaProxy, headers: getMediaHeaders(viaProxy) })
+      .catch(() => { if (mountedRef.current) onError(); });
   });
 
   return (
@@ -481,6 +433,10 @@ const CardVideoPreview: React.FC<{ url: string }> = React.memo(({ url }) => {
       style={StyleSheet.absoluteFill}
       contentFit="cover"
       nativeControls={false}
+      allowsVideoFrameAnalysis={false}
+      allowsPictureInPicture={false}
+      fullscreenOptions={{ enable: false }}
+      pointerEvents="none"
     />
   );
 });
@@ -494,6 +450,7 @@ export const PostCard = React.memo<PostCardProps>(
     if (prevProps.onPress !== nextProps.onPress) return false;
     if (prevProps.column !== nextProps.column) return false;
     if ((prevProps.videoActive ?? false) !== (nextProps.videoActive ?? false)) return false;
+    if ((prevProps.screenActive ?? true) !== (nextProps.screenActive ?? true)) return false;
 
     const prevFav =
       (prevProps.showFavoriteBadge ?? true) &&
@@ -522,6 +479,11 @@ const styles = StyleSheet.create({
   image: {
     width: '100%',
     height: '100%',
+  },
+  videoPlaceholder: {
+    ...StyleSheet.absoluteFill,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   gradientOverlay: {
     position: 'absolute',
