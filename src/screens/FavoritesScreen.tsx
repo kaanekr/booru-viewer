@@ -44,6 +44,7 @@ import { BooruPost, TagCategory } from '../types/booru';
 import { asStrOr, lower, onlyStrings } from '../utils/guards';
 import { PostCard } from '../components/PostCard';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
+import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { pushViewer } from '../navigation/rootNavigation';
 import { Colors, TagColors } from '../theme/colors';
 
@@ -64,6 +65,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
   const hookNavigation = useNavigation<any>();
   const navigation = propNavigation ?? hookNavigation;
   const isFocused = useIsFocused();
+  const mediaAllowed = useMediaPlaybackAllowed();
   const effectiveIsActive = isActive ?? isFocused;
 
   const handleSelectTag = (tag: string, mode?: 'replace' | 'add' | 'exclude') => {
@@ -476,10 +478,11 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
       <PostCard
         post={item}
         onPress={handleHistoryCardPress}
+        screenActive={isFocused && mediaAllowed}
         favoriteIds={favoriteIdSet}
       />
     ),
-    [handleHistoryCardPress, favoriteIdSet]
+    [handleHistoryCardPress, favoriteIdSet, isFocused, mediaAllowed]
   );
 
   const historyKeyExtractor = useCallback(
@@ -1004,6 +1007,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 {leftColumn.map((post, index) => (
                   <PostCard
                     key={`fav-left-${post.id}-${index}`}
+                    screenActive={isFocused && mediaAllowed}
                     post={post}
                     onPress={handleCardPress}
                     showFavoriteBadge={false}
@@ -1014,6 +1018,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 {rightColumn.map((post, index) => (
                   <PostCard
                     key={`fav-right-${post.id}-${index}`}
+                    screenActive={isFocused && mediaAllowed}
                     post={post}
                     onPress={handleCardPress}
                     showFavoriteBadge={false}

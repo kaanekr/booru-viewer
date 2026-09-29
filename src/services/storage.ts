@@ -16,6 +16,7 @@ const SOURCE_KEY = '@booru_active_source_v2';
 const FAVORITE_TAGS_KEY = '@booru_favorite_tags_v2';
 const BLACKLISTED_TAGS_KEY = '@booru_blacklisted_tags_v2';
 const IMAGE_QUALITY_KEY = '@booru_image_quality_v2';
+const GRID_PREVIEWS_KEY = '@booru_grid_previews_v2';
 const RECENT_VIEWS_KEY = '@booru_recent_views_v2';
 const FEED_ORDER_KEY = '@booru_feed_order_v2';
 const REDGIFS_TOKEN_KEY = '@booru_redgifs_token_v2';
@@ -65,6 +66,29 @@ export const StorageService = {
       await AsyncStorage.setItem(IMAGE_QUALITY_KEY, JSON.stringify(quality));
     } catch (e) {
       console.warn('Error saving image quality:', e);
+    }
+  },
+
+  /**
+   * Izgara video önizlemeleri (otomatik oynayan kart kapakları).
+   * Kapalıysa kartlar statik kapak gösterir, oyuncu kurulmaz.
+   * Varsayılan açık.
+   */
+  async getGridPreviews(): Promise<boolean> {
+    try {
+      const data = await AsyncStorage.getItem(GRID_PREVIEWS_KEY);
+      if (data == null) return true;
+      return JSON.parse(data) !== false;
+    } catch {
+      return true;
+    }
+  },
+
+  async setGridPreviews(enabled: boolean): Promise<void> {
+    try {
+      await AsyncStorage.setItem(GRID_PREVIEWS_KEY, JSON.stringify(enabled));
+    } catch (e) {
+      console.warn('Error saving grid previews:', e);
     }
   },
   async getFavorites(): Promise<BooruPost[]> {

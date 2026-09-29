@@ -7,6 +7,7 @@ import { pushSearchDetail } from '../navigation/rootNavigation';
 import { ImageViewerModal } from '../components/ImageViewerModal';
 import { StorageService } from '../services/storage';
 import { isVideoPost } from '../utils/media';
+import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Viewer'>;
 
@@ -20,6 +21,7 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   const { postsKey, initialIndex, originTags, originFilter } = route.params;
   const posts = getCachedPosts(postsKey);
   const isFocused = useIsFocused();
+  const mediaAllowed = useMediaPlaybackAllowed();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
 
   useEffect(() => {
@@ -64,7 +66,7 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
       posts={posts}
       initialIndex={initialIndex}
       onIndexChange={setCurrentIndex}
-      suspended={!isFocused}
+      suspended={!isFocused || !mediaAllowed}
       dismissOnTagPress={false}
       onClose={() => {
         // Çift dokunma/kaydırma yarışında ikinci goBack boşa düşerdi.
