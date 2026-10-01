@@ -36,6 +36,7 @@ function loadFeed() {
     '../utils/gridVisibility': {
       useVisibleIds: () => [new Set(), () => {}],
       useFocusedCardId: () => [null, () => {}],
+      useFocusedCardIds: () => [new Set(), () => {}],
       // Testlerde pencere hesaplanmaz (null = ilk boya): tüm kartlar mount edilir.
       useMountedIds: () => [null, () => {}],
     },
@@ -174,4 +175,22 @@ test('single active player: computeFocusedCardId selects the single card closest
   const focused = computeFocusedCardId(layouts, 200, 800);
   assert.equal(focused, 'c1');
 });
+
+test('multi-player focus: computeFocusedCardIds selects top N cards closest to screen center', async () => {
+  const { computeFocusedCardIds } = loadVisibility();
+  const layouts = new Map();
+  // 2 columns: row 0 (c0, c1), row 1 (c2, c3), row 2 (c4, c5)
+  layouts.set('c0', { y: 0, h: 400 });
+  layouts.set('c1', { y: 0, h: 400 });
+  layouts.set('c2', { y: 400, h: 400 });
+  layouts.set('c3', { y: 400, h: 400 });
+  layouts.set('c4', { y: 800, h: 400 });
+  layouts.set('c5', { y: 800, h: 400 });
+
+  const focused = computeFocusedCardIds(layouts, 200, 800, undefined, 4);
+  assert.equal(focused.size, 4);
+  assert.ok(focused.has('c2'));
+  assert.ok(focused.has('c3'));
+});
+
 
