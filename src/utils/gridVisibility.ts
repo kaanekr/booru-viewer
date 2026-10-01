@@ -100,3 +100,74 @@ export function useMountedIds(overscan: number = 1500) {
 
   return [mountedIds, updateMounted] as const;
 }
+
+/**
+ * Tek odaklı kart hesabı:
+ * Ekranın dikey merkezine en yakın olan tek bir kartın id'sini döner.
+ */
+export function computeFocusedCardId(
+  layouts: Map<string, CardLayout>,
+  offsetY: number,
+  viewportH: number,
+  playableIds?: Set<string>
+): string | null {
+  const centerY = offsetY + viewportH / 2;
+  let closestId: string | null = null;
+  let minDistance = Infinity;
+
+  layouts.forEach((layout, id) => {
+    if (playableIds && !playableIds.has(id)) return;
+    // Kart ekran sınırları içinde olmalı
+    if (layout.y + layout.h >= offsetY && layout.y <= offsetY + viewportH) {
+      const cardCenterY = layout.y + layout.h / 2;
+      const dist = Math.abs(cardCenterY - centerY);
+      if (dist < minDistance) {
+        minDistance = dist;
+        closestId = id;
+      }
+    }
+  });
+
+  return closestId;
+}
+
+/**
+ * Tek odaklı kart takibi kancası (Instagram / Twitter tek oyuncu akış modeli):
+ * Ekrandaki kartlar arasından merkeze en yakın TEK kartı seçer.
+ * Kaydırma sırasında debounce (120ms) uygular; böylece hızlı kaydırma
+ * esnasında gereksiz video oyuncu açılıp kapanmaz (sıfır fırtına).
+ */
+export function useFocusedCardId(debounceMs: number = 120) {
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const updateFocused = useCallback(
+    (
+      layouts: Map<string, CardLayout>,
+      offsetY: number,
+      viewportH: number,
+      playableIds?: Set<string>,
+      immediate?: boolean
+    ) => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+
+      const compute = () => {
+        const next = computeFocusedCardId(layouts, offsetY, viewportH, playableIds);
+        setFocusedId(next);
+      };
+
+      if (immediate) {
+        compute();
+      } else {
+        timerRef.current = setTimeout(compute, debounceMs);
+      }
+    },
+    [debounceMs]
+  );
+
+  return [focusedId, updateFocused] as const;
+}
+

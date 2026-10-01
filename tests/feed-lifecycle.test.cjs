@@ -35,6 +35,7 @@ function loadFeed() {
     '../utils/media': { getMediaUrl: (url) => url, getMediaHeaders: () => ({}) },
     '../utils/gridVisibility': {
       useVisibleIds: () => [new Set(), () => {}],
+      useFocusedCardId: () => [null, () => {}],
       // Testlerde pencere hesaplanmaz (null = ilk boya): tüm kartlar mount edilir.
       useMountedIds: () => [null, () => {}],
     },
@@ -163,3 +164,14 @@ test('scrolling to bottom moves the mount window and releases top cards', async 
   assert.ok(bottom.has('c59'));
   assert.equal(bottom.has('c0'), false);
 });
+
+test('single active player: computeFocusedCardId selects the single card closest to screen center', async () => {
+  const { computeFocusedCardId } = loadVisibility();
+  const layouts = new Map();
+  layouts.set('c0', { y: 0, h: 400 });
+  layouts.set('c1', { y: 400, h: 400 });
+  layouts.set('c2', { y: 800, h: 400 });
+  const focused = computeFocusedCardId(layouts, 200, 800);
+  assert.equal(focused, 'c1');
+});
+

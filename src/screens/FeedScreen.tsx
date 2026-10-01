@@ -21,7 +21,7 @@ import { pushViewer, pushSearchDetail } from '../navigation/rootNavigation';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl } from '../utils/media';
-import { useVisibleIds, useMountedIds, CardLayout } from '../utils/gridVisibility';
+import { useVisibleIds, useMountedIds, useFocusedCardId, CardLayout } from '../utils/gridVisibility';
 import { useSource } from '../context/SourceContext';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { StorageService, FeedOrder } from '../services/storage';
@@ -109,6 +109,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
   // Video kapaklar sadece ekrandayken oynar (kasılmayı önler)
   const [visibleIds, updateVisible] = useVisibleIds();
+  // Tek odaklı oyuncu mimarisi: ekrandaki tek bir merkeze en yakın kart video açar
+  const [focusedId, updateFocused] = useFocusedCardId(120);
   // Mount penceresi: uzak kartlar yer tutucuya düşer, oyuncu/timer/resim bırakır.
   // null = henüz hesaplanmadı (ilk boya), tüm kartlar render edilir.
   const [mountedIds, updateMounted] = useMountedIds();
@@ -279,6 +281,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   useEffect(() => {
     updateVisible(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT);
     updateMounted(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT);
+    updateFocused(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT, undefined, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [posts]);
 
@@ -455,6 +458,11 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
               nativeEvent.contentOffset.y,
               nativeEvent.layoutMeasurement.height
             );
+            updateFocused(
+              layoutMapRef.current,
+              nativeEvent.contentOffset.y,
+              nativeEvent.layoutMeasurement.height
+            );
             if (isCloseToBottom(nativeEvent)) {
               handleLoadMore();
             }
@@ -478,7 +486,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                     favoriteIds={favoriteIds}
                     column="left"
                     screenActive={isFocused && mediaAllowed}
-                    videoActive={visibleIds.has(post.id)}
+                    videoActive={focusedId === post.id}
+                    onScreen={visibleIds.has(post.id)}
                   />
                 )
               )}
@@ -498,7 +507,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                     favoriteIds={favoriteIds}
                     column="right"
                     screenActive={isFocused && mediaAllowed}
-                    videoActive={visibleIds.has(post.id)}
+                    videoActive={focusedId === post.id}
+                    onScreen={visibleIds.has(post.id)}
                   />
                 )
               )}
