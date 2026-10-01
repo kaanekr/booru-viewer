@@ -48,8 +48,8 @@ import { TagChip } from '../components/TagChip';
 import { pushViewer } from '../navigation/rootNavigation';
 import { SearchFilterModal } from '../components/SearchFilterModal';
 import { Colors } from '../theme/colors';
-import { getMediaHeaders, getMediaUrl } from '../utils/media';
-import { useVisibleIds, useMountedIds, CardLayout } from '../utils/gridVisibility';
+import { getMediaHeaders, getMediaUrl, isVideoPost } from '../utils/media';
+import { useVisibleIds, useMountedIds, useFocusedCardIds, CardLayout } from '../utils/gridVisibility';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { useSource } from '../context/SourceContext';
 
@@ -117,6 +117,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const [searchError, setSearchError] = useState<string | null>(null);
   // Video kapaklar sadece ekrandayken oynar (kasılmayı önler)
   const [visibleIds, updateVisible] = useVisibleIds();
+  // Odaklı oyuncu mimarisi: merkeze en yakın 2-4 kart video açar
+  const [focusedIds, updateFocused] = useFocusedCardIds(80, 4);
   // Mount penceresi: uzak sonuçlar yer tutucuya düşer (bkz. FeedScreen).
   const [mountedIds, updateMounted] = useMountedIds();
   const searchOffsetRef = useRef(0);
@@ -580,10 +582,23 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const layoutMapRef = useRef(layoutMap);
   layoutMapRef.current = layoutMap;
 
+  const playableIds = React.useMemo(() => {
+    const set = new Set<string>();
+    results.forEach((p) => {
+      if (p.previewVideoUrl || isVideoPost(p) || p.fileExt === 'mp4' || p.fileExt === 'webm') {
+        set.add(p.id);
+      }
+    });
+    return set;
+  }, [results]);
+  const playableIdsRef = useRef(playableIds);
+  playableIdsRef.current = playableIds;
+
   // Sonuç değişince ilk ekranın videoları hemen oynasın
   useEffect(() => {
     updateVisible(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT);
     updateMounted(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT);
+    updateFocused(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT, playableIdsRef.current, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [results]);
 
@@ -1108,11 +1123,17 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                   contentOffset.y,
                   layoutMeasurement.height
                 );
+                updateFocused(
+                  layoutMapRef.current,
+                  contentOffset.y,
+                  layoutMeasurement.height,
+                  playableIdsRef.current
+                );
                 if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 900) {
                   loadMoreResults();
                 }
               }}
-              scrollEventThrottle={300}
+              scrollEventThrottle={150}
             >
               {/* Active Filter Info Banner */}
               <View style={styles.activeTagBanner}>
@@ -1179,7 +1200,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                         favoriteIds={favoriteIds}
                         column="left"
                         screenActive={isFocused && mediaAllowed && !isFilterModalOpen}
-                        videoActive={visibleIds.has(post.id)}
+                        videoActive={focusedIds.has(post.id)}
+                        onScreen={visibleIds.has(post.id)}
                         onPress={(p) => {
                           const idx = results.findIndex((item) => item.id === p.id);
                           if (idx >= 0) {
@@ -1204,7 +1226,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                         favoriteIds={favoriteIds}
                         column="right"
                         screenActive={isFocused && mediaAllowed && !isFilterModalOpen}
-                        videoActive={visibleIds.has(post.id)}
+                        videoActive={focusedIds.has(post.id)}
+                        onScreen={visibleIds.has(post.id)}
                         onPress={(p) => {
                           const idx = results.findIndex((item) => item.id === p.id);
                           if (idx >= 0) {
