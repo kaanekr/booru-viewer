@@ -202,20 +202,27 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
     let previewVideo = '';
     if (initData?.trailerFallbackUrl && typeof initData.trailerFallbackUrl === 'string') {
       previewVideo = initData.trailerFallbackUrl.replace(/\\/g, '');
-    } else if (initData?.trailerURL && typeof initData.trailerURL === 'string' && !initData.trailerURL.includes('.av1.')) {
+    } else if (initData?.trailerURL && typeof initData.trailerURL === 'string') {
       previewVideo = initData.trailerURL.replace(/\\/g, '');
     } else {
       const prevM = c.match(/data-previewvideo="([^"]+)"/i);
       const prevFallbackM = c.match(/data-previewvideo-fallback="([^"]+)"/i);
-      if (prevFallbackM && prevFallbackM[1].endsWith('.mp4') && !prevFallbackM[1].includes('.av1.')) {
-        previewVideo = prevFallbackM[1];
-      } else if (prevM && !prevM[1].includes('.av1.')) {
-        previewVideo = prevM[1];
-      } else if (prevFallbackM) {
+      if (prevFallbackM && prevFallbackM[1].endsWith('.mp4')) {
         previewVideo = prevFallbackM[1];
       } else if (prevM) {
         previewVideo = prevM[1];
       }
+    }
+    if (previewVideo) {
+      previewVideo = decodeEntities(decodeScriptValue(previewVideo));
+      if (previewVideo.startsWith('//')) {
+        previewVideo = `https:${previewVideo}`;
+      }
+      // XHamster CDN hem av1 hem h264 üretir. iOS AVPlayer av1 çözemez (hata + donma).
+      // av1 token'ını h264'e çevir; her zaman birebir karşılığı olan akıcı mp4 açılır.
+      previewVideo = previewVideo
+        .replace(/([._-])av1([._-])/gi, '$1h264$2')
+        .replace(/\.av1\./gi, '.h264.');
     }
 
     // Küçük resim: önce initials JSON (lazy kartlarda DOM'da img yok),
@@ -249,10 +256,14 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
         tag.match(/srcset="([^"]+)"/i) ||
         c.match(/<img[^>]*data-role="thumb-preview-img"[^>]*srcset="([^"]+)"/i);
       if (!thumbUrl && srcsetM) {
-        // srcset tek URL de olabilir ("...s(w:526,h:298),webp/...", içinde virgül var!),
-        // aday listesi de ("url1 526w, url2 1280w"). Virgüle göre bölme URL'yi
-        // parçalar; ilk whitespace token grid için doğru seçimdir.
-        thumbUrl = decodeEntities(srcsetM[1].trim().split(/\s+/)[0].replace(/,$/, ''));
+        const rawSrcset = decodeEntities(srcsetM[1]);
+        const tokens = rawSrcset.trim().split(/\s*,\s*(?=[^,]*\s+\d+w|\s*$)/);
+        const pairs = tokens.map((t) => {
+          const p = t.trim().split(/\s+/);
+          return { u: p[0], w: p[1] ? parseInt(p[1].replace('w', ''), 10) : 0 };
+        });
+        const good = pairs.find((p) => p.w >= 500) || pairs[pairs.length - 1];
+        thumbUrl = (good?.u || tokens[0].trim().split(/\s+/)[0]).replace(/,$/, '');
       }
       if (!thumbUrl || thumbUrl.startsWith('data:image/')) {
         thumbUrl = '';
@@ -267,6 +278,12 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
       const imgM = c.match(/<img[^>]*src="([^"]+)"/i);
       thumbUrl = imgM ? decodeEntities(imgM[1]) : '';
     }
+    }
+    if (thumbUrl) {
+      thumbUrl = decodeEntities(decodeScriptValue(thumbUrl));
+      if (thumbUrl.startsWith('//')) {
+        thumbUrl = `https:${thumbUrl}`;
+      }
     }
 
     // Başlık (initData öncelikli)
@@ -305,12 +322,6 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
     const viewsStr = viewsM ? viewsM[1].replace(/<[^>]+>/g, '').trim() : '';
     const score = parseViews(viewsStr);
 
-    const previewThumb = (initData?.previewThumbURL && typeof initData.previewThumbURL === 'string')
-      ? initData.previewThumbURL.trim()
-      : undefined;
-
-    const xhThumbs = [thumbUrl, previewThumb].filter(Boolean) as string[];
-
     seen.add(videoId);
     posts.push({
       id: `xh_${videoId}`,
@@ -319,8 +330,8 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
       title: title || undefined,
       previewUrl: thumbUrl || previewVideo,
       previewVideoUrl: previewVideo || undefined,
-      previewThumbUrl: previewThumb,
-      previewThumbs: xhThumbs.length > 1 ? xhThumbs : undefined,
+      previewThumbUrl: undefined,
+      previewThumbs: undefined,
       sampleUrl: previewVideo || thumbUrl,
       // Per-card data-previewvideo mp4: anlık sampleUrl/originalUrl fallback;
       // tam dosya viewer açılışında detaydan tembel (lazy) çözülür.

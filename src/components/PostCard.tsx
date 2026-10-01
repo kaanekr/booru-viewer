@@ -201,7 +201,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
 
   React.useEffect(() => {
     // Video yolu aktifken slayt zamanlayıcısı çalışmaz: hem gereksiz
-    // re-render (500ms'de bir) hem de kapak altında görünmez kare değişimi olurdu.
+    // re-render (1200ms'de bir) hem de kapak altında görünmez kare değişimi olurdu.
     if (showVideo) {
       setActiveThumbIndex(0);
       return;
@@ -212,7 +212,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     }
     const timer = setInterval(() => {
       setActiveThumbIndex((prev) => (prev + 1) % previewThumbs.length);
-    }, 500);
+    }, 1200);
     return () => clearInterval(timer);
   }, [isPreviewActive, previewThumbs, showVideo]);
 
@@ -317,7 +317,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
           }}
           style={StyleSheet.absoluteFill}
           contentFit="cover"
-          transition={100}
+          transition={250}
         />
       ) : isPreviewActive && secondaryThumb ? (
         <Image

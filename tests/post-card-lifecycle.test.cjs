@@ -74,7 +74,10 @@ function loadCard() {
       if (!(id in mocks)) throw new Error(`Unexpected dependency: ${id}`);
       return mocks[id];
     },
-    setTimeout, clearTimeout, setInterval, clearInterval,
+    setTimeout, clearTimeout, setInterval: (fn, ms) => {
+      stats.lastInterval = ms;
+      return setInterval(fn, ms);
+    }, clearInterval,
   }, { filename });
   return { PostCard: module.exports.PostCard, stats };
 }
@@ -139,6 +142,13 @@ test('frame slideshow is fallback only when no playable video exists', async () 
   await act(() => { root = create(React.createElement(PostCard, { post, onPress, videoActive: true })); });
   assert.equal(stats.created, 0);
   assert.equal(root.root.findAllByType('Image').length, 2);
+});
+
+test('frame slideshow advances with a relaxed 1200ms interval', async () => {
+  const { PostCard, stats } = loadCard();
+  const post = { ...imagePost(), previewThumbs: ['https://cdn.test/1.jpg', 'https://cdn.test/2.jpg'] };
+  await act(() => { root = create(React.createElement(PostCard, { post, onPress, onScreen: true, videoActive: false })); });
+  assert.equal(stats.lastInterval, 1200);
 });
 
 test('terminal video error releases player and scrolling back does not retry', async () => {

@@ -48,7 +48,7 @@ import { TagChip } from '../components/TagChip';
 import { pushViewer } from '../navigation/rootNavigation';
 import { SearchFilterModal } from '../components/SearchFilterModal';
 import { Colors } from '../theme/colors';
-import { getMediaHeaders, getMediaUrl } from '../utils/media';
+import { getMediaHeaders, getMediaUrl, isVideoPost } from '../utils/media';
 import { useVisibleIds, useMountedIds, useFocusedCardId, CardLayout } from '../utils/gridVisibility';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { useSource } from '../context/SourceContext';
@@ -582,11 +582,23 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const layoutMapRef = useRef(layoutMap);
   layoutMapRef.current = layoutMap;
 
+  const playableIds = React.useMemo(() => {
+    const set = new Set<string>();
+    results.forEach((p) => {
+      if (p.previewVideoUrl || isVideoPost(p) || p.fileExt === 'mp4' || p.fileExt === 'webm') {
+        set.add(p.id);
+      }
+    });
+    return set;
+  }, [results]);
+  const playableIdsRef = useRef(playableIds);
+  playableIdsRef.current = playableIds;
+
   // Sonuç değişince ilk ekranın videoları hemen oynasın
   useEffect(() => {
     updateVisible(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT);
     updateMounted(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT);
-    updateFocused(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT, undefined, true);
+    updateFocused(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT, playableIdsRef.current, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [results]);
 
@@ -1114,7 +1126,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                 updateFocused(
                   layoutMapRef.current,
                   contentOffset.y,
-                  layoutMeasurement.height
+                  layoutMeasurement.height,
+                  playableIdsRef.current
                 );
                 if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 900) {
                   loadMoreResults();
