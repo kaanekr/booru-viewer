@@ -1738,17 +1738,18 @@ export class BooruApiService {
       throw new Error(`Pornhub hatası: ${response.status} ${response.statusText}`);
     }
 
-    let data: any = null;
+    let rawVideos: PornhubVideo[] = [];
     try {
-      data = await response.json();
+      const data = await response.json();
+      if (data && Array.isArray(data.videos)) {
+        rawVideos = data.videos;
+      } else if (data && typeof data.code === 'string') {
+        console.warn(`[BooruAPI] Pornhub API warning (${data.code}): ${data.message || 'bilinmeyen hata'}`);
+      }
     } catch {
-      throw new Error('Pornhub yanıtı çözümlenemedi.');
+      console.warn('[BooruAPI] Pornhub Webmasters API JSON decode failed, fallback to HTML listing');
     }
-    // Hata gövdesi: {"code":"1001",...} (kütüphanenin check_response karşılığı)
-    if (data && typeof data.code === 'string') {
-      throw new Error(`Pornhub API hatası (${data.code}): ${data.message || 'bilinmeyen hata'}`);
-    }
-    const rawVideos: PornhubVideo[] = Array.isArray(data?.videos) ? data.videos : [];
+
     const posts: BooruPost[] = [];
 
     try {
@@ -1765,18 +1766,20 @@ export class BooruApiService {
         const html = await htmlRes.text();
         const htmlPosts = parsePornhubHtmlListing(html, source);
         if (htmlPosts.length > 0) {
-          const mbMap = new Map<string, string>();
+          const htmlMap = new Map<string, BooruPost>();
           for (const hp of htmlPosts) {
-            if (hp.previewVideoUrl) {
-              mbMap.set(hp.id.replace('ph_', ''), hp.previewVideoUrl);
-            }
+            htmlMap.set(hp.id.replace('ph_', ''), hp);
           }
           for (const v of rawVideos) {
             const post = mapPornhubVideoToPost(v, source);
             if (post) {
-              const mb = mbMap.get(v.video_id);
-              if (mb) {
-                post.previewVideoUrl = mb;
+              const hp = htmlMap.get(v.video_id);
+              if (hp) {
+                if (hp.previewVideoUrl) post.previewVideoUrl = hp.previewVideoUrl;
+                if ((!post.previewThumbs || post.previewThumbs.length <= 1) && hp.previewThumbs && hp.previewThumbs.length > 1) {
+                  post.previewThumbs = hp.previewThumbs;
+                  post.previewThumbUrl = hp.previewThumbUrl;
+                }
               }
               posts.push(post);
             }
@@ -1790,12 +1793,19 @@ export class BooruApiService {
         }
       }
     } catch (htmlErr) {
-      console.warn('[BooruAPI] Pornhub HTML mediabook enrichment failed, fallback to API:', htmlErr);
+      console.warn('[BooruAPI] Pornhub HTML enrichment failed, fallback to API:', htmlErr);
     }
 
     for (const v of rawVideos) {
       const post = mapPornhubVideoToPost(v, source);
       if (post) posts.push(post);
+    }
+    if (posts.length === 0) {
+      if (!k && page <= 1 && this.phDiscoverCacheValid()) {
+        console.warn('[BooruAPI] Pornhub returned 0 posts, serving cached discover');
+        return this.phDiscoverCache;
+      }
+      throw new Error('Pornhub videoları yüklenemedi. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.');
     }
     const out = await this.filterBlacklistedPosts(posts, includeBlacklisted);
     this.storePhDiscoverCache(out, k, page);

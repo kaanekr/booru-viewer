@@ -20,8 +20,8 @@ import { TagChip } from '../components/TagChip';
 import { pushViewer, pushSearchDetail } from '../navigation/rootNavigation';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
-import { getMediaHeaders, getMediaUrl } from '../utils/media';
-import { useVisibleIds, useMountedIds, CardLayout } from '../utils/gridVisibility';
+import { getMediaHeaders, getMediaUrl, isVideoPost } from '../utils/media';
+import { useVisibleIds, useMountedIds, useFocusedCardIds, CardLayout } from '../utils/gridVisibility';
 import { useSource } from '../context/SourceContext';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { StorageService, FeedOrder } from '../services/storage';
@@ -109,6 +109,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
   // Video kapaklar sadece ekrandayken oynar (kasılmayı önler)
   const [visibleIds, updateVisible] = useVisibleIds();
+  // Odaklı oyuncu mimarisi: ekrandaki merkeze en yakın 2-4 kart video açar
+  const [focusedIds, updateFocused] = useFocusedCardIds(80, 4);
   // Mount penceresi: uzak kartlar yer tutucuya düşer, oyuncu/timer/resim bırakır.
   // null = henüz hesaplanmadı (ilk boya), tüm kartlar render edilir.
   const [mountedIds, updateMounted] = useMountedIds();
@@ -275,10 +277,23 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const layoutMapRef = useRef(layoutMap);
   layoutMapRef.current = layoutMap;
 
+  const playableIds = React.useMemo(() => {
+    const set = new Set<string>();
+    posts.forEach((p) => {
+      if (p.previewVideoUrl || isVideoPost(p) || p.fileExt === 'mp4' || p.fileExt === 'webm') {
+        set.add(p.id);
+      }
+    });
+    return set;
+  }, [posts]);
+  const playableIdsRef = useRef(playableIds);
+  playableIdsRef.current = playableIds;
+
   // Liste değişince ilk ekranın videoları hemen oynasın
   useEffect(() => {
     updateVisible(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT);
     updateMounted(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT);
+    updateFocused(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT, playableIdsRef.current, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [posts]);
 
@@ -455,6 +470,12 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
               nativeEvent.contentOffset.y,
               nativeEvent.layoutMeasurement.height
             );
+            updateFocused(
+              layoutMapRef.current,
+              nativeEvent.contentOffset.y,
+              nativeEvent.layoutMeasurement.height,
+              playableIdsRef.current
+            );
             if (isCloseToBottom(nativeEvent)) {
               handleLoadMore();
             }
@@ -478,7 +499,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                     favoriteIds={favoriteIds}
                     column="left"
                     screenActive={isFocused && mediaAllowed}
-                    videoActive={visibleIds.has(post.id)}
+                    videoActive={focusedIds.has(post.id)}
+                    onScreen={visibleIds.has(post.id)}
                   />
                 )
               )}
@@ -498,7 +520,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                     favoriteIds={favoriteIds}
                     column="right"
                     screenActive={isFocused && mediaAllowed}
-                    videoActive={visibleIds.has(post.id)}
+                    videoActive={focusedIds.has(post.id)}
+                    onScreen={visibleIds.has(post.id)}
                   />
                 )
               )}
