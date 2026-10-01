@@ -32,7 +32,7 @@ function loadFeed() {
     '../navigation/rootNavigation': { pushViewer() {}, pushSearchDetail() {} },
     '@react-navigation/native': { useNavigation: () => ({}), useIsFocused: () => true },
     '../theme/colors': { Colors: { dark: {} } },
-    '../utils/media': { getMediaUrl: (url) => url, getMediaHeaders: () => ({}) },
+    '../utils/media': { getMediaUrl: (url) => url, getMediaHeaders: () => ({}), isVideoPost: (p) => !!p?.previewVideoUrl || p?.fileExt === 'mp4' },
     '../utils/gridVisibility': {
       useVisibleIds: () => [new Set(), () => {}],
       useFocusedCardId: () => [null, () => {}],

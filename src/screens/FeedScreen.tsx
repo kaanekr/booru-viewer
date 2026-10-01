@@ -20,7 +20,7 @@ import { TagChip } from '../components/TagChip';
 import { pushViewer, pushSearchDetail } from '../navigation/rootNavigation';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
-import { getMediaHeaders, getMediaUrl } from '../utils/media';
+import { getMediaHeaders, getMediaUrl, isVideoPost } from '../utils/media';
 import { useVisibleIds, useMountedIds, useFocusedCardId, CardLayout } from '../utils/gridVisibility';
 import { useSource } from '../context/SourceContext';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
@@ -277,11 +277,23 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const layoutMapRef = useRef(layoutMap);
   layoutMapRef.current = layoutMap;
 
+  const playableIds = React.useMemo(() => {
+    const set = new Set<string>();
+    posts.forEach((p) => {
+      if (p.previewVideoUrl || isVideoPost(p) || p.fileExt === 'mp4' || p.fileExt === 'webm') {
+        set.add(p.id);
+      }
+    });
+    return set;
+  }, [posts]);
+  const playableIdsRef = useRef(playableIds);
+  playableIdsRef.current = playableIds;
+
   // Liste değişince ilk ekranın videoları hemen oynasın
   useEffect(() => {
     updateVisible(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT);
     updateMounted(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT);
-    updateFocused(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT, undefined, true);
+    updateFocused(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT, playableIdsRef.current, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [posts]);
 
@@ -461,7 +473,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
             updateFocused(
               layoutMapRef.current,
               nativeEvent.contentOffset.y,
-              nativeEvent.layoutMeasurement.height
+              nativeEvent.layoutMeasurement.height,
+              playableIdsRef.current
             );
             if (isCloseToBottom(nativeEvent)) {
               handleLoadMore();

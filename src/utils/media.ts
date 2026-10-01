@@ -184,6 +184,11 @@ export function normalizeBooruMediaUrl(url: string | undefined): string {
     u = u.replace('http://', 'https://');
   }
 
+  // 2. XHamster CDN: iOS AVPlayer av1 çözemez; h264'e normalize et
+  if (u.includes('xhcdn') || u.includes('xhamster')) {
+    u = u.replace(/([._-])av1([._-])/gi, '$1h264$2').replace(/\.av1\./gi, '.h264.');
+  }
+
   return u;
 }
 
@@ -357,7 +362,12 @@ export function isUnsupportedOnIOS(url: string | undefined): boolean {
   if (!url) return false;
   if (Platform.OS !== 'ios') return false;
   const clean = url.split('?')[0].toLowerCase();
-  return clean.endsWith('.webm') || clean.includes('.webm');
+  return (
+    clean.endsWith('.webm') ||
+    clean.includes('.webm') ||
+    clean.includes('.av1.') ||
+    clean.endsWith('.av1')
+  );
 }
 
 /**
