@@ -401,6 +401,20 @@ const CardVideoPreview: React.FC<{
     p.play();
   });
 
+  // Zorunlu native imha: kart ekrandan çıktığında veya unmount olduğunda
+  // AVPlayer'ı ve com.apple.avplayer.systemMuteObserver thread'lerini anında serbest bırak.
+  // Hermes GC'nin keyfini beklemek 400+ oyuncu birikmesine ve 0x8BADF00D kilitlenmesine yol açıyordu.
+  React.useEffect(() => {
+    return () => {
+      try {
+        player.pause();
+        (player as { release?: () => void }).release?.();
+      } catch (e) {
+        // Zaten serbest bırakılmışsa sessizce geç
+      }
+    };
+  }, [player]);
+
   // TLS düşüşünde tek seferlik seçici proxy fallback'i (sadece bu önizleme).
   const proxyTriedRef = React.useRef(false);
   const mountedRef = React.useRef(true);
