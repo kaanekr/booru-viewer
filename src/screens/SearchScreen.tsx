@@ -49,7 +49,7 @@ import { pushViewer } from '../navigation/rootNavigation';
 import { SearchFilterModal } from '../components/SearchFilterModal';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isVideoPost } from '../utils/media';
-import { useVisibleIds, useMountedIds, useFocusedCardId, CardLayout } from '../utils/gridVisibility';
+import { useVisibleIds, useMountedIds, useFocusedCardIds, CardLayout } from '../utils/gridVisibility';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { useSource } from '../context/SourceContext';
 
@@ -117,8 +117,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const [searchError, setSearchError] = useState<string | null>(null);
   // Video kapaklar sadece ekrandayken oynar (kasılmayı önler)
   const [visibleIds, updateVisible] = useVisibleIds();
-  // Tek odaklı oyuncu mimarisi: merkeze en yakın tek kart video açar
-  const [focusedId, updateFocused] = useFocusedCardId(120);
+  // Odaklı oyuncu mimarisi: merkeze en yakın 2-4 kart video açar
+  const [focusedIds, updateFocused] = useFocusedCardIds(80, 4);
   // Mount penceresi: uzak sonuçlar yer tutucuya düşer (bkz. FeedScreen).
   const [mountedIds, updateMounted] = useMountedIds();
   const searchOffsetRef = useRef(0);
@@ -1200,7 +1200,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                         favoriteIds={favoriteIds}
                         column="left"
                         screenActive={isFocused && mediaAllowed && !isFilterModalOpen}
-                        videoActive={focusedId === post.id}
+                        videoActive={focusedIds.has(post.id)}
                         onScreen={visibleIds.has(post.id)}
                         onPress={(p) => {
                           const idx = results.findIndex((item) => item.id === p.id);
@@ -1226,7 +1226,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                         favoriteIds={favoriteIds}
                         column="right"
                         screenActive={isFocused && mediaAllowed && !isFilterModalOpen}
-                        videoActive={focusedId === post.id}
+                        videoActive={focusedIds.has(post.id)}
                         onScreen={visibleIds.has(post.id)}
                         onPress={(p) => {
                           const idx = results.findIndex((item) => item.id === p.id);

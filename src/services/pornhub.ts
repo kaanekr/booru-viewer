@@ -325,7 +325,7 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
   const posts: BooruPost[] = [];
   if (!html) return posts;
 
-  const chunks = html.split(/<li[^>]*data-video-vkey=["']/);
+  const chunks = html.split(/(?:<li|<div)[^>]*data-video-vkey=["']/);
   const seen = new Set<string>();
 
   for (let i = 1; i < chunks.length; i++) {
@@ -335,9 +335,11 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
     const vkey = c.slice(0, quoteEnd).trim();
     if (!vkey || seen.has(vkey)) continue;
 
-    // Önizleme videosu: önce yeni data-webm (mp4 flipbook), sonra eski data-mediabook
+    // Önizleme videosu: önce yeni data-webm (mp4 flipbook), sonra data-previewvideo, sonra data-mediabook
     const webmM =
-      c.match(/data-webm="([^"]+)"/i) || c.match(/data-mediabook="([^"]+)"/i);
+      c.match(/data-webm="([^"]+)"/i) ||
+      c.match(/data-previewvideo="([^"]+)"/i) ||
+      c.match(/data-mediabook="([^"]+)"/i);
     const previewVideo = webmM ? webmM[1].replace(/&amp;/g, '&').trim() : undefined;
 
     const pickAttr = (...names: string[]): string => {

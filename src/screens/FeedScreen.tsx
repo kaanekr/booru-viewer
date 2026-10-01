@@ -21,7 +21,7 @@ import { pushViewer, pushSearchDetail } from '../navigation/rootNavigation';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isVideoPost } from '../utils/media';
-import { useVisibleIds, useMountedIds, useFocusedCardId, CardLayout } from '../utils/gridVisibility';
+import { useVisibleIds, useMountedIds, useFocusedCardIds, CardLayout } from '../utils/gridVisibility';
 import { useSource } from '../context/SourceContext';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { StorageService, FeedOrder } from '../services/storage';
@@ -109,8 +109,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
   // Video kapaklar sadece ekrandayken oynar (kasılmayı önler)
   const [visibleIds, updateVisible] = useVisibleIds();
-  // Tek odaklı oyuncu mimarisi: ekrandaki tek bir merkeze en yakın kart video açar
-  const [focusedId, updateFocused] = useFocusedCardId(120);
+  // Odaklı oyuncu mimarisi: ekrandaki merkeze en yakın 2-4 kart video açar
+  const [focusedIds, updateFocused] = useFocusedCardIds(80, 4);
   // Mount penceresi: uzak kartlar yer tutucuya düşer, oyuncu/timer/resim bırakır.
   // null = henüz hesaplanmadı (ilk boya), tüm kartlar render edilir.
   const [mountedIds, updateMounted] = useMountedIds();
@@ -499,7 +499,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                     favoriteIds={favoriteIds}
                     column="left"
                     screenActive={isFocused && mediaAllowed}
-                    videoActive={focusedId === post.id}
+                    videoActive={focusedIds.has(post.id)}
                     onScreen={visibleIds.has(post.id)}
                   />
                 )
@@ -520,7 +520,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                     favoriteIds={favoriteIds}
                     column="right"
                     screenActive={isFocused && mediaAllowed}
-                    videoActive={focusedId === post.id}
+                    videoActive={focusedIds.has(post.id)}
                     onScreen={visibleIds.has(post.id)}
                   />
                 )
