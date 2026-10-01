@@ -145,6 +145,19 @@ export function mapPornhubVideoToPost(v: PornhubVideo, source: BooruSource): Boo
     }
   }
 
+  if (previewThumbs.length <= 1 && thumb) {
+    const numM = thumb.match(/^(.*[^\d])(\d+)\.(jpg|jpeg|webp)($|\?.*)/i);
+    if (numM) {
+      const prefix = numM[1];
+      const ext = numM[3];
+      const suffix = numM[4] || '';
+      previewThumbs.length = 0;
+      for (const n of [1, 3, 5, 7, 9, 11, 13, 15]) {
+        previewThumbs.push(`${prefix}${n}.${ext}${suffix}`);
+      }
+    }
+  }
+
   return {
     id: `ph_${v.video_id}`,
     sourceId: source.id,
@@ -300,6 +313,16 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
     if (durM) generalTags.push(`duration:${durM[1].trim()}`);
     if (viewsM) generalTags.push(`views:${viewsM[1].trim()}`);
 
+    let previewThumbs: string[] | undefined;
+    const thumbCandidate = poster || thumb;
+    const numM = thumbCandidate.match(/^(.*[^\d])(\d+)\.(jpg|jpeg|webp)($|\?.*)/i);
+    if (numM) {
+      const prefix = numM[1];
+      const ext = numM[3];
+      const suffix = numM[4] || '';
+      previewThumbs = [1, 3, 5, 7, 9, 11, 13, 15].map((n) => `${prefix}${n}.${ext}${suffix}`);
+    }
+
     seen.add(vkey);
     posts.push({
       id: `ph_${vkey}`,
@@ -308,7 +331,8 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
       title,
       previewUrl: thumb,
       previewVideoUrl: previewVideo,
-      previewThumbUrl: poster || undefined,
+      previewThumbUrl: previewThumbs ? previewThumbs[previewThumbs.length - 1] : (poster || undefined),
+      previewThumbs: previewThumbs && previewThumbs.length > 1 ? previewThumbs : undefined,
       sampleUrl: previewVideo || thumb,
       originalUrl: '',
       width: 640,

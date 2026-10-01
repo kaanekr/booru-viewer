@@ -73,3 +73,34 @@ test('normalizeBooruMediaUrl normalizes XHamster AV1 to H264', () => {
   assert.equal(isUnsupportedOnIOS('https://xhcdn.com/video.h264.mp4'), false);
   assert.equal(isUnsupportedOnIOS('https://cdn.test/video.webm'), true);
 });
+
+function loadPornhub() {
+  const filename = path.resolve(__dirname, '../src/services/pornhub.ts');
+  const js = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(js, {
+    module, exports: module.exports,
+    URLSearchParams,
+  }, { filename });
+  return module.exports;
+}
+
+test('parsePornhubHtmlListing generates 8 sequential previewThumbs from poster URL', () => {
+  const { parsePornhubHtmlListing } = loadPornhub();
+  const html = `
+    <li data-video-vkey="ph6012345">
+      <a class="thumbnailTitle" title="Pornhub Test Video">Pornhub Test Video</a>
+      <img class="videoThumb" src="https://ci.phncdn.com/videos/202401/10/446211231/thumbs_5/(m=eaAaGwObaaaa)(mh=...)1.jpg" data-poster="https://ci.phncdn.com/videos/202401/10/446211231/thumbs_5/(m=eaAaGwObaaaa)(mh=...)1.jpg" data-webm="https://ci.phncdn.com/videos/202401/10/446211231/preview.mp4" />
+    </li>
+  `;
+  const posts = parsePornhubHtmlListing(html, { id: 'pornhub', name: 'Pornhub', baseUrl: 'https://pornhub.com' });
+  assert.equal(posts.length, 1);
+  const p = posts[0];
+  assert.ok(p.previewThumbs && p.previewThumbs.length === 8);
+  assert.equal(p.previewThumbs[0], 'https://ci.phncdn.com/videos/202401/10/446211231/thumbs_5/(m=eaAaGwObaaaa)(mh=...)1.jpg');
+  assert.equal(p.previewThumbs[1], 'https://ci.phncdn.com/videos/202401/10/446211231/thumbs_5/(m=eaAaGwObaaaa)(mh=...)3.jpg');
+  assert.equal(p.previewThumbs[7], 'https://ci.phncdn.com/videos/202401/10/446211231/thumbs_5/(m=eaAaGwObaaaa)(mh=...)15.jpg');
+});
+
