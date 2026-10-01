@@ -104,3 +104,41 @@ test('parsePornhubHtmlListing generates 8 sequential previewThumbs from poster U
   assert.equal(p.previewThumbs[7], 'https://ci.phncdn.com/videos/202401/10/446211231/thumbs_5/(m=eaAaGwObaaaa)(mh=...)15.jpg');
 });
 
+test('generatePornhubSequentialThumbs handles _medium, medium, hashes, default, and webp', () => {
+  const { generatePornhubSequentialThumbs, mapPornhubVideoToPost } = loadPornhub();
+
+  // 1. _medium with hash prefix
+  const res1 = generatePornhubSequentialThumbs('https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/(m=eaSaaTBaaa)(mh=...)1_medium.jpg');
+  assert.ok(res1 && res1.length === 8);
+  assert.equal(res1[0], 'https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/(m=eaSaaTBaaa)(mh=...)1_medium.jpg');
+  assert.equal(res1[1], 'https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/(m=eaSaaTBaaa)(mh=...)3_medium.jpg');
+  assert.equal(res1[7], 'https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/(m=eaSaaTBaaa)(mh=...)15_medium.jpg');
+
+  // 2. simple 1_medium.jpg
+  const res2 = generatePornhubSequentialThumbs('https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/1_medium.jpg');
+  assert.ok(res2 && res2.length === 8);
+  assert.equal(res2[1], 'https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/3_medium.jpg');
+
+  // 3. medium.jpg (symlink/alias on CDN)
+  const res3 = generatePornhubSequentialThumbs('https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/medium.jpg');
+  assert.ok(res3 && res3.length === 8);
+  assert.equal(res3[0], 'https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/1_medium.jpg');
+  assert.equal(res3[1], 'https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/3_medium.jpg');
+
+  // 4. default.jpg
+  const res4 = generatePornhubSequentialThumbs('https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/default.jpg');
+  assert.ok(res4 && res4.length === 8);
+  assert.equal(res4[1], 'https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/3.jpg');
+
+  // 5. mapPornhubVideoToPost produces 8 previewThumbs
+  const post = mapPornhubVideoToPost({
+    video_id: 'ph12345',
+    title: 'Test',
+    thumb: 'https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/(m=eaSaaTBaaa)(mh=...)1_medium.jpg',
+  }, { id: 'pornhub', name: 'Pornhub', baseUrl: 'https://pornhub.com' });
+  assert.ok(post);
+  assert.ok(post.previewThumbs && post.previewThumbs.length === 8);
+  assert.equal(post.previewThumbs[1], 'https://ci.phncdn.com/videos/202305/01/430889241/thumbs_5/(m=eaSaaTBaaa)(mh=...)3_medium.jpg');
+});
+
+

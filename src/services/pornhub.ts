@@ -87,6 +87,73 @@ function parseDurationToSeconds(duration: string | undefined): number {
 }
 
 /**
+ * Pornhub kapak URL'sinden 8 sıralı zaman çizelgesi karesi (1..15) üretir.
+ * Pornhub CDN'i her video için baştan sona 16 adet sıralı kare üretir.
+ * URL'deki dosya adı (ör. "(m=...)(mh=...)1_medium.jpg", "(m=...)1.jpg",
+ * "default.jpg", "medium.jpg", "1_small.webp") çözülerek 1, 3, 5, 7, 9, 11, 13, 15
+ * kareleri türetilir.
+ */
+export function generatePornhubSequentialThumbs(url: string | undefined): string[] | undefined {
+  if (!url || typeof url !== 'string') return undefined;
+  const cleanUrl = url.replace(/&amp;/g, '&').trim();
+  if (!cleanUrl || cleanUrl.includes('blank.gif')) return undefined;
+
+  const queryIdx = cleanUrl.indexOf('?');
+  const urlWithoutQuery = queryIdx !== -1 ? cleanUrl.slice(0, queryIdx) : cleanUrl;
+  const suffix = queryIdx !== -1 ? cleanUrl.slice(queryIdx) : '';
+
+  const lastSlash = urlWithoutQuery.lastIndexOf('/');
+  if (lastSlash === -1) return undefined;
+
+  const dir = urlWithoutQuery.slice(0, lastSlash + 1);
+  const file = urlWithoutQuery.slice(lastSlash + 1);
+
+  const extMatch = file.match(/\.(jpg|jpeg|webp)$/i);
+  if (!extMatch) return undefined;
+  const ext = extMatch[1];
+  const fileBase = file.slice(0, -extMatch[0].length);
+
+  // 1. Dosya sonundaki boyut ekini ayır (_small, _medium, _large veya standalone small, medium, large)
+  let sizeSuffix = '';
+  let baseWithoutSize = fileBase;
+  const sizeMatch = fileBase.match(/^(.*?)(_small|_medium|_large)$/i);
+  if (sizeMatch) {
+    baseWithoutSize = sizeMatch[1];
+    sizeSuffix = sizeMatch[2];
+  } else {
+    const bareSizeMatch = fileBase.match(/^(.*?)(small|medium|large)$/i);
+    if (
+      bareSizeMatch &&
+      (bareSizeMatch[1] === '' ||
+        bareSizeMatch[1].endsWith(')') ||
+        bareSizeMatch[1].endsWith('/') ||
+        bareSizeMatch[1].endsWith('_'))
+    ) {
+      baseWithoutSize = bareSizeMatch[1];
+      sizeSuffix = `_${bareSizeMatch[2]}`;
+    }
+  }
+
+  // 2. Kalan kısım bir numara veya "default" / "original" içeriyor mu?
+  let filePrefix = '';
+  const numMatch = baseWithoutSize.match(/^(.*?)(\d+)$/);
+  if (numMatch) {
+    filePrefix = numMatch[1];
+  } else {
+    const defMatch = baseWithoutSize.match(/^(.*?)(default|original)$/i);
+    if (defMatch) {
+      filePrefix = defMatch[1];
+    } else {
+      filePrefix = baseWithoutSize;
+    }
+  }
+
+  // Pornhub CDN her video için baştan sona 16 adet sıralı kare üretir.
+  // 1, 3, 5, 7, 9, 11, 13, 15 kareleri (8 eşit aralıklı zaman çizelgesi karesi) döner.
+  return [1, 3, 5, 7, 9, 11, 13, 15].map((n) => `${dir}${filePrefix}${n}${sizeSuffix}.${ext}${suffix}`);
+}
+
+/**
  * Webmasters API videosunu BooruPost'a çevirir. Site tamamen videodur;
  * oynatılabilir URL süreli token'lıdır, liste anında gömülmez —
  * viewer açılışında detaydan taze çözülür (xvideos ile aynı desen).
@@ -131,29 +198,24 @@ export function mapPornhubVideoToPost(v: PornhubVideo, source: BooruSource): Boo
   }
 
   // Thumbs listesindeki farklı sahne kareleri
-  const previewThumbs: string[] = [];
-  if (Array.isArray(v.thumbs)) {
-    const seenSrcs = new Set<string>();
-    for (const t of v.thumbs) {
-      if (t && typeof t.src === 'string') {
-        const s = t.src.trim();
-        if (s && !seenSrcs.has(s)) {
-          seenSrcs.add(s);
-          previewThumbs.push(s);
+  let previewThumbs: string[] | undefined = generatePornhubSequentialThumbs(thumb);
+  if (!previewThumbs || previewThumbs.length <= 1) {
+    if (Array.isArray(v.thumbs) && v.thumbs.length > 0) {
+      const srcs = v.thumbs
+        .map((t) => (typeof t?.src === 'string' ? t.src.trim() : ''))
+        .filter(Boolean);
+      for (const s of srcs) {
+        const seq = generatePornhubSequentialThumbs(s);
+        if (seq && seq.length > 1) {
+          previewThumbs = seq;
+          break;
         }
       }
-    }
-  }
-
-  if (previewThumbs.length <= 1 && thumb) {
-    const numM = thumb.match(/^(.*[^\d])(\d+)\.(jpg|jpeg|webp)($|\?.*)/i);
-    if (numM) {
-      const prefix = numM[1];
-      const ext = numM[3];
-      const suffix = numM[4] || '';
-      previewThumbs.length = 0;
-      for (const n of [1, 3, 5, 7, 9, 11, 13, 15]) {
-        previewThumbs.push(`${prefix}${n}.${ext}${suffix}`);
+      if (!previewThumbs || previewThumbs.length <= 1) {
+        const filenames = new Set(srcs.map((s) => s.split('?')[0].split('/').pop()));
+        if (filenames.size > 1) {
+          previewThumbs = Array.from(new Set(srcs));
+        }
       }
     }
   }
@@ -164,8 +226,8 @@ export function mapPornhubVideoToPost(v: PornhubVideo, source: BooruSource): Boo
     sourceName: source.name,
     title: (v.title || '').trim() || undefined,
     previewUrl: thumb,
-    previewThumbUrl: previewThumbs[previewThumbs.length - 1],
-    previewThumbs: previewThumbs.length > 1 ? previewThumbs : undefined,
+    previewThumbUrl: previewThumbs ? previewThumbs[previewThumbs.length - 1] : undefined,
+    previewThumbs: previewThumbs && previewThumbs.length > 1 ? previewThumbs : undefined,
     sampleUrl: thumb,
     originalUrl: '',
     width,
@@ -278,17 +340,20 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
       c.match(/data-webm="([^"]+)"/i) || c.match(/data-mediabook="([^"]+)"/i);
     const previewVideo = webmM ? webmM[1].replace(/&amp;/g, '&').trim() : undefined;
 
-    const posterM = c.match(/data-poster="([^"]+)"/i);
-    const poster = posterM ? posterM[1].replace(/&amp;/g, '&').trim() : '';
+    const pickAttr = (...names: string[]): string => {
+      for (const name of names) {
+        const m = c.match(new RegExp(`${name}="([^"]+)"`, 'i'));
+        if (m) {
+          const val = m[1].replace(/&amp;/g, '&').trim();
+          if (val && !val.includes('blank.gif')) return val;
+        }
+      }
+      return '';
+    };
 
-    // Kapak görseli: data-path > poster > img src (blank.gif atlanır)
-    let thumb = '';
-    const pathM = c.match(/data-path="([^"]+)"/i);
-    if (pathM) {
-      const candidate = pathM[1].replace(/&amp;/g, '&').trim();
-      if (candidate && !candidate.includes('blank.gif')) thumb = candidate;
-    }
-    if (!thumb && poster && !poster.includes('blank.gif')) thumb = poster;
+    const poster = pickAttr('data-poster', 'data-thumb_url', 'data-mediumthumb');
+    let thumb = pickAttr('data-path', 'data-image', 'data-src');
+    if (!thumb && poster) thumb = poster;
     if (!thumb) {
       const imgM =
         c.match(/<img[^>]*class="[^"]*videoThumb[^"]*"[^>]*src="([^"]+)"/i) ||
@@ -313,15 +378,10 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
     if (durM) generalTags.push(`duration:${durM[1].trim()}`);
     if (viewsM) generalTags.push(`views:${viewsM[1].trim()}`);
 
-    let previewThumbs: string[] | undefined;
-    const thumbCandidate = poster || thumb;
-    const numM = thumbCandidate.match(/^(.*[^\d])(\d+)\.(jpg|jpeg|webp)($|\?.*)/i);
-    if (numM) {
-      const prefix = numM[1];
-      const ext = numM[3];
-      const suffix = numM[4] || '';
-      previewThumbs = [1, 3, 5, 7, 9, 11, 13, 15].map((n) => `${prefix}${n}.${ext}${suffix}`);
-    }
+    const previewThumbs =
+      generatePornhubSequentialThumbs(poster) ||
+      generatePornhubSequentialThumbs(thumb) ||
+      generatePornhubSequentialThumbs(pickAttr('data-thumb_url', 'data-mediumthumb', 'data-src', 'data-path', 'data-image'));
 
     seen.add(vkey);
     posts.push({
