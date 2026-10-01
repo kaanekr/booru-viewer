@@ -27,7 +27,12 @@ function loadCard() {
       useVideoPlayer: (_source, setup) => {
         const [player] = React.useState(() => {
           stats.created++;
-          const p = { play() {}, replaceAsync: async () => {} };
+          const p = {
+            play() {},
+            pause() { stats.paused = (stats.paused || 0) + 1; },
+            release() { stats.released = (stats.released || 0) + 1; },
+            replaceAsync: async () => {},
+          };
           setup(p);
           return p;
         });
@@ -105,6 +110,7 @@ test('MP4 cover and preview share one player; scrolling away releases it', async
   assert.equal(root.root.findAllByType('VideoView').length, 1);
   await act(() => root.update(React.createElement(PostCard, { ...props, videoActive: false })));
   assert.equal(stats.live.size, 0);
+  assert.equal(stats.released, 1);
 });
 
 test('tab blur releases a touched preview and does not resurrect it on focus', async () => {
