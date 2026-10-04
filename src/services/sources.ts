@@ -89,6 +89,7 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     type: 'sexcom',
     description: 'Popüler video platformu araması (önizlemeli klipler)',
     isSafeOnly: false,
+    hidden: true,
   },
   {
     id: 'hentaihaven',
