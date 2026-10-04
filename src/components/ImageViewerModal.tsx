@@ -65,7 +65,7 @@ import {
 } from '../utils/media';
 import { resolveSexComVideoUrls, selectSexComPlayable } from '../services/sexcom';
 import { resolveHentaiHavenEpisodeUrls, listHentaiHavenEpisodes, resolveHentaiHavenEpisodeUrl, HentaiHavenEpisode } from '../services/hentaihavens';
-import { resolveNHentaiPages } from '../services/nhentai';
+import { resolveNHentaiPages, resolveNHentaiGalleryDetail } from '../services/nhentai';
 
 const { width: DEFAULT_SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -883,17 +883,22 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     };
   }, [isActive, suspended, post.id, post.sourceLink, post.originalUrl, post.sampleUrl]);
 
-  // nhentai: manga albümünün tüm sayfalarını çözer (dikey okuyucu için)
+  // nhentai: manga albümünün tüm sayfalarını ve etiketlerini çözer (dikey okuyucu için)
   useEffect(() => {
     if (post.sourceId !== 'nhentai' || !isActive || suspended) return;
     let alive = true;
     const ctrl = new AbortController();
     setMangaLoading(true);
-    resolveNHentaiPages(post, ctrl.signal)
-      .then((pages) => {
+    resolveNHentaiGalleryDetail(post, ctrl.signal)
+      .then((detail) => {
         if (!alive) return;
-        if (pages && pages.length > 0) {
-          setMangaPages(pages);
+        if (detail.pages && detail.pages.length > 0) {
+          setMangaPages(detail.pages);
+        }
+        // Detaydan gelen kategorize etiketleri post'a aktar (Info paneli için)
+        if (detail.allTags && detail.allTags.length > 0) {
+          post.tags = detail.tags;
+          post.allTags = detail.allTags;
         }
       })
       .catch(() => {})

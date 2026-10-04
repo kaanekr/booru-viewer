@@ -47,6 +47,7 @@ import {
 import {
   buildNHentaiSearchCandidates,
   parseNHentaiListing,
+  searchNHentaiTags,
   NHENTAI_BASE,
   NHENTAI_UA,
 } from './nhentai';
@@ -2333,6 +2334,8 @@ export class BooruApiService {
       } else if (source.type === 'xvideos' || source.type === 'xhamster' || source.type === 'pornhub' || source.type === 'sexcom' || source.type === 'hentaihaven') {
         // Resmi öneri endpoint'i yok; istemci tarafı filtre yeterli
         return [];
+      } else if (source.type === 'nhentai') {
+        return await searchNHentaiTags(query, limit);
       } else if (source.type === 'gelbooru' || source.type === 'realbooru') {
         const url = `${source.baseUrl}/autocomplete.php?q=${encodeURIComponent(query.trim())}`;
         const response = await fetchBooru(url, {
