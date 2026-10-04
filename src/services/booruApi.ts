@@ -1732,7 +1732,11 @@ export class BooruApiService {
     let saw404 = false;
     for (const url of candidates) {
       try {
-        const timeoutMs = 12000;
+        // TEK ATIM: retry yok. Gerekçe: (1) search anonim limiti 10 req/dk —
+        // her retry bütçeyi yakıp 429/tarpit sarmalına sokar; (2) `query=*` +
+        // zaman aralıklı sıralama sunucuda zaten ~4s sürer, 20s tek timeout
+        // yavaş sorguya yeterli alanı tanır.
+        const timeoutMs = 20000;
         const response = await proxyService.fetchWithFallback(url, { headers }, timeoutMs);
         if (response.status === 404) {
           saw404 = true;
@@ -1749,20 +1753,7 @@ export class BooruApiService {
           console.log(`[BooruAPI] nhentai HTTP ${response.status}: ${url}`);
           continue;
         }
-        let text: string;
-        try {
-          text = await withHardTimeout(response.text(), timeoutMs, 'nhentai body api/v2');
-        } catch (bodyErr) {
-          // Gövde takılması çoğunlukla geçici soket sorunudur: aynı URL'yi
-          // taze bağlantıyla BİR kez daha dene.
-          console.log(`[BooruAPI] nhentai gövde takıldı, tekrar deneniyor: ${url}`);
-          const retryRes = await proxyService.fetchWithFallback(url, { headers }, timeoutMs);
-          if (!retryRes.ok) {
-            lastError = new Error(`HTTP ${retryRes.status} (retry)`);
-            continue;
-          }
-          text = await withHardTimeout(retryRes.text(), timeoutMs, 'nhentai body-retry api/v2');
-        }
+        const text = await withHardTimeout(response.text(), timeoutMs, 'nhentai body api/v2');
         if (/just a moment|challenge-platform|cf-challenge|attention required/i.test(text.slice(0, 4000))) {
           lastError = new Error('Cloudflare challenge sayfası alındı');
           console.warn(`[BooruAPI] nhentai bot-duvarı sayfası aldı (challenge): ${url}`);

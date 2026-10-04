@@ -66,6 +66,11 @@ test('buildNHentaiApiCandidates builds v2 feed, popular and search urls accordin
   const popular = nh.buildNHentaiApiCandidates(1, '', 'popular');
   assert.equal(popular[0], 'https://nhentai.net/api/v2/search?query=*&sort=popular&page=1');
 
+  // Günün popülerleri için hızlı adanmış endpoint (94ms; query=* sorgusundan katbekat hızlı)
+  const today = nh.buildNHentaiApiCandidates(1, '', 'popular-today');
+  assert.equal(today[0], 'https://nhentai.net/api/v2/galleries/popular');
+  assert.equal(nh.buildNHentaiApiCandidates(2, '', 'popular-today').length, 0);
+
   const popularPage3 = nh.buildNHentaiApiCandidates(3, '', 'popular-week');
   assert.equal(popularPage3[0], 'https://nhentai.net/api/v2/search?query=*&sort=popular-week&page=3');
 
