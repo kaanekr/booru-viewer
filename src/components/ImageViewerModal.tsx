@@ -407,6 +407,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
                 isActive={index === currentIndex}
                 suspended={suspended}
                 forceFull={previewOriginalId === item.id}
+                showControls={showControls}
                 screenWidth={windowWidth}
                 screenHeight={windowHeight}
                 onToggleControls={handleToggleControls}
@@ -547,6 +548,7 @@ interface PostPageItemProps {
   suspended?: boolean;
   /** Info modalındaki Original satırından tek seferlik full önizleme */
   forceFull?: boolean;
+  showControls?: boolean;
   screenWidth: number;
   screenHeight: number;
   onToggleControls: () => void;
@@ -562,6 +564,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   isActive,
   suspended = false,
   forceFull = false,
+  showControls = true,
   screenWidth,
   screenHeight,
   onToggleControls,
@@ -570,6 +573,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   onZoomChange,
   onScrubbingChange,
 }) => {
+  const insets = useSafeAreaInsets();
   const [sampleLoading, setSampleLoading] = useState(true);
   const [sampleLoaded, setSampleLoaded] = useState(false);
   const [fullLoading, setFullLoading] = useState(false);
@@ -592,6 +596,10 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const [hhEpisodes, setHhEpisodes] = useState<HentaiHavenEpisode[]>([]);
   const [hhActiveEp, setHhActiveEp] = useState<number | null>(null);
   const [hhEpLoading, setHhEpLoading] = useState(false);
+  const sortedHhEpisodes = useMemo(
+    () => [...hhEpisodes].sort((a, b) => a.ep - b.ep),
+    [hhEpisodes]
+  );
   const [isZoomed, setIsZoomed] = useState(false);
   const [hasUpgradedToFull, setHasUpgradedToFull] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -700,6 +708,11 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         resolveHentaiHavenEpisodeUrls(post, abortCtrl.signal)
           .then((files) => {
             if (!alive) return;
+            const eps = files?.episodes;
+            if (eps && eps.length > 0) {
+              setHhEpisodes(eps);
+              setHhActiveEp((cur) => cur ?? eps[0].ep);
+            }
             const playable = files?.hls || files?.mp4;
             if (playable) {
               console.log('[Viewer] hentaihaven bölüm çözüldü, oynatılıyor');
@@ -1090,61 +1103,63 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   };
 
   return (
-    <ScrollView
-      ref={scrollRef}
-      style={{ width: screenWidth, height: screenHeight }}
-      contentContainerStyle={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000', alignItems: 'center', justifyContent: 'center' }}
-      showsVerticalScrollIndicator={false}
-      showsHorizontalScrollIndicator={false}
-      maximumZoomScale={canPlayVideo ? 1 : maxZoom}
-      minimumZoomScale={1}
-      bouncesZoom={true}
-      centerContent={true}
-      scrollEventThrottle={16}
-      scrollEnabled={!isScrubbingActive}
-      onScroll={handleScroll}
-      onScrollEndDrag={handleScrollEndDrag}
-    >
-      <TouchableWithoutFeedback onPress={handleImageTouch}>
-        <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
-          {/* PH bot-duvarı yedeği çözüm sırasında loader'ın arkasında çalışır. */}
-          {pornhubWebviewOn &&
-          !resolvedOriginalUrl &&
-          isActive &&
-          !suspended &&
-          post.sourceId === 'pornhub' &&
-          post.sourceLink ? (
-            <PornhubWebViewResolver
-              pageUrl={post.sourceLink}
-              onResolve={(files) => {
-                if (files) {
-                  setResolvedOriginalUrl(files.high || files.hls || files.low || null);
-                } else {
-                  setVideoResolveFailed(true);
-                }
-                setPornhubWebviewOn(false);
-              }}
-            />
-          ) : null}
+    <View style={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000' }}>
+      <ScrollView
+        ref={scrollRef}
+        style={{ width: screenWidth, height: screenHeight }}
+        contentContainerStyle={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000', alignItems: 'center', justifyContent: 'center' }}
+        showsVerticalScrollIndicator={false}
+        showsHorizontalScrollIndicator={false}
+        maximumZoomScale={canPlayVideo ? 1 : maxZoom}
+        minimumZoomScale={1}
+        bouncesZoom={true}
+        centerContent={true}
+        scrollEventThrottle={16}
+        scrollEnabled={!isScrubbingActive}
+        onScroll={handleScroll}
+        onScrollEndDrag={handleScrollEndDrag}
+      >
+        <TouchableWithoutFeedback onPress={handleImageTouch}>
+          <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
+            {/* PH bot-duvarı yedeği çözüm sırasında loader'ın arkasında çalışır. */}
+            {pornhubWebviewOn &&
+            !resolvedOriginalUrl &&
+            isActive &&
+            !suspended &&
+            post.sourceId === 'pornhub' &&
+            post.sourceLink ? (
+              <PornhubWebViewResolver
+                pageUrl={post.sourceLink}
+                onResolve={(files) => {
+                  if (files) {
+                    setResolvedOriginalUrl(files.high || files.hls || files.low || null);
+                  } else {
+                    setVideoResolveFailed(true);
+                  }
+                  setPornhubWebviewOn(false);
+                }}
+              />
+            ) : null}
 
-          {isResolvingPornhubVideo ? (
-            <View style={styles.loaderCenter} pointerEvents="none">
-              <ActivityIndicator size="large" color={Colors.dark.primary} />
-            </View>
-          ) : canPlayVideo && isActive ? (
-            <VideoPlayerView
-              url={activeVideoUrl}
-              suspended={suspended}
-              screenWidth={screenWidth}
-              screenHeight={screenHeight}
-              onLoaded={() => setSampleLoading(false)}
-              onScrubbingChange={(scrubbing) => {
-                setIsScrubbingActive(scrubbing);
-                onScrubbingChange?.(scrubbing);
-              }}
-            />
-          ) : (
-            <>
+            {isResolvingPornhubVideo ? (
+              <View style={styles.loaderCenter} pointerEvents="none">
+                <ActivityIndicator size="large" color={Colors.dark.primary} />
+              </View>
+            ) : canPlayVideo && isActive ? (
+              <VideoPlayerView
+                url={activeVideoUrl}
+                suspended={suspended}
+                screenWidth={screenWidth}
+                screenHeight={screenHeight}
+                onLoaded={() => setSampleLoading(false)}
+                onToggleControls={onToggleControls}
+                onScrubbingChange={(scrubbing) => {
+                  setIsScrubbingActive(scrubbing);
+                  onScrubbingChange?.(scrubbing);
+                }}
+              />
+            ) : (
+              <>
               {/* Sample ilk yükleme göstergesi: sample henüz boyanmamışken ve full yüklenmemişken */}
               {sampleLoading && !sampleLoaded && !fullLoaded && (
                 <View style={styles.loaderCenter} pointerEvents="none">
@@ -1322,45 +1337,54 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                   </View>
                 </View>
               ) : null}
-              {/* HentaiHaven EP secici: serideki tum bolumler, alta yatay serit */}
-              {post.sourceId === 'hentaihaven' &&
-              isActive &&
-              !suspended &&
-              hhEpisodes.length > 1 ? (
-                <View style={styles.hhEpisodeBar} pointerEvents="box-none">
-                  <ScrollView
-                    horizontal
-                    showsHorizontalScrollIndicator={false}
-                    contentContainerStyle={styles.hhEpisodeRow}
-                  >
-                    {hhEpisodes.map((ep) => {
-                      const selected = ep.ep === (hhActiveEp ?? hhEpisodes[0].ep);
-                      return (
-                        <TouchableOpacity
-                          key={ep.url}
-                          style={[styles.hhEpisodeChip, selected && styles.hhEpisodeChipSelected]}
-                          activeOpacity={0.7}
-                          disabled={hhEpLoading}
-                          onPress={() => handleSelectHhEpisode(ep)}
-                        >
-                          <Text style={[styles.hhEpisodeText, selected && styles.hhEpisodeTextSelected]}>
-                            EP {ep.ep}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                    {hhEpLoading ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" style={{ marginLeft: 6 }} />
-                    ) : null}
-                  </ScrollView>
-                </View>
-              ) : null}
             </>
           )}
         </View>
       </TouchableWithoutFeedback>
     </ScrollView>
-  );
+
+    {/* HentaiHaven EP secici: ScrollView ve VideoPlayerView uzerinde yuzer */}
+    {post.sourceId === 'hentaihaven' &&
+    isActive &&
+    !suspended &&
+    hhEpisodes.length > 1 &&
+    showControls ? (
+      <View
+        style={[
+          styles.hhEpisodeBar,
+          { top: Math.max(insets.top + 60, 76) },
+        ]}
+        pointerEvents="box-none"
+      >
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.hhEpisodeRow}
+        >
+          {sortedHhEpisodes.map((ep) => {
+            const selected = ep.ep === (hhActiveEp ?? sortedHhEpisodes[0].ep);
+            return (
+              <TouchableOpacity
+                key={ep.url}
+                style={[styles.hhEpisodeChip, selected && styles.hhEpisodeChipSelected]}
+                activeOpacity={0.7}
+                disabled={hhEpLoading}
+                onPress={() => handleSelectHhEpisode(ep)}
+              >
+                <Text style={[styles.hhEpisodeText, selected && styles.hhEpisodeTextSelected]}>
+                  EP {ep.ep}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+          {hhEpLoading ? (
+            <ActivityIndicator size="small" color="#FFFFFF" style={{ marginLeft: 6 }} />
+          ) : null}
+        </ScrollView>
+      </View>
+    ) : null}
+  </View>
+);
 };
 
 // Helper to format playback time
@@ -1386,6 +1410,7 @@ interface VideoPlayerViewProps {
   screenWidth: number;
   screenHeight: number;
   onLoaded?: () => void;
+  onToggleControls?: () => void;
   onScrubbingChange?: (isScrubbing: boolean) => void;
 }
 
@@ -1396,6 +1421,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   screenWidth,
   screenHeight,
   onLoaded,
+  onToggleControls,
   onScrubbingChange,
 }) => {
   const insets = useSafeAreaInsets();
@@ -1590,6 +1616,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       if (next) resetHideTimer();
       return next;
     });
+    onToggleControls?.();
   };
 
   const handlePlayPause = () => {
@@ -2315,26 +2342,27 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  // HentaiHaven EP secici: video kontrollerinin ustunde yuzer yatay serit.
+  // HentaiHaven EP secici: ust barda baslik altinda yuzer yatay serit.
   hhEpisodeBar: {
     position: 'absolute',
     left: 12,
     right: 12,
-    bottom: 96,
-    zIndex: 20,
+    zIndex: 30,
+    elevation: 10,
   },
   hhEpisodeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
   },
   hhEpisodeChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 16,
-    backgroundColor: 'rgba(20, 22, 30, 0.85)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: 'rgba(20, 22, 30, 0.88)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
+    borderColor: 'rgba(255, 255, 255, 0.22)',
     marginRight: 8,
   },
   hhEpisodeChipSelected: {
@@ -2342,9 +2370,9 @@ const styles = StyleSheet.create({
     borderColor: Colors.dark.primary,
   },
   hhEpisodeText: {
-    color: '#FFFFFF',
+    color: '#E0E0E0',
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   hhEpisodeTextSelected: {
     color: '#FFFFFF',
