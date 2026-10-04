@@ -676,6 +676,12 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           .then((files) => {
             if (!alive) return;
             if (files) {
+              // Premium kilitli HLS anonim oynaticida acilmaz: sessizce
+              // onizlemeye dusulur (hata kartindan iyidir) ama sebebi
+              // Metro'da gorunur olsun.
+              if (files.premium) {
+                console.warn('[Viewer] sexcom premium video, önizleme oynuyor');
+              }
               setResolvedOriginalUrl(selectSexComPlayable(files));
             } else {
               // Detay cekilemedi (direkt + worker ikisi de olmedi): izleyici
