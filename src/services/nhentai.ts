@@ -57,26 +57,29 @@ export interface NHentaiGalleryDetail {
 
 /**
  * Arama ve Keşfet URL adayları (önce nhentai.xxx aynası, sonra net).
+ * sort: 'popular' -> en çok favorilenenler (mirror'un desteklediği tek sıralama).
  */
 export function buildNHentaiSearchCandidates(
   baseUrl: string,
   page: number,
-  keyword: string
+  keyword: string,
+  sort?: string
 ): string[] {
   const base = (baseUrl || NHENTAI_BASE).replace(/\/$/, '');
   const p = Math.max(1, page);
   const q = (keyword || '').trim();
+  const sortSuffix = sort === 'popular' ? '&sort=popular' : '';
   if (!q) {
     return [
-      p <= 1 ? `${base}/` : `${base}/?page=${p}`,
+      `${base}/?page=${p}${sortSuffix}`,
       `${base}/api/galleries/all?page=${p}`,
       `https://nhentai.net/api/galleries/all?page=${p}`,
     ];
   }
   const encoded = encodeURIComponent(q);
   return [
-    `${base}/search/?key=${encoded}&page=${p}`,
-    `${base}/search/?q=${encoded}&page=${p}`,
+    `${base}/search/?key=${encoded}&page=${p}${sortSuffix}`,
+    `${base}/search/?q=${encoded}&page=${p}${sortSuffix}`,
     `https://nhentai.net/api/galleries/search?query=${encoded}&page=${p}`,
   ];
 }

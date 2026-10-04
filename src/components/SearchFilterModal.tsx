@@ -90,6 +90,12 @@ const HENTAIHAVEN_SORT_OPTIONS: { label: string; value: SortOption; desc: string
   { label: '---', value: 'default', desc: 'Varsayılan (Trend)' },
 ];
 
+const NHENTAI_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
+  { label: '---', value: 'default', desc: 'Varsayılan (En Yeniler)' },
+  { label: 'En Yeniler', value: 'id', desc: 'Son Eklenen Mangalar' },
+  { label: 'Popüler', value: 'score', desc: 'En Çok Favorilenenler' },
+];
+
 const CUMST_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
   { label: 'Score (Popülerlik)', value: 'score', desc: 'En Çok Kaydedilenler / Liderlik' },
   { label: 'Id (En Yeniler)', value: 'id', desc: 'Son Eklenen Gönderiler' },
@@ -321,6 +327,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
     }
     if (activeSource.type === 'hentaihaven') {
       const opt = HENTAIHAVEN_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
+      return opt ? opt.label : '---';
+    }
+    if (activeSource.type === 'nhentai') {
+      const opt = NHENTAI_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
       return opt ? opt.label : '---';
     }
     if (activeSource.type === 'cumst') {
@@ -615,6 +625,8 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
               <View style={styles.rowDivider} />
 
               {/* Popularity Time Range / Leaderboard (Zaman Dilimi) */}
+              {/* nhentai mirror'ında zaman aralıklı popülerlik yok (yalnız tüm zamanlar) */}
+              {activeSource.type !== 'nhentai' ? (
               <TouchableOpacity
                 style={styles.rowItem}
                 onPress={() => setShowTimePicker(true)}
@@ -630,6 +642,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                   <ChevronRight size={18} color={Colors.dark.textMuted} />
                 </View>
               </TouchableOpacity>
+              ) : null}
 
               {activeSource.type === 'cumst' ? (
                 <>
@@ -687,7 +700,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                     </View>
                   </TouchableOpacity>
                 </>
-              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven' ? null : (
+              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven' || activeSource.type === 'nhentai' ? null : (
                 <>
                   <View style={styles.rowDivider} />
 
@@ -785,6 +798,8 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                       ? SEXCOM_SORT_OPTIONS
                       : activeSource.type === 'hentaihaven'
                       ? HENTAIHAVEN_SORT_OPTIONS
+                      : activeSource.type === 'nhentai'
+                      ? NHENTAI_SORT_OPTIONS
                       : activeSource.type === 'cumst'
                       ? CUMST_SORT_OPTIONS
                       : SORT_OPTIONS
