@@ -22,7 +22,14 @@ export const NHENTAI_API_THUMB_BASE = 'https://t1.nhentai.net';
 export const NHENTAI_API_IMAGE_BASE = 'https://i1.nhentai.net';
 
 export const NHENTAI_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+
+/** Resmi v2 API (nhentai.net/api/v2) JSON çağrıları için iOS UA (CF parmak izi uyumu). */
+export const NHENTAI_API_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
+
+/** Ayna tabanı (v2 API sonuç vermezse güvenlik ağı). */
+export const NHENTAI_MIRROR_BASE = 'https://nhentai.xxx';
 
 const EXT_MAP: Record<string, string> = {
   j: 'jpg',
@@ -609,7 +616,7 @@ export async function resolveNHentaiGalleryDetail(
   if (!rawId) return empty;
 
   const headers = {
-    'User-Agent': NHENTAI_UA,
+    'User-Agent': NHENTAI_API_UA,
     Referer: `${NHENTAI_BASE}/`,
     'Accept-Language': 'en-US,en;q=0.9',
     Accept: 'application/json,*/*',
@@ -788,7 +795,7 @@ export async function searchNHentaiApiTags(
       {
         method: 'POST',
         headers: {
-          'User-Agent': NHENTAI_UA,
+          'User-Agent': NHENTAI_API_UA,
           'Content-Type': 'application/json',
           Accept: 'application/json',
           'Accept-Encoding': 'gzip, deflate, identity',

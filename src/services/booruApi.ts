@@ -52,7 +52,9 @@ import {
   parseNHentaiV2Listing,
   searchNHentaiTags,
   NHENTAI_API_BASE,
+  NHENTAI_API_UA,
   NHENTAI_BASE,
+  NHENTAI_MIRROR_BASE,
   NHENTAI_UA,
 } from './nhentai';
 
@@ -1723,7 +1725,7 @@ export class BooruApiService {
     const apiCandidates = buildNHentaiApiCandidates(page, fullQuery, apiSort, filter?.minScore);
     const mirrorSort = filter?.sortBy === 'score' ? 'popular' : undefined;
     const mirrorCandidates = buildNHentaiSearchCandidates(
-      'https://nhentai.xxx',
+      NHENTAI_MIRROR_BASE,
       page,
       rawTokens.filter((t) => !t.startsWith('-')).join(' '),
       mirrorSort
@@ -1731,12 +1733,21 @@ export class BooruApiService {
     // Öncelik resmi v2 API'de; 429/timeout/ağ kopmasında ayna güvenlik ağı devreye girer
     const candidates = [...apiCandidates, ...mirrorCandidates];
 
-    const headers = {
-      'User-Agent': NHENTAI_UA,
+    // Hedef bazında header seti: ayna, cihazda çalıştığı kanıtlanmış son
+    // haline birebir döner (Windows UA + ayna Referer + sıkıştırma müdahalesi
+    // YOK); v2 API ise iOS UA + gzip kullanır.
+    const apiHeaders = {
+      'User-Agent': NHENTAI_API_UA,
       Referer: 'https://nhentai.net/',
       'Accept-Language': 'en-US,en;q=0.9',
-      Accept: 'application/json,text/html,*/*',
+      Accept: 'application/json,*/*',
       'Accept-Encoding': 'gzip, deflate, identity',
+    };
+    const mirrorHeaders = {
+      'User-Agent': NHENTAI_UA,
+      Referer: `${NHENTAI_MIRROR_BASE}/`,
+      'Accept-Language': 'en-US,en;q=0.9',
+      Accept: 'application/json,text/html,*/*',
     };
 
     let lastError: any = null;
@@ -1744,6 +1755,7 @@ export class BooruApiService {
     for (const url of candidates) {
       const isApi = url.startsWith(NHENTAI_API_BASE);
       const tag = isApi ? 'api/v2' : 'mirror';
+      const headers = isApi ? apiHeaders : mirrorHeaders;
       try {
         // v2 API sorguları (özellikle popular-month 650K galeri sunucu sıralaması)
         // mobilde 4-8s sürebilir; 12s zaman aşımı yeterli alan tanır.
