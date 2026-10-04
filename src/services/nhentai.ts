@@ -3,9 +3,12 @@ import { proxyService } from './proxyService';
 
 /**
  * nhentai entegrasyonu - saf yardimcilar.
- * nhentai.xxx (Cloudflare bloksuz taze ayna) ve nhentai.net kaynaklarini destekler.
- * - Gorsel CDN: i5.nhentaimg.com (xxx) ve i.nhentai.net (net).
- * - Thumbnail: thumb.jpg / 1t.jpg -> Full: 1.webp / 1.jpg.
+ * YALNIZCA resmi v2 API (https://nhentai.net/api/v2/docs, openapi.json projededir).
+ * Ayna (nhentai.xxx) ve HTML kazıma tamamen kaldırıldı.
+ * - Liste/detay: /api/v2/galleries, /api/v2/search, /api/v2/galleries/{id}
+ * - Etiket: POST /api/v2/tags/search
+ * - Görsel CDN: t1/i1.nhentai.net (API'nin verdiği path'ler kullanılır)
+ * - Skor = num_favorites (puan favori sayısına birebir eşlenir)
  */
 
 export const NHENTAI_BASE = 'https://nhentai.net';
@@ -14,7 +17,6 @@ export const NHENTAI_THUMB_BASE = 'https://t1.nhentai.net';
 
 /**
  * Resmi v2 API (https://nhentai.net/api/v2/docs).
- * Tamamen resmi REST JSON API üzerinden çalışır; ayna veya HTML kazıma kullanılmaz.
  * Puan/skor doğrudan `num_favorites` değerine eşlenir.
  */
 export const NHENTAI_API_BASE = 'https://nhentai.net/api/v2';
@@ -27,9 +29,6 @@ export const NHENTAI_UA =
 /** Resmi v2 API (nhentai.net/api/v2) JSON çağrıları için iOS UA (CF parmak izi uyumu). */
 export const NHENTAI_API_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
-
-/** Ayna tabanı (v2 API sonuç vermezse güvenlik ağı). */
-export const NHENTAI_MIRROR_BASE = 'https://nhentai.xxx';
 
 const EXT_MAP: Record<string, string> = {
   j: 'jpg',
@@ -69,35 +68,6 @@ export interface NHentaiGalleryDetail {
   coverUrl: string;
   tags: BooruTagGroups;
   allTags: string[];
-}
-
-/**
- * Arama ve Keşfet URL adayları (nhentai.xxx aynası).
- * Not: Eski v1 API endpoint'leri (/api/galleries/all) 404/403 döndürdüğü için
- * kaldırıldı; sadece çalışan ayna HTML sayfaları kullanılır (hızlı ve takılmasız).
- */
-export function buildNHentaiSearchCandidates(
-  baseUrl: string,
-  page: number,
-  keyword: string,
-  sort?: string
-): string[] {
-  const base = (baseUrl || NHENTAI_BASE).replace(/\/$/, '');
-  const p = Math.max(1, page);
-  const q = (keyword || '').trim();
-  const wantPopular = sort === 'popular';
-  if (!q) {
-    if (wantPopular) {
-      return [`${base}/search/?key=%20&page=${p}&sort=popular`];
-    }
-    return [p <= 1 ? `${base}/` : `${base}/?page=${p}`];
-  }
-  const encoded = encodeURIComponent(q);
-  const sortSuffix = wantPopular ? '&sort=popular' : '';
-  return [
-    `${base}/search/?key=${encoded}&page=${p}${sortSuffix}`,
-    `${base}/search/?q=${encoded}&page=${p}${sortSuffix}`,
-  ];
 }
 
 /**
@@ -200,10 +170,6 @@ export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): Bo
         favCount: favorites,
         tags: { artist: [], character: [], copyright: [], general: [], meta: ['manga'] },
         allTags: [],
-        // Dikkat: nhentai.net ve ayna (nhentai.xxx) FARKLI galeri id uzayına sahip
-        // (canlı doğrulandı: net 685915 "Furina Hu Tao", ayna 685915 "Houkago
-        // Dorei Club"). Bu yüzden v2 kaydının detayı daima net'ten çözülür;
-        // detay çözümü kaynağı sourceLink host'una bakar.
         sourceLink: `https://nhentai.net/g/${id}/`,
         fileExt: ext,
         createdAt: new Date().toISOString(),
@@ -218,190 +184,8 @@ export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): Bo
 }
 
 /**
- * JSON API cevabından galerileri ayrıştırır (varsa).
- */
-export function parseNHentaiJsonListing(
-  jsonText: string,
-  source: BooruSource
-): BooruPost[] {
-  const posts: BooruPost[] = [];
-  if (!jsonText) return posts;
-  try {
-    const data = typeof jsonText === 'string' ? JSON.parse(jsonText) : jsonText;
-    const items = Array.isArray(data?.result) ? data.result : Array.isArray(data) ? data : [];
-    const base = (source.baseUrl || NHENTAI_BASE).replace(/\/$/, '');
-
-    for (const item of items) {
-      if (!item || !item.id || !item.media_id) continue;
-      const id = String(item.id);
-      const mediaId = String(item.media_id);
-      const pageCount = Number(item.num_pages) || (Array.isArray(item.images?.pages) ? item.images.pages.length : 0);
-      const titleObj = item.title || {};
-      const title = decodeEntities(titleObj.pretty || titleObj.english || titleObj.japanese || ('Gallery #' + id)).trim();
-
-      const coverExt = extFromType(item.images?.cover?.t);
-      const thumbExt = extFromType(item.images?.thumbnail?.t);
-      const previewUrl = `${NHENTAI_THUMB_BASE}/galleries/${mediaId}/thumb.${thumbExt}`;
-      const coverUrl = `${NHENTAI_THUMB_BASE}/galleries/${mediaId}/cover.${coverExt}`;
-
-      const coverW = Number(item.images?.cover?.w) || 350;
-      const coverH = Number(item.images?.cover?.h) || 500;
-      const aspectRatio = coverW > 0 && coverH > 0 ? coverW / coverH : 2 / 3;
-
-      // Tag gruplama
-      const tagGroups: BooruTagGroups = {
-        artist: [],
-        character: [],
-        copyright: [],
-        general: [],
-        meta: ['manga'],
-      };
-      const allTags: string[] = [];
-
-      if (Array.isArray(item.tags)) {
-        for (const t of item.tags) {
-          if (!t || !t.name) continue;
-          const name = String(t.name).trim();
-          const type = String(t.type).toLowerCase();
-          allTags.push(name);
-          if (type === 'artist') tagGroups.artist.push(name);
-          else if (type === 'character') tagGroups.character.push(name);
-          else if (type === 'parody') tagGroups.copyright.push(name);
-          else if (type === 'tag') tagGroups.general.push(name);
-          else if (type === 'language' || type === 'category') tagGroups.meta.push(name);
-        }
-      }
-
-      posts.push({
-        id: 'nh_' + id,
-        sourceId: source.id,
-        sourceName: source.name,
-        title: title || undefined,
-        previewUrl,
-        sampleUrl: coverUrl,
-        originalUrl: `${NHENTAI_IMAGE_BASE}/galleries/${mediaId}/1.${coverExt}`,
-        width: coverW,
-        height: coverH,
-        aspectRatio,
-        rating: 'e',
-        score: Number(item.num_favorites) || 0,
-        favCount: Number(item.num_favorites) || 0,
-        tags: tagGroups,
-        allTags,
-        sourceLink: `${base}/g/${id}/`,
-        fileExt: coverExt,
-        createdAt: item.upload_date ? new Date(item.upload_date * 1000).toISOString() : new Date().toISOString(),
-        pageCount: pageCount > 0 ? pageCount : undefined,
-        mediaId,
-      });
-    }
-  } catch (e) {
-    console.warn('[nhentai] JSON parse hatası:', e);
-  }
-  return posts;
-}
-
-/**
- * HTML listesinden galerileri ayrıştırır (nhentai.xxx ve nhentai.net uyumlu).
- */
-export function parseNHentaiHtmlListing(
-  html: string,
-  source: BooruSource
-): BooruPost[] {
-  const posts: BooruPost[] = [];
-  if (!html) return posts;
-  const base = (source.baseUrl || NHENTAI_BASE).replace(/\/$/, '');
-  const seen = new Set<string>();
-
-  // Split by gallery_item (xxx) or gallery (net)
-  const chunks = html.split(/<div class="gallery(?:_item)?"/i);
-  for (let i = 1; i < chunks.length; i++) {
-    const c = chunks[i];
-
-    const idM = c.match(/href="\/g\/(\d+)\/"/);
-    if (!idM) continue;
-    const id = idM[1];
-    if (seen.has(id)) continue;
-    seen.add(id);
-
-    // data-src öncelikli (lazy-load), src yedek (SVG hariç)
-    const dataSrcM = c.match(/data-src="([^"]+)"/i);
-    const srcM = c.match(/src="([^"]+)"/i);
-    let rawImg = (dataSrcM ? dataSrcM[1] : (srcM && !srcM[1].startsWith('data:') ? srcM[1] : ''))?.trim() || '';
-    if (!rawImg) continue;
-    if (rawImg.startsWith('//')) rawImg = 'https:' + rawImg;
-
-    // media_id / folder path çıkar:
-    // https://i5.nhentaimg.com/018/zd5ew9kgoa/thumb.jpg -> 018/zd5ew9kgoa
-    // https://t.nhentai.net/galleries/1556093/thumb.jpg -> 1556093
-    const mediaIdM =
-      rawImg.match(/\/galleries\/(\d+)\//) ||
-      rawImg.match(/\/(?:018|galleries)\/([a-z0-9_-]+)\//i);
-    const mediaId = mediaIdM ? mediaIdM[1] : '';
-
-    const titleM =
-      c.match(/title="([^"]+)"/i) ||
-      c.match(/<div class="caption">([\s\S]*?)<\/div>/i);
-    const title = titleM
-      ? decodeEntities(titleM[1]).replace(/<[^>]+>/g, '').trim()
-      : `Gallery #${id}`;
-
-    const extM = rawImg.match(/\.(jpg|png|webp|gif)(\?|$)/i);
-    const ext = extM ? extM[1].toLowerCase() : 'jpg';
-
-    // Kapak resmi
-    const coverUrl = rawImg.replace(/\/thumb\.(jpg|png|webp|gif)/i, '/cover.$1');
-
-    posts.push({
-      id: 'nh_' + id,
-      sourceId: source.id,
-      sourceName: source.name,
-      title: title || undefined,
-      previewUrl: rawImg,
-      sampleUrl: coverUrl,
-      originalUrl: coverUrl,
-      width: 350,
-      height: 500,
-      aspectRatio: 2 / 3,
-      rating: 'e',
-      score: 0,
-      favCount: 0,
-      tags: {
-        artist: [],
-        character: [],
-        copyright: [],
-        general: [],
-        meta: ['manga'],
-      },
-      allTags: [],
-      sourceLink: `${base}/g/${id}/`,
-      fileExt: ext,
-      createdAt: new Date().toISOString(),
-      mediaId: mediaId || undefined,
-    });
-  }
-
-  return posts;
-}
-
-/**
- * Hem JSON hem HTML listesini tek fonksiyonla ayrıştırır.
- */
-export function parseNHentaiListing(
-  raw: string,
-  source: BooruSource
-): BooruPost[] {
-  if (!raw) return [];
-  const trimmed = raw.trim();
-  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
-    const jsonPosts = parseNHentaiJsonListing(trimmed, source);
-    if (jsonPosts.length > 0) return jsonPosts;
-  }
-  return parseNHentaiHtmlListing(raw, source);
-}
-
-/**
- * Galeri detay sayfasından (HTML veya JSON) manganın TÜM sayfa URL'lerini çıkarır.
+ * Galeri detay JSON'undan (v2: /api/v2/galleries/{id}) manganın TÜM sayfa
+ * URL'lerini çıkarır. v1 JSON (`images.pages`) geriye uyumlu olarak desteklenir.
  */
 export function parseNHentaiGalleryPages(
   raw: string,
@@ -409,156 +193,39 @@ export function parseNHentaiGalleryPages(
 ): string[] {
   if (!raw) return [];
   const trimmed = raw.trim();
+  if (!trimmed.startsWith('{')) return [];
 
-  // 1) JSON yanıtı: v1 (/api/gallery/{id}) ve v2 (/api/v2/galleries/{id})
-  if (trimmed.startsWith('{')) {
-    try {
-      const data = JSON.parse(trimmed);
-      // v2: pages: [{number, path, width, height}]
-      if (Array.isArray(data?.pages)) {
-        const v2Pages = data.pages
-          .map((p: any) => {
-            const path = typeof p === 'string' ? p : p?.path;
-            if (!path) return '';
-            const n = typeof p === 'object' && p?.number ? p.number : 0;
-            const abs = String(path).startsWith('http')
-              ? String(path)
-              : `${NHENTAI_API_IMAGE_BASE}/${String(path).replace(/^\//, '')}`;
-            return n ? `${n}|${abs}` : '';
-          })
-          .filter(Boolean)
-          .sort((a: string, b: string) => Number(a.split('|')[0]) - Number(b.split('|')[0]))
-          .map((s: string) => s.slice(s.indexOf('|') + 1));
-        if (v2Pages.length > 0) return v2Pages;
-      }
-      // v1
-      const mediaId = data?.media_id;
-      const pages = data?.images?.pages;
-      if (mediaId && Array.isArray(pages)) {
-        return pages.map((p, idx) => {
-          const ext = extFromType(p?.t);
-          return `${NHENTAI_IMAGE_BASE}/galleries/${mediaId}/${idx + 1}.${ext}`;
-        });
-      }
-    } catch {}
-  }
-
-  // 2) HTML yanıtı:
-  // A) nhentaimg.com (nhentai.xxx aynası):
-  // nhentai.xxx sitede yalnız ilk 10 küçük kareyi HTML'e yazar, ama GERÇEK
-  // toplam sayfa sayısı <span class="tag_name pages">50</span> veya id="load_pages" içinde yer alır.
-  // Prefix ve toplam sayfa sayısı varsa tüm sayfaları (1..N) doğrudan üretiriz.
-  const prefixM = raw.match(/https?:\/\/[^"'\s>]*nhentaimg\.com\/018\/[a-z0-9_-]+\//i);
-  const totalPagesM =
-    raw.match(/<span class="tag_name pages">(\d+)<\/span>/i) ||
-    raw.match(/id="load_pages"\s+value="(\d+)"/i) ||
-    raw.match(/name="load_pages"[^>]+value="(\d+)"/i);
-
-  if (prefixM && totalPagesM) {
-    const total = parseInt(totalPagesM[1], 10);
-    if (total > 0 && total <= 500) {
-      const prefix = prefixM[0];
-      const allPages: string[] = [];
-      for (let p = 1; p <= total; p++) {
-        allPages.push(`${prefix}${p}.webp`);
-      }
-      return allPages;
+  try {
+    const data = JSON.parse(trimmed);
+    // v2: pages: [{number, path, width, height}]
+    if (Array.isArray(data?.pages)) {
+      const v2Pages = data.pages
+        .map((p: any) => {
+          const path = typeof p === 'string' ? p : p?.path;
+          if (!path) return '';
+          const n = typeof p === 'object' && p?.number ? p.number : 0;
+          const abs = String(path).startsWith('http')
+            ? String(path)
+            : `${NHENTAI_API_IMAGE_BASE}/${String(path).replace(/^\//, '')}`;
+          return n ? `${n}|${abs}` : '';
+        })
+        .filter(Boolean)
+        .sort((a: string, b: string) => Number(a.split('|')[0]) - Number(b.split('|')[0]))
+        .map((s: string) => s.slice(s.indexOf('|') + 1));
+      if (v2Pages.length > 0) return v2Pages;
     }
-  }
-
-  // Yedek regex: HTML'deki mevcut küçük kareleri topla
-  const xxxRe = /(https?:\/\/[^"'\s>]*nhentaimg\.com\/018\/[a-z0-9_-]+\/)(\d+)t\.(jpg|png|webp|gif)/gi;
-  const xxxUrls: { num: number; url: string }[] = [];
-  const seenNums = new Set<number>();
-  let xm: RegExpExecArray | null;
-
-  while ((xm = xxxRe.exec(raw)) !== null) {
-    const prefix = xm[1];
-    const pageNum = parseInt(xm[2], 10);
-    if (seenNums.has(pageNum)) continue;
-    seenNums.add(pageNum);
-    // nhentaimg.com full sayfaları .webp olarak sunulur
-    xxxUrls.push({ num: pageNum, url: `${prefix}${pageNum}.webp` });
-  }
-
-  if (xxxUrls.length > 0) {
-    xxxUrls.sort((a, b) => a.num - b.num);
-    return xxxUrls.map((u) => u.url);
-  }
-
-  // B) t.nhentai.net (nhentai.net):
-  // Thumbnail: https://t.nhentai.net/galleries/1556093/1t.jpg -> https://i.nhentai.net/galleries/1556093/1.jpg
-  const urls: string[] = [];
-  const re = /https:\/\/t\d*\.nhentai\.net\/galleries\/(\d+)\/(\d+)t\.(jpg|png|webp|gif)/gi;
-  let m: RegExpExecArray | null;
-  const seenPages = new Set<number>();
-
-  while ((m = re.exec(raw)) !== null) {
-    const mediaId = m[1];
-    const pageNum = parseInt(m[2], 10);
-    const ext = m[3].toLowerCase();
-    if (seenPages.has(pageNum)) continue;
-    seenPages.add(pageNum);
-    urls.push(`${NHENTAI_IMAGE_BASE}/galleries/${mediaId}/${pageNum}.${ext}`);
-  }
-
-  if (urls.length > 0) {
-    urls.sort((a, b) => {
-      const numA = parseInt(a.match(/\/(\d+)\.[^.]+$/)?.[1] || '0', 10);
-      const numB = parseInt(b.match(/\/(\d+)\.[^.]+$/)?.[1] || '0', 10);
-      return numA - numB;
-    });
-    return urls;
-  }
+    // v1
+    const mediaId = data?.media_id;
+    const pages = data?.images?.pages;
+    if (mediaId && Array.isArray(pages)) {
+      return pages.map((p, idx) => {
+        const ext = extFromType(p?.t);
+        return `${NHENTAI_IMAGE_BASE}/galleries/${mediaId}/${idx + 1}.${ext}`;
+      });
+    }
+  } catch {}
 
   return [];
-}
-
-/**
- * nhentai galeri detay sayfasından (HTML) kategorize edilmiş etiketleri ayıklar.
- * Kategoriler:
- * - /artist/ -> artist
- * - /character/ -> character
- * - /parody/ -> copyright
- * - /tag/ -> general
- * - /group/, /language/, /category/ -> meta
- */
-export function parseNHentaiTagsFromHtml(html: string): { tags: BooruTagGroups; allTags: string[] } {
-  const tagGroups: BooruTagGroups = {
-    artist: [],
-    character: [],
-    copyright: [],
-    general: [],
-    meta: ['manga'],
-  };
-  const allTags: string[] = [];
-  if (!html) return { tags: tagGroups, allTags };
-
-  // Not: nhentai.xxx detay sayfası tek tırnak kullanır (href='/tag/...'),
-  // /tags/ listesi çift tırnak kullanır — ikisi de desteklenir.
-  const re = /<a[^>]+href=(["'])\/(tag|artist|character|parody|group|language|category)\/([^"'\/]+)\/?\1[^>]*>([\s\S]*?)<\/a>/gi;
-  let m: RegExpExecArray | null;
-  const seen = new Set<string>();
-
-  while ((m = re.exec(html)) !== null) {
-    const type = m[2].toLowerCase();
-    const inner = m[4];
-    const nameM =
-      inner.match(/<span[^>]*class=['"]tag_name(?:\s+[^'"]*)?['"][^>]*>([^<]+)<\/span>/i) ||
-      inner.match(/<span[^>]*class=['"]name['"][^>]*>([^<]+)<\/span>/i);
-    let name = nameM ? decodeEntities(nameM[1]).trim() : decodeEntities(m[3]).replace(/-/g, ' ').trim();
-    if (!name || seen.has(name.toLowerCase())) continue;
-    seen.add(name.toLowerCase());
-    allTags.push(name);
-
-    if (type === 'artist' || type === 'group') tagGroups.artist.push(name);
-    else if (type === 'character') tagGroups.character.push(name);
-    else if (type === 'parody') tagGroups.copyright.push(name);
-    else if (type === 'tag') tagGroups.general.push(name);
-    else if (type === 'language' || type === 'category') tagGroups.meta.push(name);
-  }
-
-  return { tags: tagGroups, allTags };
 }
 
 export interface NHentaiResolvedGallery {
@@ -745,20 +412,6 @@ const COMMON_NHENTAI_TAGS: Array<{ name: string; category: TagCategory; postCoun
   { name: 'color', category: 'meta', postCount: 16000 },
 ];
 
-/** Aynadaki (nhentai.xxx) favori sayısı: `<span class="fv_cnt">107</span>` */
-export function parseNHentaiFavoritesFromHtml(html: string): number {
-  if (!html) return 0;
-  const m = html.match(/class=["'][^"']*fv_cnt[^"']*["'][^>]*>([^<]+)</i);
-  if (!m) return 0;
-  const raw = decodeEntities(m[1]).trim();
-  const km = raw.match(/([\d.,]+)\s*([KMB])?/i);
-  if (!km) return 0;
-  const val = parseFloat(km[1].replace(/,/g, ''));
-  if (!Number.isFinite(val)) return 0;
-  const unit = (km[2] || '').toUpperCase();
-  return Math.round(val * (unit === 'K' ? 1000 : unit === 'M' ? 1000000 : unit === 'B' ? 1e9 : 1));
-}
-
 /** v2 etiket tipi -> uygulama kategorisi */
 function nhentaiTagCategory(type: string): TagCategory {
   switch (type.toLowerCase()) {
@@ -825,7 +478,7 @@ export async function searchNHentaiApiTags(
 
 /**
  * nhentai etiket araması / otomatik tamamlama.
- * Sıra: yerel havuz (anında) -> resmi v2 POST /api/v2/tags/search -> ayna /tags/ scrape.
+ * Sıra: yerel havuz (anında) -> resmi v2 POST /api/v2/tags/search.
  */
 export async function searchNHentaiTags(
   query: string,

@@ -46,16 +46,10 @@ import {
 } from './hentaihavens';
 import {
   buildNHentaiApiCandidates,
-  buildNHentaiSearchCandidates,
   nhentaiApiSort,
-  parseNHentaiListing,
   parseNHentaiV2Listing,
   searchNHentaiTags,
-  NHENTAI_API_BASE,
   NHENTAI_API_UA,
-  NHENTAI_BASE,
-  NHENTAI_MIRROR_BASE,
-  NHENTAI_UA,
 } from './nhentai';
 
 const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
@@ -1712,108 +1706,81 @@ export class BooruApiService {
     includeBlacklisted: boolean = false,
     filter?: SearchFilterConfig
   ): Promise<BooruPost[]> {
-    const rawTokens = tags
+    // YALNIZCA resmi v2 API (https://nhentai.net/api/v2/docs).
+    // API; keywords, "exact phrase", -negation, tag:/artist:/language: filtrelerini,
+    // favorites:>=N eşiğini ve date/popular/popular-today/popular-week/popular-month
+    // sıralamalarını yerel olarak destekler.
+    const fullQuery = tags
       .split(/\s+/)
       .map((t) => t.trim())
-      .filter(Boolean);
-    // Resmi v2 API (nhentai.net) -word olumsuzlamasını ve tag/artist/favorites filtrelerini
-    // yerel olarak destekler (https://nhentai.net/api/v2/docs).
-    const fullQuery = rawTokens.join(' ');
+      .filter(Boolean)
+      .join(' ');
     void limit;
 
     const apiSort = nhentaiApiSort(filter?.sortBy, filter?.timeRange);
-    const apiCandidates = buildNHentaiApiCandidates(page, fullQuery, apiSort, filter?.minScore);
-    const mirrorSort = filter?.sortBy === 'score' ? 'popular' : undefined;
-    const mirrorCandidates = buildNHentaiSearchCandidates(
-      NHENTAI_MIRROR_BASE,
-      page,
-      rawTokens.filter((t) => !t.startsWith('-')).join(' '),
-      mirrorSort
-    );
-    // Öncelik resmi v2 API'de; 429/timeout/ağ kopmasında ayna güvenlik ağı devreye girer
-    const candidates = [...apiCandidates, ...mirrorCandidates];
+    const candidates = buildNHentaiApiCandidates(page, fullQuery, apiSort, filter?.minScore);
 
-    // Hedef bazında header seti: ayna, cihazda çalıştığı kanıtlanmış son
-    // haline birebir döner (Windows UA + ayna Referer + sıkıştırma müdahalesi
-    // YOK); v2 API ise iOS UA + gzip kullanır.
-    const apiHeaders = {
+    const headers = {
       'User-Agent': NHENTAI_API_UA,
       Referer: 'https://nhentai.net/',
       'Accept-Language': 'en-US,en;q=0.9',
       Accept: 'application/json,*/*',
       'Accept-Encoding': 'gzip, deflate, identity',
     };
-    const mirrorHeaders = {
-      'User-Agent': NHENTAI_UA,
-      Referer: `${NHENTAI_MIRROR_BASE}/`,
-      'Accept-Language': 'en-US,en;q=0.9',
-      Accept: 'application/json,text/html,*/*',
-    };
 
     let lastError: any = null;
     let saw404 = false;
     for (const url of candidates) {
-      const isApi = url.startsWith(NHENTAI_API_BASE);
-      const tag = isApi ? 'api/v2' : 'mirror';
-      const headers = isApi ? apiHeaders : mirrorHeaders;
       try {
-        // v2 API sorguları (özellikle popular-month 650K galeri sunucu sıralaması)
-        // mobilde 4-8s sürebilir; 12s zaman aşımı yeterli alan tanır.
-        const timeoutMs = isApi ? 12000 : 10000;
+        const timeoutMs = 12000;
         const response = await proxyService.fetchWithFallback(url, { headers }, timeoutMs);
         if (response.status === 404) {
           saw404 = true;
-          console.log(`[BooruAPI] nhentai ${tag} 404 (sayfa sonu): ${url}`);
+          console.log(`[BooruAPI] nhentai 404 (sayfa sonu): ${url}`);
           continue;
         }
-        if (response.status === 429 && isApi) {
-          console.warn('[BooruAPI] nhentai v2 API 429 (Rate limit aşıldı, aynaya yönlendiriliyor)');
-          lastError = new Error('nhentai API istek sınırı aşıldı (429 Rate limit).');
-          continue;
+        if (response.status === 429) {
+          // Doküman: anonim IP için 10-15 req/dakika. Ekranda boş grid yerine
+          // anlaşılır hata gösterilir.
+          throw new Error('nhentai API istek sınırı aşıldı (429 Rate limit). Lütfen biraz bekleyin.');
         }
         if (!response.ok) {
           lastError = new Error(`HTTP ${response.status}`);
-          console.log(`[BooruAPI] nhentai ${tag} HTTP ${response.status}: ${url}`);
+          console.log(`[BooruAPI] nhentai HTTP ${response.status}: ${url}`);
           continue;
         }
-        // Teşhis: cihazın gerçekte hangi kodlamayı aldığı (RN iOS Brotli'yi
-        // çözemezse gövde burada takılır; logda `br` görülürse kanıtlanır).
-        let contentEncoding = '';
-        try {
-          contentEncoding = response.headers?.get?.('content-encoding') || '';
-        } catch {}
-        const startedAt = Date.now();
         let text: string;
         try {
-          text = await withHardTimeout(response.text(), timeoutMs, `nhentai body ${tag}`);
+          text = await withHardTimeout(response.text(), timeoutMs, 'nhentai body api/v2');
         } catch (bodyErr) {
           // Gövde takılması çoğunlukla geçici soket sorunudur: aynı URL'yi
-          // taze bağlantıyla BİR kez daha dene, sonra sıradaki adaya geç.
-          console.log(
-            `[BooruAPI] nhentai ${tag} gövde takıldı (ce=${contentEncoding || '?'} ${Date.now() - startedAt}ms), tekrar deneniyor: ${url}`
-          );
+          // taze bağlantıyla BİR kez daha dene.
+          console.log(`[BooruAPI] nhentai gövde takıldı, tekrar deneniyor: ${url}`);
           const retryRes = await proxyService.fetchWithFallback(url, { headers }, timeoutMs);
           if (!retryRes.ok) {
             lastError = new Error(`HTTP ${retryRes.status} (retry)`);
             continue;
           }
-          text = await withHardTimeout(retryRes.text(), timeoutMs, `nhentai body-retry ${tag}`);
+          text = await withHardTimeout(retryRes.text(), timeoutMs, 'nhentai body-retry api/v2');
         }
         if (/just a moment|challenge-platform|cf-challenge|attention required/i.test(text.slice(0, 4000))) {
-          console.warn(`[BooruAPI] nhentai ${tag} bot-duvarı sayfası aldı (challenge): ${url}`);
           lastError = new Error('Cloudflare challenge sayfası alındı');
+          console.warn(`[BooruAPI] nhentai bot-duvarı sayfası aldı (challenge): ${url}`);
           continue;
         }
-        const posts = isApi
-          ? parseNHentaiV2Listing(text, source)
-          : parseNHentaiListing(text, source);
-        console.log(`[BooruAPI] nhentai ${tag} sonuc=${posts.length} url=${url}`);
+        const posts = parseNHentaiV2Listing(text, source);
+        console.log(`[BooruAPI] nhentai sonuc=${posts.length} url=${url}`);
         if (posts.length > 0) {
-          return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+          return await this.filterNHentaiMinScore(
+            await this.filterBlacklistedPosts(posts, includeBlacklisted),
+            filter
+          );
         }
       } catch (err) {
+        // 429 fırlatması doğrudan kullanıcıya gösterilir (yutulmaz)
+        if (err instanceof Error && err.message.includes('429')) throw err;
         lastError = err;
-        console.log(`[BooruAPI] nhentai ${tag} hata (${err instanceof Error ? err.message : String(err)}): ${url}`);
+        console.log(`[BooruAPI] nhentai hata (${err instanceof Error ? err.message : String(err)}): ${url}`);
       }
     }
     if (saw404 && !lastError) {
@@ -1826,9 +1793,8 @@ export class BooruApiService {
   }
 
   /**
-   * Min puan eşiği: v2'de skor = favori sayısı olduğu için istemcide uygulanır.
-   * Mirror HTML'inde skor verisi yoktur (hepsi 0); bu durumda filtre uygulanmaz,
-   * aksi halde sonuç listesini boş yazardı.
+   * Min favori eşiği: sunucu sorguya `favorites:>=N` eklediği için çoğu durumda
+   * zaten filtrelidir; bu istemci tarafı ikinci güvenlik ağıdır.
    */
   private filterNHentaiMinScore(posts: BooruPost[], filter?: SearchFilterConfig): BooruPost[] {
     const min = filter?.minScore;
