@@ -12,16 +12,22 @@ import { proxyService } from './proxyService';
  */
 
 export const NHENTAI_BASE = 'https://nhentai.net';
-export const NHENTAI_IMAGE_BASE = 'https://i1.nhentai.net';
-export const NHENTAI_THUMB_BASE = 'https://t1.nhentai.net';
+export const NHENTAI_IMAGE_BASE = 'https://i3.nhentai.net';
+export const NHENTAI_THUMB_BASE = 'https://t3.nhentai.net';
 
 /**
  * Resmi v2 API (https://nhentai.net/api/v2/docs).
  * Puan/skor doğrudan `num_favorites` değerine eşlenir.
+ *
+ * CDN NOTU (cihazda doğrulandı): t1/i1 hostları bazı ağlarda engelli/çözümsüz
+ * (Safari'de t1 açılmıyor, t2/t3 açılıyor). Bu yüzden varsayılan kapak t3,
+ * yedek kapak t2, tam sayfalar i3 üzerinden alınır; tek host kesintisinde
+ * kartlar yine de görsel gösterir (PostCard thumb->cover fallback'i).
  */
 export const NHENTAI_API_BASE = 'https://nhentai.net/api/v2';
-export const NHENTAI_API_THUMB_BASE = 'https://t1.nhentai.net';
-export const NHENTAI_API_IMAGE_BASE = 'https://i1.nhentai.net';
+export const NHENTAI_API_THUMB_BASE = 'https://t3.nhentai.net';
+export const NHENTAI_API_THUMB_FALLBACK_BASE = 'https://t2.nhentai.net';
+export const NHENTAI_API_IMAGE_BASE = 'https://i3.nhentai.net';
 
 /**
  * v2 API istekleri Safari'yi birebir taklit eder (cihazda doğrulandı: aynı URL
@@ -171,7 +177,11 @@ export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): Bo
       // sabit .webp olursa jpg galerilerde 404 veriyor (canlı doğrulandı).
       const extMatch = thumb.match(/\.(jpg|jpeg|png|webp|gif)(?:\?|$)/i);
       const ext = (extMatch ? extMatch[1].toLowerCase() : 'webp').replace('jpeg', 'jpg');
-      const cover = thumb.replace(/\/thumb\./i, '/cover.');
+      // Yedek kapak farklı host'tan (t2): birincil CDN hostu kesilirse
+      // PostCard'in thumb->cover fallback'i yine de görsel getirir.
+      const cover = thumb
+        .replace(/\/thumb\./i, '/cover.')
+        .replace(NHENTAI_API_THUMB_BASE, NHENTAI_API_THUMB_FALLBACK_BASE);
       const width = Number(item.thumbnail_width) || 250;
       const height = Number(item.thumbnail_height) || 350;
       const aspectRatio = width > 0 && height > 0 ? width / height : 250 / 350;
