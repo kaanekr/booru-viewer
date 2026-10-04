@@ -120,6 +120,30 @@ test('nhentaiTagQuery builds prefix mechanics per category', () => {
   assert.equal(nh.nhentaiTagQuery('', 'general'), '');
 });
 
+test('rotateNhentaiImageHost cycles i-hosts and stops at the end', () => {
+  const nh = loadNHentai();
+  assert.equal(nh.NHENTAI_API_IMAGE_HOSTS.join('|'), [
+    'https://i2.nhentai.net',
+    'https://i3.nhentai.net',
+    'https://i4.nhentai.net',
+    'https://i1.nhentai.net',
+  ].join('|'));
+  assert.equal(
+    nh.rotateNhentaiImageHost('https://i2.nhentai.net/galleries/9/1.webp'),
+    'https://i3.nhentai.net/galleries/9/1.webp'
+  );
+  assert.equal(
+    nh.rotateNhentaiImageHost('https://i4.nhentai.net/galleries/9/1.webp'),
+    'https://i1.nhentai.net/galleries/9/1.webp'
+  );
+  // Liste bitti -> null (vazgeç); yol korunur
+  assert.equal(nh.rotateNhentaiImageHost('https://i1.nhentai.net/galleries/9/1.webp'), null);
+  // nhentai dışı URL'ye dokunulmaz
+  assert.equal(nh.rotateNhentaiImageHost('https://example.com/1.jpg'), null);
+  assert.equal(nh.rotateNhentaiImageHost(''), null);
+  assert.equal(nh.rotateNhentaiImageHost(undefined), null);
+});
+
 test('parseNHentaiV2Listing maps num_favorites to score and favCount', () => {
   const nh = loadNHentai();
   const body = JSON.stringify({
