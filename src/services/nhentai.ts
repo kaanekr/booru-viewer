@@ -291,7 +291,28 @@ export function parseNHentaiGalleryPages(
 
   // 2) HTML yanıtı:
   // A) nhentaimg.com (nhentai.xxx aynası):
-  // Thumbnail: https://i5.nhentaimg.com/018/zd5ew9kgoa/1t.jpg -> Full: https://i5.nhentaimg.com/018/zd5ew9kgoa/1.webp
+  // nhentai.xxx sitede yalnız ilk 10 küçük kareyi HTML'e yazar, ama GERÇEK
+  // toplam sayfa sayısı <span class="tag_name pages">50</span> veya id="load_pages" içinde yer alır.
+  // Prefix ve toplam sayfa sayısı varsa tüm sayfaları (1..N) doğrudan üretiriz.
+  const prefixM = raw.match(/https?:\/\/[^"'\s>]*nhentaimg\.com\/018\/[a-z0-9_-]+\//i);
+  const totalPagesM =
+    raw.match(/<span class="tag_name pages">(\d+)<\/span>/i) ||
+    raw.match(/id="load_pages"\s+value="(\d+)"/i) ||
+    raw.match(/name="load_pages"[^>]+value="(\d+)"/i);
+
+  if (prefixM && totalPagesM) {
+    const total = parseInt(totalPagesM[1], 10);
+    if (total > 0 && total <= 500) {
+      const prefix = prefixM[0];
+      const allPages: string[] = [];
+      for (let p = 1; p <= total; p++) {
+        allPages.push(`${prefix}${p}.webp`);
+      }
+      return allPages;
+    }
+  }
+
+  // Yedek regex: HTML'deki mevcut küçük kareleri topla
   const xxxRe = /(https?:\/\/[^"'\s>]*nhentaimg\.com\/018\/[a-z0-9_-]+\/)(\d+)t\.(jpg|png|webp|gif)/gi;
   const xxxUrls: { num: number; url: string }[] = [];
   const seenNums = new Set<number>();
