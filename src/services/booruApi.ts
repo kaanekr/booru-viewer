@@ -44,6 +44,12 @@ import {
   HENTAIHAVEN_BASE,
   HENTAIHAVEN_UA,
 } from './hentaihavens';
+import {
+  buildNHentaiSearchCandidates,
+  parseNHentaiListing,
+  NHENTAI_BASE,
+  NHENTAI_UA,
+} from './nhentai';
 
 const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
 
@@ -219,8 +225,8 @@ export class BooruApiService {
       });
     }
 
-    // Min Score (RedGifs/XVideos/XHamster/Pornhub/Sex.com/HentaiHaven'da skor filtresi yok; literal tag olarak gidip sonucu sıfırlar)
-    if (filter.minScore && filter.minScore > 0 && activeSource.type !== 'redgifs' && activeSource.type !== 'xvideos' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub' && activeSource.type !== 'sexcom' && activeSource.type !== 'hentaihaven') {
+    // Min Score (RedGifs/XVideos/XHamster/Pornhub/Sex.com/HentaiHaven/nhentai'de skor filtresi yok; literal tag olarak gidip sonucu sıfırlar)
+    if (filter.minScore && filter.minScore > 0 && activeSource.type !== 'redgifs' && activeSource.type !== 'xvideos' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub' && activeSource.type !== 'sexcom' && activeSource.type !== 'hentaihaven' && activeSource.type !== 'nhentai') {
       parts.push(`score:>=${filter.minScore}`);
     }
 
@@ -229,7 +235,7 @@ export class BooruApiService {
     if (filter.user && filter.user.trim()) {
       if (activeSource.type === 'cumst') {
         parts.push(`creator:${filter.user.trim()}`);
-      } else if (activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven') {
+      } else if (activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven' || activeSource.type === 'nhentai') {
         parts.push(filter.user.trim());
       } else if (activeSource.type !== 'redgifs') {
         parts.push(`user:${filter.user.trim()}`);
@@ -249,7 +255,7 @@ export class BooruApiService {
     // Historical Leaderboard / Anchor Date (Cum.st'e özel; başka motorda
     // literal tag sayılıp sonucu sıfırlar). Haftalık/aylık periyotta çapa
     // takvim başına yaslanır: aynı periyodun günleri aynı sorguyu üretir.
-    if (filter.leaderboardDate && activeSource.type !== 'xvideos' && activeSource.type !== 'redgifs' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub' && activeSource.type !== 'sexcom' && activeSource.type !== 'hentaihaven') {
+    if (filter.leaderboardDate && activeSource.type !== 'xvideos' && activeSource.type !== 'redgifs' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub' && activeSource.type !== 'sexcom' && activeSource.type !== 'hentaihaven' && activeSource.type !== 'nhentai') {
       const anchor =
         activeSource.type === 'cumst'
           ? snapLeaderboardAnchor(filter.leaderboardDate, filter.timeRange)
@@ -268,10 +274,8 @@ export class BooruApiService {
       }
     }
 
-    // Sort By & Time Range (RedGifs/XVideos/XHamster/Pornhub sıralaması order=/sort=/ordering
-    // parametresiyle kendi fetch fonksiyonları içinde yapılır; buraya order:/sort: token'ı
-    // eklenirse literal tag sayılıp sonuç sıfırlanır)
-    if (activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven') {
+    // Sort By & Time Range (RedGifs/XVideos/XHamster/Pornhub/nhentai sıralaması kendi fonksiyonları içinde yapılır)
+    if (activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven' || activeSource.type === 'nhentai') {
       return parts.join(' ').trim();
     }
     if (filter.sortBy === 'score') {
@@ -481,6 +485,8 @@ export class BooruApiService {
         return await this.fetchSexComPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'hentaihaven') {
         return await this.fetchHentaiHavenPosts(source, page, limit, tags, includeBlacklisted);
+      } else if (source.type === 'nhentai') {
+        return await this.fetchNHentaiPosts(source, page, limit, tags, includeBlacklisted);
       } else {
         return await this.fetchDanbooruPosts(source, page, limit, tags, includeBlacklisted);
       }
@@ -1689,6 +1695,58 @@ export class BooruApiService {
     const html = await response.text();
     const posts = parseHentaiHavenListing(html, source);
     return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+  }
+
+  private async fetchNHentaiPosts(
+    source: BooruSource,
+    page: number,
+    limit: number,
+    tags: string,
+    includeBlacklisted: boolean = false
+  ): Promise<BooruPost[]> {
+    const k = tags
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .filter((t) => !t.startsWith('-'))
+      .join(' ');
+    void limit;
+
+    const candidates = buildNHentaiSearchCandidates(source.baseUrl || NHENTAI_BASE, page, k);
+    let lastError: any = null;
+
+    for (const url of candidates) {
+      try {
+        const response = await proxyService.fetchWithFallback(
+          url,
+          {
+            headers: {
+              'User-Agent': NHENTAI_UA,
+              Referer: `${(source.baseUrl || NHENTAI_BASE).replace(/\/$/, '')}/`,
+              'Accept-Language': 'en-US,en;q=0.9',
+              Accept: 'application/json,text/html,*/*',
+            },
+          },
+          10000
+        );
+        if (response.status === 404) return [];
+        if (!response.ok) {
+          lastError = new Error(`HTTP ${response.status}`);
+          continue;
+        }
+        const text = await response.text();
+        const posts = parseNHentaiListing(text, source);
+        if (posts.length > 0) {
+          return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+        }
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    if (lastError) {
+      console.warn('[BooruAPI] nhentai adayları başarısız oldu:', lastError);
+    }
+    return [];
   }
 
   private async fetchXHamsterPosts(

@@ -27,6 +27,7 @@ function loadApi() {
       if (id === '../utils/guards') return {};
       if (id === './sexcom') return {};
       if (id === './hentaihavens') return {};
+      if (id === './nhentai') return {};
       throw new Error('Unexpected dependency: ' + id);
     },
     console: { warn() {} },

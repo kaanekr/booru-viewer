@@ -25,6 +25,7 @@ class ProxyService {
     /mp4-cdn\d*\.xvideos-cdn\.com/i,
     /videos\d*\.sex\.com/i,
     /premium-videos\d*\.sex\.com/i,
+    /nhentai\.net/i,
   ];
 
   /** Ham URL TLS-kırılgan bir CDN'e mi işaret ediyor? */
