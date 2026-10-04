@@ -42,6 +42,7 @@ import { StorageService, ImageQuality } from '../services/storage';
 import { setGridPreviewsEnabled } from '../utils/gridPreviews';
 import { proxyService } from '../services/proxyService';
 import { PORNHUB_UA, PORNHUB_BASE, parsePornhubHtmlListing } from '../services/pornhub';
+import { SEXCOM_UA, SEXCOM_BASE, parseSexComListing } from '../services/sexcom';
 import { XVIDEOS_UA, XVIDEOS_BASE, parseXVideosListing } from '../services/xvideos';
 import { XHAMSTER_UA, XHAMSTER_BASE, parseXhamsterListing } from '../services/xhamster';
 import { BackupService } from '../services/backupService';
@@ -277,6 +278,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         url: `${XVIDEOS_BASE}/new/1`,
         headers: { 'User-Agent': XVIDEOS_UA, Referer: `${XVIDEOS_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
         parse: (html) => parseXVideosListing(html, stubSource('xvideos', XVIDEOS_BASE)).length,
+      },
+      {
+        name: 'SX',
+        url: `${SEXCOM_BASE}/en/videos`,
+        headers: { 'User-Agent': SEXCOM_UA, Referer: `${SEXCOM_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
+        parse: (html) => parseSexComListing(html, stubSource('sexcom', SEXCOM_BASE)).length,
       },
       {
         name: 'RG',

@@ -31,6 +31,12 @@ import {
   PORNHUB_UA,
 } from './pornhub';
 import type { PornhubOrdering, PornhubVideo } from './pornhub';
+import {
+  buildSexComSearchCandidates,
+  parseSexComListing,
+  SEXCOM_BASE,
+  SEXCOM_UA,
+} from './sexcom';
 
 const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
 
@@ -119,6 +125,39 @@ export function timeRangeToDays(timeRange: string | undefined): number {
   return 0;
 }
 
+/**
+ * Liderlik çapası hizalama (cum.st): haftalık/aylık periyotta çapayı takvim
+ * periyodunun başına yaslar — aynı periyottaki her gün birebir aynı `date:`
+ * sorgusunu üretir, periyot kaymaz ("2 gün önce + haftanın lideri" === "bugünün
+ * haftasının liderleri"). Sunucu da aynı hizalamayı yapar (canlı doğrulandı:
+ * week→Pazartesi, month→ayın 1'i); istemcide yapmak davranışı garanti altına alır.
+ * Günlük/periyotsuz aralıklar aynen geçer. UTC matematiği kullanılır (SAAT
+ * dilimi kayması yok). Geçersiz girdi aynen geri döner.
+ */
+export function snapLeaderboardAnchor(anchorYMD: string | undefined, timeRange: string | undefined): string {
+  const clean = (anchorYMD || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) return clean;
+  if (timeRange === '1w') {
+    const [y, m, d] = clean.split('-').map(Number);
+    if (m < 1 || m > 12 || d < 1 || d > 31) return clean;
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    // Taşan gün (örn. 30 Şubat) sessizce yuvarlanır — girdiyi bozma, aynen geçir
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) {
+      return clean;
+    }
+    const back = (dt.getUTCDay() + 6) % 7; // Pazartesi=0 … Pazar=6 gün geri
+    dt.setUTCDate(dt.getUTCDate() - back);
+    const p = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+    return `${dt.getUTCFullYear()}-${p(dt.getUTCMonth() + 1)}-${p(dt.getUTCDate())}`;
+  }
+  if (timeRange === '1m') {
+    const [, m, d] = clean.split('-').map(Number);
+    if (m < 1 || m > 12 || d < 1 || d > 31) return clean;
+    return `${clean.slice(0, 4)}-${clean.slice(5, 7)}-01`;
+  }
+  return clean;
+}
+
 export class BooruApiService {
   private currentSource: BooruSource = DEFAULT_SOURCE;
   private lastRequestAt = 0;
@@ -173,8 +212,8 @@ export class BooruApiService {
       });
     }
 
-    // Min Score (RedGifs/XVideos/XHamster/Pornhub'da skor filtresi yok; literal tag olarak gidip sonucu sıfırlar)
-    if (filter.minScore && filter.minScore > 0 && activeSource.type !== 'redgifs' && activeSource.type !== 'xvideos' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub') {
+    // Min Score (RedGifs/XVideos/XHamster/Pornhub/Sex.com'da skor filtresi yok; literal tag olarak gidip sonucu sıfırlar)
+    if (filter.minScore && filter.minScore > 0 && activeSource.type !== 'redgifs' && activeSource.type !== 'xvideos' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub' && activeSource.type !== 'sexcom') {
       parts.push(`score:>=${filter.minScore}`);
     }
 
@@ -183,7 +222,7 @@ export class BooruApiService {
     if (filter.user && filter.user.trim()) {
       if (activeSource.type === 'cumst') {
         parts.push(`creator:${filter.user.trim()}`);
-      } else if (activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub') {
+      } else if (activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom') {
         parts.push(filter.user.trim());
       } else if (activeSource.type !== 'redgifs') {
         parts.push(`user:${filter.user.trim()}`);
@@ -201,9 +240,14 @@ export class BooruApiService {
     }
 
     // Historical Leaderboard / Anchor Date (Cum.st'e özel; başka motorda
-    // literal tag sayılıp sonucu sıfırlar)
-    if (filter.leaderboardDate && activeSource.type !== 'xvideos' && activeSource.type !== 'redgifs' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub') {
-      parts.push(`date:${filter.leaderboardDate.trim()}`);
+    // literal tag sayılıp sonucu sıfırlar). Haftalık/aylık periyotta çapa
+    // takvim başına yaslanır: aynı periyodun günleri aynı sorguyu üretir.
+    if (filter.leaderboardDate && activeSource.type !== 'xvideos' && activeSource.type !== 'redgifs' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub' && activeSource.type !== 'sexcom') {
+      const anchor =
+        activeSource.type === 'cumst'
+          ? snapLeaderboardAnchor(filter.leaderboardDate, filter.timeRange)
+          : filter.leaderboardDate.trim();
+      parts.push(`date:${anchor}`);
     }
 
     // Rating Filter
@@ -220,7 +264,7 @@ export class BooruApiService {
     // Sort By & Time Range (RedGifs/XVideos/XHamster/Pornhub sıralaması order=/sort=/ordering
     // parametresiyle kendi fetch fonksiyonları içinde yapılır; buraya order:/sort: token'ı
     // eklenirse literal tag sayılıp sonuç sıfırlanır)
-    if (activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub') {
+    if (activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom') {
       return parts.join(' ').trim();
     }
     if (filter.sortBy === 'score') {
@@ -426,6 +470,8 @@ export class BooruApiService {
         return await this.fetchXHamsterPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else if (source.type === 'pornhub') {
         return await this.fetchPornhubPosts(source, page, limit, tags, includeBlacklisted, filter);
+      } else if (source.type === 'sexcom') {
+        return await this.fetchSexComPosts(source, page, limit, tags, includeBlacklisted);
       } else {
         return await this.fetchDanbooruPosts(source, page, limit, tags, includeBlacklisted);
       }
@@ -1540,6 +1586,50 @@ export class BooruApiService {
     return [];
   }
 
+  private async fetchSexComPosts(
+    source: BooruSource,
+    page: number,
+    limit: number,
+    tags: string,
+    includeBlacklisted: boolean = false
+  ): Promise<BooruPost[]> {
+    // Sitede sıralama parametresi yok; anahtar kelime düz metin aranır.
+    const k = tags
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .join(' ');
+    void limit;
+
+    const url = buildSexComSearchCandidates(source.baseUrl || SEXCOM_BASE, page, k)[0];
+    const headers = {
+      'User-Agent': SEXCOM_UA,
+      Referer: `${(source.baseUrl || SEXCOM_BASE).replace(/\/$/, '')}/`,
+      'Accept-Language': 'en-US,en;q=0.9',
+      Accept: 'text/html,application/xhtml+xml',
+    };
+
+    let response: Response;
+    try {
+      response = await this.fetchWithRetry(url, { headers }, 1, 10000);
+    } catch (e: any) {
+      throw e instanceof Error ? e : new Error(String(e));
+    }
+    if (!response.ok) {
+      if (response.status === 429) {
+        throw new Error('Sex.com istek sınırı aşıldı (429 Too Many Requests). Lütfen bir süre bekleyin.');
+      }
+      if (response.status >= 500) {
+        throw new Error(`Sex.com sunucusu aşırı yüklendi (${response.status} ${response.statusText}).`);
+      }
+      throw new Error(`Sex.com hatası: ${response.status} ${response.statusText}`);
+    }
+
+    const html = await response.text();
+    const posts = parseSexComListing(html, source);
+    return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+  }
+
   private async fetchXHamsterPosts(
     source: BooruSource,
     page: number,
@@ -2121,7 +2211,7 @@ export class BooruApiService {
           }
         } catch {}
         return [];
-      } else if (source.type === 'xvideos' || source.type === 'xhamster' || source.type === 'pornhub') {
+      } else if (source.type === 'xvideos' || source.type === 'xhamster' || source.type === 'pornhub' || source.type === 'sexcom') {
         // Resmi öneri endpoint'i yok; istemci tarafı filtre yeterli
         return [];
       } else if (source.type === 'gelbooru' || source.type === 'realbooru') {

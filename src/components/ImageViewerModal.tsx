@@ -61,7 +61,9 @@ import {
   resolveXVideosVideoUrls,
   resolveXHamsterVideoUrls,
   resolvePornhubVideoUrls,
+  selectPrimaryVideoCandidate,
 } from '../utils/media';
+import { resolveSexComVideoUrls } from '../services/sexcom';
 
 const { width: DEFAULT_SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -639,8 +641,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     }
 
     // Eğer post zaten sample'dan farklı gerçek bir originalUrl'e sahipse fetch etme
-    // Not: XHamster ve XVideos süreli token/geçici preview taşıdığı için her zaman detaydan taze çözülür
-    const needsFreshVideoResolution = post.sourceId === 'xvideos' || post.sourceId === 'xhamster';
+    // Not: XHamster, XVideos ve Sex.com süreli token/geçici preview taşıdığı için her zaman detaydan taze çözülür
+    const needsFreshVideoResolution = post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom';
     if (post.originalUrl && post.originalUrl !== post.sampleUrl && !needsFreshVideoResolution) {
       setResolvedOriginalUrl(post.originalUrl);
       return () => {
@@ -665,6 +667,14 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           .then((files) => {
             if (alive && files) {
               setResolvedOriginalUrl(files.high || files.low || files.hls || null);
+            }
+          })
+          .catch(() => {});
+      } else if (post.sourceId === 'sexcom') {
+        resolveSexComVideoUrls(post, abortCtrl.signal)
+          .then((files) => {
+            if (alive && files) {
+              setResolvedOriginalUrl(files.hls || files.mp4 || null);
             }
           })
           .catch(() => {});
@@ -732,7 +742,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     // Video sitelerinde (PH/XV/XH) izleme sayfasında boyut bilgisi yok;
     // ölçü listeden gelir (PH 640x360). Bu fetch, video açılışındaki
     // çift sayfa indirmenin yarısıydı — atlanınca kasma azalır.
-    if (post.sourceId === 'pornhub' || post.sourceId === 'xvideos' || post.sourceId === 'xhamster') {
+    if (post.sourceId === 'pornhub' || post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom') {
       return;
     }
     let alive = true;
@@ -773,11 +783,11 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   // Çözülmüş orijinal akış (PH HLS vb.) her zaman birincildir: sıralama
   // mp4'ü m3u8'ten üstün tuttuğu için kapak flipbook'u (_fb.mp4) gerçek
   // videoyu eziyor, sadece önizleme oynuyordu.
-  const primaryCandidate =
-    resolvedOriginalUrl ||
-    (videoCandidates.length > 0
-      ? videoCandidates[0]
-      : post.originalUrl || post.sampleUrl || post.previewUrl);
+  const primaryCandidate = selectPrimaryVideoCandidate(
+    resolvedOriginalUrl,
+    videoCandidates,
+    post.originalUrl || post.sampleUrl || post.previewUrl
+  );
   const mediaUrl = getMediaUrl(primaryCandidate);
 
   const cleanMedia = primaryCandidate ? primaryCandidate.split('?')[0].toLowerCase() : '';
@@ -1300,6 +1310,18 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   const proxyFallbackDoneRef = useRef(false);
   // Proxy yedeği de ölürse siyah ekranda kalmasın diye terminal hata durumu.
   const [loadFailed, setLoadFailed] = useState(false);
+  // Unmount sonrası biten async devamları bırakılmış oyuncuya dokunmasın
+  // (NotFoundException gürültüsü + unmount sonrası setState).
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  // iOS AVPlayer'ın açamadığı format (WebM) oyuncuya hiç verilmez:
+  // -11828 uyarı fırtınası yerine doğrudan hata kartı.
+  const blockedUrl = Platform.OS === 'ios' && isUnsupportedOnIOS(url);
   useEffect(() => {
     proxyFallbackDoneRef.current = false;
     setLoadFailed(false);
@@ -1339,9 +1361,10 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     (async () => {
       try {
         await player.replaceAsync({ uri: viaProxy, headers: getMediaHeaders(viaProxy) });
+        if (!mountedRef.current) return;
         if (!suspendedRef.current) player.play();
       } catch (e) {
-        console.warn('[VideoPlayerView] Proxy fallback failed:', e);
+        if (mountedRef.current) console.warn('[VideoPlayerView] Proxy fallback failed:', e);
       }
     })();
   });
@@ -1349,7 +1372,8 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   useEffect(() => {
     let isCurrent = true;
 
-    if (!videoSource.uri) {
+    if (!videoSource.uri || blockedUrl) {
+      if (blockedUrl && mountedRef.current) setLoadFailed(true);
       return () => {
         isCurrent = false;
       };
@@ -1358,18 +1382,19 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     (async () => {
       try {
         await player.replaceAsync(videoSource);
+        if (!mountedRef.current) return;
         if (isCurrent && !suspendedRef.current) {
           player.play();
         }
       } catch (error) {
-        if (isCurrent) console.warn('[VideoPlayerView] Async source failed:', error);
+        if (isCurrent && mountedRef.current) console.warn('[VideoPlayerView] Async source failed:', error);
       }
     })();
 
     return () => {
       isCurrent = false;
     };
-  }, [player, videoSource]);
+  }, [player, videoSource, blockedUrl]);
 
   useEffect(() => {
     if (suspended) {
@@ -1579,18 +1604,21 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     duration > 0 ? Math.min(100, Math.max(0, (displayTime / duration) * 100)) : 0;
 
   const handleRetryLoad = useCallback(() => {
+    if (!mountedRef.current || blockedUrl) return;
     setLoadFailed(false);
     proxyFallbackDoneRef.current = false;
     (async () => {
       try {
         await player.replaceAsync(videoSource);
+        if (!mountedRef.current) return;
         if (!suspendedRef.current) player.play();
       } catch (e) {
+        if (!mountedRef.current) return;
         console.warn('[VideoPlayerView] Manual retry failed:', e);
         setLoadFailed(true);
       }
     })();
-  }, [player, videoSource]);
+  }, [player, videoSource, blockedUrl]);
 
   return (
     <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
