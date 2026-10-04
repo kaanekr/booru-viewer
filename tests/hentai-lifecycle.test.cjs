@@ -14,7 +14,10 @@ function loadHentai() {
   const module = { exports: {} };
   vm.runInNewContext(js, {
     module, exports: module.exports,
-    require: (id) => { throw new Error('hentaihavens must be dependency-free, got: ' + id); },
+    require: (id) => {
+      if (id === './proxyService') return {};
+      throw new Error('hentaihavens must be UI-dependency-free, got: ' + id);
+    },
   }, { filename });
   return module.exports;
 }

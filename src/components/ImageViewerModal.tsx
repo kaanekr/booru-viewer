@@ -674,8 +674,13 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       } else if (post.sourceId === 'sexcom') {
         resolveSexComVideoUrls(post, abortCtrl.signal)
           .then((files) => {
-            if (alive && files) {
+            if (!alive) return;
+            if (files) {
               setResolvedOriginalUrl(selectSexComPlayable(files));
+            } else {
+              // Detay cekilemedi (direkt + worker ikisi de olmedi): izleyici
+              // karttaki onizlemede kalir. Metro'daki bu satir sebebini soyler.
+              console.warn('[Viewer] sexcom detay çözülemedi, önizleme oynuyor');
             }
           })
           .catch(() => {});
