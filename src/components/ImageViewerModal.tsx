@@ -543,137 +543,6 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   );
 };
 
-interface MangaPageItemProps {
-  uri: string;
-  index: number;
-  screenWidth: number;
-  onToggleControls: () => void;
-  onZoomChange?: (isZoomed: boolean) => void;
-}
-
-const MangaPageItem: React.FC<MangaPageItemProps> = React.memo(({
-  uri,
-  index,
-  screenWidth,
-  onToggleControls,
-  onZoomChange,
-}) => {
-  const pageHeight = Math.round(screenWidth * 1.42);
-  const scrollRef = useRef<ScrollView>(null);
-  const isZoomedRef = useRef(false);
-  const lastTapRef = useRef(0);
-  const singleTapTimerRef = useRef<any>(null);
-
-  useEffect(() => {
-    return () => {
-      if (singleTapTimerRef.current) {
-        clearTimeout(singleTapTimerRef.current);
-        singleTapTimerRef.current = null;
-      }
-    };
-  }, []);
-
-  const handleDoubleTap = (event: any) => {
-    const now = Date.now();
-    const DOUBLE_TAP_DELAY = 280;
-
-    if (now - lastTapRef.current < DOUBLE_TAP_DELAY) {
-      if (singleTapTimerRef.current) {
-        clearTimeout(singleTapTimerRef.current);
-        singleTapTimerRef.current = null;
-      }
-      lastTapRef.current = 0;
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-
-      if (isZoomedRef.current) {
-        scrollRef.current?.scrollResponderZoomTo({
-          x: 0,
-          y: 0,
-          width: screenWidth,
-          height: pageHeight,
-          animated: true,
-        });
-        isZoomedRef.current = false;
-        onZoomChange?.(false);
-      } else {
-        const tapZoom = 2.5;
-        const { locationX, locationY } = event.nativeEvent;
-        const targetWidth = screenWidth / tapZoom;
-        const targetHeight = pageHeight / tapZoom;
-        const targetX = Math.max(0, locationX - targetWidth / 2);
-        const targetY = Math.max(0, locationY - targetHeight / 2);
-
-        scrollRef.current?.scrollResponderZoomTo({
-          x: targetX,
-          y: targetY,
-          width: targetWidth,
-          height: targetHeight,
-          animated: true,
-        });
-        isZoomedRef.current = true;
-        onZoomChange?.(true);
-      }
-    } else {
-      lastTapRef.current = now;
-      if (singleTapTimerRef.current) {
-        clearTimeout(singleTapTimerRef.current);
-      }
-      singleTapTimerRef.current = setTimeout(() => {
-        onToggleControls();
-      }, DOUBLE_TAP_DELAY);
-    }
-  };
-
-  const handleScroll = (e: any) => {
-    const zoomScale = e.nativeEvent.zoomScale || 1;
-    const zoomed = zoomScale > 1.05;
-    if (zoomed !== isZoomedRef.current) {
-      isZoomedRef.current = zoomed;
-      onZoomChange?.(zoomed);
-    }
-  };
-
-  return (
-    <ScrollView
-      ref={scrollRef}
-      style={{ width: screenWidth, height: pageHeight }}
-      contentContainerStyle={{
-        width: screenWidth,
-        height: pageHeight,
-        backgroundColor: '#000000',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-      maximumZoomScale={3.5}
-      minimumZoomScale={1}
-      bouncesZoom={true}
-      centerContent={true}
-      showsHorizontalScrollIndicator={false}
-      showsVerticalScrollIndicator={false}
-      scrollEventThrottle={16}
-      onScroll={handleScroll}
-    >
-      <TouchableWithoutFeedback onPress={handleDoubleTap}>
-        <View style={{ width: screenWidth, height: pageHeight, alignItems: 'center', justifyContent: 'center' }}>
-          <Image
-            source={{
-              uri,
-              headers: getMediaHeaders(uri),
-              cacheKey: `${uri}:manga-page`,
-            }}
-            style={{ width: screenWidth, height: pageHeight }}
-            contentFit="contain"
-            contentPosition="center"
-            priority={index <= 2 ? 'high' : 'normal'}
-            cachePolicy="memory-disk"
-            transition={150}
-          />
-        </View>
-      </TouchableWithoutFeedback>
-    </ScrollView>
-  );
-});
-
 interface PostPageItemProps {
   post: BooruPost;
   isActive: boolean;
@@ -737,15 +606,10 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const [mangaLoading, setMangaLoading] = useState(false);
   const [currentMangaPage, setCurrentMangaPage] = useState(1);
   const [isMangaZoomed, setIsMangaZoomed] = useState(false);
-  const onMangaViewableChanged = useRef(({ viewableItems }: any) => {
-    if (viewableItems && viewableItems.length > 0) {
-      const first = viewableItems[0];
-      if (typeof first.index === 'number') {
-        setCurrentMangaPage(first.index + 1);
-      }
-    }
-  }).current;
-  const mangaViewabilityConfig = useRef({ itemVisiblePercentThreshold: 40 }).current;
+  const mangaScrollRef = useRef<ScrollView>(null);
+  const isMangaZoomedRef = useRef(false);
+  const mangaLastTapRef = useRef<number>(0);
+  const mangaSingleTapTimerRef = useRef<any>(null);
   const [isZoomed, setIsZoomed] = useState(false);
   const [hasUpgradedToFull, setHasUpgradedToFull] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -759,6 +623,10 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       if (singleTapTimerRef.current) {
         clearTimeout(singleTapTimerRef.current);
         singleTapTimerRef.current = null;
+      }
+      if (mangaSingleTapTimerRef.current) {
+        clearTimeout(mangaSingleTapTimerRef.current);
+        mangaSingleTapTimerRef.current = null;
       }
     };
   }, []);
@@ -1179,6 +1047,18 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       setIsZoomed(false);
       onZoomChange?.(false);
     }
+    if (!isActive && isMangaZoomedRef.current && mangaScrollRef.current) {
+      mangaScrollRef.current.scrollResponderZoomTo({
+        x: 0,
+        y: 0,
+        width: screenWidth,
+        height: screenHeight,
+        animated: false,
+      });
+      isMangaZoomedRef.current = false;
+      setIsMangaZoomed(false);
+      onZoomChange?.(false);
+    }
   }, [isActive, onZoomChange, screenWidth, screenHeight]);
 
   // Swipe Down to Dismiss tracking (only active when not zoomed)
@@ -1289,9 +1169,88 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     }
   };
 
-  // nhentai: manga okuyucu (dikey akis / kesintisiz sayfalar)
+  const handleMangaDoubleTap = (event: any) => {
+    const now = Date.now();
+    const DOUBLE_TAP_DELAY = 280;
+
+    if (now - mangaLastTapRef.current < DOUBLE_TAP_DELAY) {
+      if (mangaSingleTapTimerRef.current) {
+        clearTimeout(mangaSingleTapTimerRef.current);
+        mangaSingleTapTimerRef.current = null;
+      }
+      mangaLastTapRef.current = 0;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      if (isMangaZoomedRef.current) {
+        // 1x'e geri dön
+        mangaScrollRef.current?.scrollResponderZoomTo({
+          x: 0,
+          y: 0,
+          width: screenWidth,
+          height: screenHeight,
+          animated: true,
+        });
+        isMangaZoomedRef.current = false;
+        setIsMangaZoomed(false);
+        onZoomChange?.(false);
+      } else {
+        // Çift dokunulan noktaya 2.2x tümleşik global canvas zoom
+        const tapZoom = 2.2;
+        const { locationX, locationY } = event.nativeEvent;
+        const targetWidth = screenWidth / tapZoom;
+        const targetHeight = screenHeight / tapZoom;
+        const targetX = Math.max(0, locationX - targetWidth / 2);
+        const targetY = Math.max(0, locationY - targetHeight / 2);
+
+        mangaScrollRef.current?.scrollResponderZoomTo({
+          x: targetX,
+          y: targetY,
+          width: targetWidth,
+          height: targetHeight,
+          animated: true,
+        });
+        isMangaZoomedRef.current = true;
+        setIsMangaZoomed(true);
+        onZoomChange?.(true);
+      }
+    } else {
+      mangaLastTapRef.current = now;
+      if (mangaSingleTapTimerRef.current) {
+        clearTimeout(mangaSingleTapTimerRef.current);
+      }
+      mangaSingleTapTimerRef.current = setTimeout(() => {
+        onToggleControls();
+      }, DOUBLE_TAP_DELAY);
+    }
+  };
+
+  const handleMangaScroll = (e: any) => {
+    const scale = e.nativeEvent.zoomScale || 1;
+    const zoomed = scale > 1.05;
+    if (zoomed !== isMangaZoomedRef.current) {
+      isMangaZoomedRef.current = zoomed;
+      setIsMangaZoomed(zoomed);
+      onZoomChange?.(zoomed);
+    }
+
+    // Dikey kaydırmaya göre anlık sayfa göstergesi
+    const pageHeight = Math.round(screenWidth * 1.42);
+    const offsetY = e.nativeEvent.contentOffset.y;
+    const effectivePageHeight = pageHeight * scale;
+    if (effectivePageHeight > 0) {
+      const pagesCount = mangaPages.length || post.pageCount || 1;
+      const p = Math.min(
+        pagesCount,
+        Math.max(1, Math.floor((offsetY + screenHeight * 0.3) / effectivePageHeight) + 1)
+      );
+      setCurrentMangaPage(p);
+    }
+  };
+
+  // nhentai: manga okuyucu (tümleşik global canvas zoom)
   if (post.sourceId === 'nhentai') {
     const pages = mangaPages.length > 0 ? mangaPages : [post.sampleUrl || post.previewUrl];
+    const pageHeight = Math.round(screenWidth * 1.42);
     return (
       <View style={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000' }}>
         {mangaLoading && mangaPages.length === 0 ? (
@@ -1300,29 +1259,53 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           </View>
         ) : null}
 
-        <FlatList
-          data={pages}
-          keyExtractor={(item, index) => `${item}-${index}`}
-          horizontal={false}
+        <ScrollView
+          ref={mangaScrollRef}
+          style={{ width: screenWidth, height: screenHeight }}
+          contentContainerStyle={{
+            backgroundColor: '#000000',
+            alignItems: 'center',
+            paddingBottom: Math.max(insets.bottom + 40, 60),
+          }}
+          maximumZoomScale={3.5}
+          minimumZoomScale={1}
+          bouncesZoom={true}
           showsVerticalScrollIndicator={true}
-          initialNumToRender={3}
-          maxToRenderPerBatch={4}
-          windowSize={5}
-          scrollEnabled={!isMangaZoomed}
-          removeClippedSubviews={Platform.OS === 'android'}
-          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom + 40, 60) }}
-          onViewableItemsChanged={onMangaViewableChanged}
-          viewabilityConfig={mangaViewabilityConfig}
-          renderItem={({ item, index }) => (
-            <MangaPageItem
-              uri={item}
-              index={index}
-              screenWidth={screenWidth}
-              onToggleControls={onToggleControls}
-              onZoomChange={setIsMangaZoomed}
-            />
-          )}
-        />
+          showsHorizontalScrollIndicator={false}
+          scrollEventThrottle={16}
+          onScroll={handleMangaScroll}
+        >
+          <TouchableWithoutFeedback onPress={handleMangaDoubleTap}>
+            <View style={{ width: screenWidth, alignItems: 'center', backgroundColor: '#000000' }}>
+              {pages.map((item, index) => (
+                <View
+                  key={`${item}-${index}`}
+                  style={{
+                    width: screenWidth,
+                    height: pageHeight,
+                    backgroundColor: '#000000',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <Image
+                    source={{
+                      uri: item,
+                      headers: getMediaHeaders(item),
+                      cacheKey: `${item}:manga-page`,
+                    }}
+                    style={{ width: screenWidth, height: pageHeight }}
+                    contentFit="contain"
+                    contentPosition="center"
+                    priority={index <= 2 ? 'high' : 'normal'}
+                    cachePolicy="memory-disk"
+                    transition={150}
+                  />
+                </View>
+              ))}
+            </View>
+          </TouchableWithoutFeedback>
+        </ScrollView>
 
         {/* Floating Page Indicator Pill: Sayfa X / Y */}
         <View
