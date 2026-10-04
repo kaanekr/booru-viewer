@@ -121,9 +121,9 @@ test('parseNHentaiV2Listing maps num_favorites to score and favCount', () => {
   assert.equal(p.favCount, 454);
   assert.equal(p.pageCount, 21);
   assert.equal(p.mediaId, '4224557');
-  assert.equal(p.previewUrl, 'https://t1.nhentai.net/galleries/4224557/thumb.webp');
-  assert.equal(p.sampleUrl, 'https://t1.nhentai.net/galleries/4224557/cover.webp');
-  assert.equal(p.originalUrl, 'https://i1.nhentai.net/galleries/4224557/1.webp');
+  assert.equal(p.previewUrl, 'https://t3.nhentai.net/galleries/4224557/thumb.webp');
+  assert.equal(p.sampleUrl, 'https://t2.nhentai.net/galleries/4224557/cover.webp');
+  assert.equal(p.originalUrl, 'https://i3.nhentai.net/galleries/4224557/1.webp');
   // Ayna ve net ayrı id uzayına sahip: detay daima net'ten çözülmeli
   assert.equal(p.sourceLink, 'https://nhentai.net/g/685915/');
   assert.ok(Math.abs(p.aspectRatio - 250 / 350) < 0.001);
@@ -142,7 +142,18 @@ test('parseNHentaiV2Listing keeps jpg galleries on the jpg CDN path', () => {
   const p = nh.parseNHentaiV2Listing(body, SOURCE)[0];
   // thumb.jpg -> 1.webp 404 veriyordu (canlı doğrulandı)
   assert.equal(p.fileExt, 'jpg');
-  assert.equal(p.originalUrl, 'https://i1.nhentai.net/galleries/1125595/1.jpg');
+  assert.equal(p.originalUrl, 'https://i3.nhentai.net/galleries/1125595/1.jpg');
+});
+
+test('parseNHentaiV2Listing puts cover on a different CDN host than thumb', () => {
+  const nh = loadNHentai();
+  const body = JSON.stringify({
+    result: [{ id: 1, media_id: '7', thumbnail: 'galleries/7/thumb.webp', num_pages: 1 }],
+  });
+  const p = nh.parseNHentaiV2Listing(body, SOURCE)[0];
+  assert.ok(p.previewUrl.startsWith('https://t3.nhentai.net/'));
+  assert.ok(p.sampleUrl.startsWith('https://t2.nhentai.net/'));
+  assert.ok(p.sampleUrl.includes('/cover.webp'));
 });
 
 test('parseNHentaiV2DetailTags groups tags and returns favorites', () => {
@@ -178,7 +189,7 @@ test('parseNHentaiGalleryPages reads v2 detail page paths in order', () => {
   });
   const pages = nh.parseNHentaiGalleryPages(body, '685915');
   assert.equal(pages.join('|'),
-    'https://i1.nhentai.net/galleries/4224557/1.webp|https://i1.nhentai.net/galleries/4224557/2.webp');
+    'https://i3.nhentai.net/galleries/4224557/1.webp|https://i3.nhentai.net/galleries/4224557/2.webp');
 });
 
 test('detail resolution uses only the v2 API detail endpoint', async () => {
@@ -209,7 +220,7 @@ test('detail resolution uses only the v2 API detail endpoint', async () => {
   assert.equal(netDetail.numFavorites, 610);
   assert.ok(netCalls.every((u) => u.includes('/api/v2/galleries/685915')), 'v2 API detay endpointi cagrilir');
 
-  // Ağ hatasında sentetik güvenlik ağı (i1.nhentai.net)
+  // Ağ hatasında sentetik güvenlik ağı (i3.nhentai.net)
   const nhOffline = loadNHentai(async () => ({ ok: false, status: 500 }));
   const fallback = await nhOffline.resolveNHentaiGalleryDetail({
     id: 'nh_685915',
@@ -218,8 +229,8 @@ test('detail resolution uses only the v2 API detail endpoint', async () => {
     fileExt: 'webp',
   });
   assert.equal(fallback.pageCount, 3);
-  assert.equal(fallback.pages[0], 'https://i1.nhentai.net/galleries/4224557/1.webp');
-  assert.equal(fallback.pages[2], 'https://i1.nhentai.net/galleries/4224557/3.webp');
+  assert.equal(fallback.pages[0], 'https://i3.nhentai.net/galleries/4224557/1.webp');
+  assert.equal(fallback.pages[2], 'https://i3.nhentai.net/galleries/4224557/3.webp');
 });
 
 test('parseNHentaiGalleryPages parses pages from API JSON', () => {
@@ -232,9 +243,9 @@ test('parseNHentaiGalleryPages parses pages from API JSON', () => {
   });
   const pages = nh.parseNHentaiGalleryPages(detailJson, '298547');
   assert.equal(pages.length, 3);
-  assert.equal(pages[0], 'https://i1.nhentai.net/galleries/1556093/1.jpg');
-  assert.equal(pages[1], 'https://i1.nhentai.net/galleries/1556093/2.png');
-  assert.equal(pages[2], 'https://i1.nhentai.net/galleries/1556093/3.webp');
+  assert.equal(pages[0], 'https://i3.nhentai.net/galleries/1556093/1.jpg');
+  assert.equal(pages[1], 'https://i3.nhentai.net/galleries/1556093/2.png');
+  assert.equal(pages[2], 'https://i3.nhentai.net/galleries/1556093/3.webp');
 });
 
 test('resolveNHentaiPages resolves pages end-to-end with synthetic fallback', async () => {
@@ -266,7 +277,7 @@ test('resolveNHentaiPages resolves pages end-to-end with synthetic fallback', as
     fileExt: 'jpg',
   });
   assert.equal(resolved.length, 2);
-  assert.equal(resolved[0], 'https://i1.nhentai.net/galleries/1556093/1.jpg');
+  assert.equal(resolved[0], 'https://i3.nhentai.net/galleries/1556093/1.jpg');
 
   // Synthetic fallback when network fails but mediaId + pageCount exist
   const nhOffline = loadNHentai(async () => ({ ok: false, status: 500 }));
@@ -278,8 +289,8 @@ test('resolveNHentaiPages resolves pages end-to-end with synthetic fallback', as
     fileExt: 'jpg',
   });
   assert.equal(fallback.length, 3);
-  assert.equal(fallback[0], 'https://i1.nhentai.net/galleries/888/1.jpg');
-  assert.equal(fallback[2], 'https://i1.nhentai.net/galleries/888/3.jpg');
+  assert.equal(fallback[0], 'https://i3.nhentai.net/galleries/888/1.jpg');
+  assert.equal(fallback[2], 'https://i3.nhentai.net/galleries/888/3.jpg');
 });
 
 test('searchNHentaiTags returns instant autocomplete suggestions with categories', async () => {
@@ -361,7 +372,7 @@ test('resolveNHentaiGalleryDetail resolves pages and categorized tags together v
   const nh = loadNHentai(customFetch);
   const detail = await nh.resolveNHentaiGalleryDetail({ id: 'nh_703517' });
   assert.equal(detail.pages.length, 2);
-  assert.equal(detail.pages[0], 'https://i1.nhentai.net/galleries/testfolder/1.webp');
+  assert.equal(detail.pages[0], 'https://i3.nhentai.net/galleries/testfolder/1.webp');
   assert.equal(detail.tags.artist[0], 'cool artist');
   assert.equal(detail.tags.general[0], 'milf');
   assert.ok(detail.allTags.includes('cool artist'));
