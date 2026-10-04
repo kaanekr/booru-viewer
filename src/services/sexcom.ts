@@ -94,6 +94,9 @@ export function parseSexComListing(html: string, source: BooruSource): BooruPost
     const viewsRaw = viewsM ? decodeEntities(viewsM[1]).trim() : '';
     const rateM = c.match(/>([0-9]{1,3})%<\/span>/);
     const ratingPct = rateM ? rateM[1] : '';
+    // Karttaki video etiketinde premium isareti (yoksa bilinmiyor -> dahil).
+    const premiumM = c.match(/data-premium="([01])"/);
+    const isPremium = premiumM ? premiumM[1] === '1' : false;
 
     const score = parseSexComViewsCount(viewsRaw);
     const artist = channel ? [channel] : [];
@@ -132,6 +135,7 @@ export function parseSexComListing(html: string, source: BooruSource): BooruPost
       sourceLink: base + decodeEntities(hrefM[1]),
       fileExt: 'mp4',
       createdAt: new Date().toISOString(),
+      isPremium,
     });
   }
 
@@ -198,6 +202,16 @@ export function parseSexComDetail(html: string): SexComFiles {
   const mp4M = html.match(/<video[^>]*src="([^"]+\.mp4[^"]*)"/i);
   if (mp4M && !out.mp4) out.mp4 = decodeEntities(mp4M[1]).trim();
   return out;
+}
+
+/**
+ * Premium kilitli gönderileri listeden çıkarır. sex.com'da tam dosya
+ * sunulmayan videolar ızgaraya girmez; izleyiciye kalanlar ücretsizdir,
+ * önizlemede takılma olursa sebep çözümleme/TLS hatasıdır (logda görünür).
+ */
+export function excludePremiumPosts<T extends { isPremium?: boolean }>(posts: T[]): T[] {
+  if (!posts) return posts;
+  return posts.filter((p) => !p || !p.isPremium);
 }
 
 /**
