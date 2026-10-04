@@ -33,6 +33,7 @@ import {
   DEFAULT_FILTER_CONFIG,
 } from '../types/booru';
 import { booruApi } from '../services/booruApi';
+import { nhentaiTagQuery } from '../services/nhentai';
 import { dayDateOptions, weekDateOptions, monthDateOptions, describeAnchor } from '../utils/leaderboardPeriods';
 import { AVAILABLE_SOURCES } from '../services/sources';
 import { useSource } from '../context/SourceContext';
@@ -225,8 +226,9 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
   }, [tagInput, draft.autocompleteFromServer]);
 
   const handleAddTag = (tagToAdd: string) => {
-    // Boşluk veya virgülle ayrılmış birden fazla etiketi tek tek ayrıştır
-    const parts = tagToAdd.trim().split(/[\s,]+/);
+    // Boşluk veya virgülle ayrılmış birden fazla etiketi tek tek ayrıştır;
+    // tırnaklı grup tek parça kalır (tag:"big breasts" bölünmez)
+    const parts = tagToAdd.trim().match(/("[^"]*"|[^\s,"])+/g) || [];
     const validTags = parts
       .map((p) => p.trim().toLowerCase())
       .filter((p) => p.length > 0 && !draft.tags.includes(p));
@@ -242,14 +244,16 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
     setSuggestions([]);
   };
 
-  const handleSelectSuggestion = (suggestedTag: string) => {
+  const handleSelectSuggestion = (suggestedTag: string, category?: BooruTagSuggestion['category']) => {
     Haptics.selectionAsync();
+    // nhentai: öneri `tag:"ad"` mekaniğiyle eklenir
+    const qualified =
+      activeSource.type === 'nhentai' ? nhentaiTagQuery(suggestedTag, category) : suggestedTag.trim().toLowerCase();
     // Varsa önceki yazılmış token'ları da al, son yazılanı öneri ile tamamla
-    const tokens = tagInput.trim().split(/[\s,]+/);
+    const tokens = tagInput.trim().match(/("[^"]*"|[^\s,"])+/g) || [];
     const previousTokens = tokens.slice(0, -1).map((t) => t.trim().toLowerCase()).filter(Boolean);
-    const cleanSuggested = suggestedTag.trim().toLowerCase();
 
-    const toAdd = [...previousTokens, cleanSuggested].filter((t) => !draft.tags.includes(t));
+    const toAdd = [...previousTokens, qualified].filter((t) => !draft.tags.includes(t));
     if (toAdd.length > 0) {
       setDraft((prev) => ({
         ...prev,
@@ -293,9 +297,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     let finalDraft = { ...draft };
     if (tagInput.trim()) {
-      const extraTags = tagInput
-        .trim()
-        .split(/\s+/)
+      const extraTags = (tagInput.trim().match(/("[^"]*"|[^\s,"])+/g) || [])
         .map((t) => t.trim().toLowerCase())
         .filter(Boolean);
       for (const extraTag of extraTags) {
@@ -488,14 +490,14 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                 renderItem={({ item }) => (
                   <TouchableOpacity
                     style={styles.suggestionRow}
-                    onPress={() => handleAddTag(item.name)}
+                    onPress={() => handleSelectSuggestion(item.name, item.category)}
                   >
                     <TagChip
                       name={item.name}
                       category={item.category}
                       count={item.postCount}
                       size="sm"
-                      onPress={() => handleAddTag(item.name)}
+                      onPress={() => handleSelectSuggestion(item.name, item.category)}
                     />
                   </TouchableOpacity>
                 )}
