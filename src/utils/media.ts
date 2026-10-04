@@ -348,6 +348,8 @@ export function getMediaHeaders(url: string | undefined): Record<string, string>
     headers['Referer'] = 'https://www.pornhub.com/';
   } else if (target.includes('sex.com') || target.includes('sxccdn.com')) {
     headers['Referer'] = 'https://www.sex.com/';
+  } else if (target.includes('hentaihaven.xxx') || target.includes('coverlanyvd.org') || target.includes('octopusmanifest.org')) {
+    headers['Referer'] = 'https://hentaihaven.xxx/';
   } else if (target.includes('redgifs.com')) {
     // RedGifs CDN (media.redgifs.com) Referer olmadan 403 dönebiliyor
     headers['Referer'] = 'https://www.redgifs.com/';
