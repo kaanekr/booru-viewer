@@ -97,9 +97,9 @@ class ProxyService {
     }
     out['User-Agent'] =
       'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
-    // xvideos sıkıştırmalı gövdeyi worker yolunda 8KB'de kesiyor (canlı doğrulandı);
-    // sıkıştırmasız istek tam sayfa (27 kart) dönüyor.
-    if (/xvideos\.com/i.test(url)) out['Accept-Encoding'] = 'identity';
+    // xvideos sıkıştırmalı gövdeyi worker yolunda 8KB'de kesiyor;
+    // nhentai.net ise Brotli (br) dönünce React Native iOS çözemeyip takılıyor (canlı doğrulandı).
+    if (/xvideos\.com/i.test(url) || /nhentai\.net/i.test(url)) out['Accept-Encoding'] = 'gzip, deflate, identity';
     return out;
   }
 

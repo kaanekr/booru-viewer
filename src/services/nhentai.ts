@@ -613,6 +613,7 @@ export async function resolveNHentaiGalleryDetail(
     Referer: `${NHENTAI_BASE}/`,
     'Accept-Language': 'en-US,en;q=0.9',
     Accept: 'application/json,*/*',
+    'Accept-Encoding': 'gzip, deflate, identity',
   };
 
   const fetchWithTimeout = async (url: string, ms = 9000): Promise<string | null> => {
@@ -790,6 +791,7 @@ export async function searchNHentaiApiTags(
           'User-Agent': NHENTAI_UA,
           'Content-Type': 'application/json',
           Accept: 'application/json',
+          'Accept-Encoding': 'gzip, deflate, identity',
         },
         body: JSON.stringify({ query: q, limit: Math.min(50, Math.max(5, limit)) }),
       },
