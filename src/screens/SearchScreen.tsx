@@ -32,6 +32,7 @@ import {
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { booruApi } from '../services/booruApi';
+import { nhentaiTagQuery } from '../services/nhentai';
 import { useNavigation, type RouteProp, useIsFocused } from '@react-navigation/native';
 import {
   BooruPost,
@@ -39,6 +40,7 @@ import {
   BooruTagSuggestion,
   RedGifsNiche,
   SearchFilterConfig,
+  TagCategory,
   DEFAULT_FILTER_CONFIG,
 } from '../types/booru';
 import type { TabParamList, SearchMode } from '../navigation/types';
@@ -257,10 +259,15 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       return;
     }
 
-    // Çoklu etiket aramalarında o an yazılmakta olan son etiketi baz al
+    // Çoklu etiket aramalarında o an yazılmakta olan son etiketi baz al.
+    // `tag:"..."` öneki ve tırnaklar aramadan sıyrılır (örn. tag:"big bre -> big bre).
     const tokens = query.trim().split(/\s+/);
     const activeToken = tokens[tokens.length - 1] || '';
-    const cleanToken = activeToken.replace(/^-+/, '').trim();
+    const cleanToken = activeToken
+      .replace(/^-+/, '')
+      .replace(/^(tag|artist|character|parody|group|language|category):"?/i, '')
+      .replace(/"$/, '')
+      .trim();
 
     if (cleanToken.length < 2) {
       setSuggestions([]);
@@ -343,20 +350,25 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     }
   };
 
-  const handleSelectSuggestion = (suggestedTag: string, immediateSearch = false) => {
+  const handleSelectSuggestion = (suggestedTag: string, immediateSearch = false, category?: TagCategory) => {
     Haptics.selectionAsync();
 
-    const parts = query.split(/\s+/);
+    // nhentai: öneri gerçek etiketse `tag:"ad"` mekaniğiyle ara (düz kelime
+    // full-text eşleşir, etiket eşleşmesi yapmaz).
+    const qualifiedTag =
+      activeSource.type === 'nhentai' ? nhentaiTagQuery(suggestedTag, category) : suggestedTag;
+
+    const parts = query.match(/("[^"]*"|[^\s"])+/g) || [];
     let newQuery = '';
 
     if (parts.length > 0 && !query.endsWith(' ')) {
       const last = parts[parts.length - 1];
       const isNegated = last.startsWith('-');
-      parts[parts.length - 1] = isNegated ? `-${suggestedTag}` : suggestedTag;
+      parts[parts.length - 1] = isNegated ? `-${qualifiedTag}` : qualifiedTag;
       newQuery = parts.filter(Boolean).join(' ') + ' ';
     } else {
       const existing = query.trim();
-      newQuery = existing ? `${existing} ${suggestedTag} ` : `${suggestedTag} `;
+      newQuery = existing ? `${existing} ${qualifiedTag} ` : `${qualifiedTag} `;
     }
 
     setQuery(newQuery);
@@ -368,9 +380,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   };
 
   const parseQueryToTags = (raw: string): string[] => {
-    return raw
-      .trim()
-      .split(/\s+/)
+    // Tırnaklı gruplar tek token kalır: tag:"big breasts" bölünmez
+    return (raw.trim().match(/("[^"]*"|[^\s"])+/g) || [])
       .map((t) => t.trim().toLowerCase())
       .filter(Boolean);
   };
@@ -1057,14 +1068,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               renderItem={({ item }) => (
                 <TouchableOpacity
                   style={styles.suggestionRow}
-                  onPress={() => handleSelectSuggestion(item.name, true)}
+                  onPress={() => handleSelectSuggestion(item.name, true, item.category)}
                 >
                   <TagChip
                     name={item.name}
                     category={item.category}
                     count={item.postCount}
                     size="sm"
-                    onPress={() => handleSelectSuggestion(item.name, true)}
+                    onPress={() => handleSelectSuggestion(item.name, true, item.category)}
                   />
                 </TouchableOpacity>
               )}

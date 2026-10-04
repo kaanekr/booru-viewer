@@ -58,10 +58,26 @@ function loadCard() {
     },
     '../utils/guards': { urlEndsWith: (url, ...extensions) =>
       typeof url === 'string' && extensions.some((ext) => url.split('?')[0].toLowerCase().endsWith(ext)) },
-    '../services/proxyService': { proxyService: { hasWorker: () => false } },
+    '../services/proxyService': { proxyService: { hasWorker: () => false, isProxiedUrl: () => false } },
     '../utils/imageLoadGate': { useLoadGate: () => [true, release] },
     '../utils/freezeProbe': { trackGridPlayer: () => release, recordFreezeEvent: () => {} },
-    '../utils/gridPreviews': { useGridPreviewsEnabled: () => gridPreviewsOn },
+    '../utils/gridPreviews': (() => {
+      // Gercek modulle ayni sozlesme: oturumluk olu-host kumesi kart basina degil yukleme basina.
+      const dead = new Set();
+      const hostOf = (u) => {
+        if (typeof u !== 'string') return '';
+        const parts = u.split('?')[0].split('/');
+        return (parts.length > 2 ? parts[2] : '').toLowerCase();
+      };
+      return {
+        useGridPreviewsEnabled: () => gridPreviewsOn,
+        markPreviewHostDead: (u) => {
+          const h = hostOf(u);
+          if (h) dead.add(h);
+        },
+        isPreviewHostDead: (u) => dead.has(hostOf(u)),
+      };
+    })(),
   };
   const filename = path.resolve(__dirname, '../src/components/PostCard.tsx');
   const js = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
@@ -181,4 +197,21 @@ test('previews disabled in settings: no player, static cover only', async () => 
   await act(() => root.root.findByType('TouchableOpacity').props.onPressIn());
   assert.equal(stats.created, 0);
   assert.equal(root.root.findAllByType('VideoView').length, 0);
+});
+
+test('dead host is skipped session-wide after terminal direct failure', async () => {
+  const { PostCard, stats } = loadCard();
+  const propsA = { post: videoPost(), onPress, videoActive: true };
+  await act(() => { root = create(React.createElement(PostCard, propsA)); });
+  assert.equal(stats.created, 1);
+  assert.equal(root.root.findAllByType('VideoView').length, 1);
+  const callback = [...stats.listeners.values()][0];
+  await act(() => callback({ status: 'error' }));
+  assert.equal(root.root.findAllByType('VideoView').length, 0);
+  // Ayni hosttaki yeni kart native deneme yapmaz: oyuncu kurulmaz, statik kapak durur.
+  const postB = { id: '2', previewUrl: 'https://cdn.test/2.jpg', previewVideoUrl: 'https://cdn.test/other.mp4', tags: {}, aspectRatio: 1 };
+  await act(() => root.update(React.createElement(PostCard, { post: postB, onPress, videoActive: true })));
+  assert.equal(stats.created, 1);
+  assert.equal(root.root.findAllByType('VideoView').length, 0);
+  assert.ok(root.root.findAllByType('Image').length >= 1);
 });

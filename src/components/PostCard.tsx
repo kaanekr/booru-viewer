@@ -4,7 +4,7 @@ import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEventListener } from 'expo';
 import * as Haptics from 'expo-haptics';
-import { Heart, Play, Volume2 } from 'lucide-react-native';
+import { BookOpen, Heart, Play, Volume2 } from 'lucide-react-native';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isUnsupportedOnIOS } from '../utils/media';
@@ -12,7 +12,7 @@ import { urlEndsWith } from '../utils/guards';
 import { proxyService } from '../services/proxyService';
 import { GridColumn, useLoadGate } from '../utils/imageLoadGate';
 import { trackGridPlayer, recordFreezeEvent } from '../utils/freezeProbe';
-import { useGridPreviewsEnabled } from '../utils/gridPreviews';
+import { useGridPreviewsEnabled, markPreviewHostDead, isPreviewHostDead } from '../utils/gridPreviews';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const COLUMN_WIDTH = (SCREEN_WIDTH - 36) / 2;
@@ -179,12 +179,17 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   // koşullu çocukta bulunur. Görünmeyen kart hiçbir oyuncu tutmaz.
   const motionUrl = useVideoCover ? videoCoverRaw : playablePreviewUrl;
   const [failedMotionUrl, setFailedMotionUrl] = React.useState<string>();
-  const handleMotionError = React.useCallback(() => {
+  const handleMotionError = React.useCallback((failedUri: string, proxyAttempted: boolean) => {
+    // Direkt bacak terminal patladiysa host oturumluk kara listede:
+    // sonraki kartlar native deneme + uyari uretmeden statik kapakta kalir.
+    if (!proxyAttempted) markPreviewHostDead(failedUri);
     setFailedMotionUrl(motionUrl);
     releaseSlot();
   }, [motionUrl, releaseSlot]);
+  // Oturumda olmus host hic denenmez (uyari firtinasi bitirme).
+  const motionDead = !!motionUrl && isPreviewHostDead(motionUrl);
   const showVideo = previewsEnabled && canLoad && screenActive && (videoActive || touchPreviewActive)
-    && !!motionUrl && motionUrl !== failedMotionUrl;
+    && !!motionUrl && motionUrl !== failedMotionUrl && !motionDead;
 
   React.useEffect(() => {
     // Ekran dışındaki video kapağı resim kuyruğunu 8 saniye tutmasın.
@@ -363,8 +368,15 @@ const PostCardComponent: React.FC<PostCardProps> = ({
         )}
       </View>
 
-      {/* File type badge if webm/gif/mp4/zip */}
-      {isWebm ? (
+      {/* File type badge if manga/webm/gif/mp4/zip */}
+      {post.sourceId === 'nhentai' || (post.pageCount && post.pageCount > 0) ? (
+        <View style={styles.mangaBadge}>
+          <BookOpen size={10} color="#FFFFFF" style={{ marginRight: 3 }} />
+          <Text style={styles.mediaBadgeText}>
+            {post.pageCount ? `${post.pageCount}P` : 'MANGA'}
+          </Text>
+        </View>
+      ) : isWebm ? (
         <View style={[styles.mediaBadge, Platform.OS === 'ios' ? styles.mediaBadgeUnsupported : styles.mediaBadgeWebm]}>
           <Text style={styles.mediaBadgeText}>WEBM</Text>
         </View>
@@ -387,7 +399,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
 const CardVideoPreview: React.FC<{
   url: string;
   onReady: () => void;
-  onError: () => void;
+  onError: (failedUri: string, proxyAttempted: boolean) => void;
 }> = React.memo(({ url, onReady, onError }) => {
   React.useEffect(() => trackGridPlayer(), []);
   const videoSource = React.useMemo(
@@ -431,18 +443,21 @@ const CardVideoPreview: React.FC<{
     if (payload.status !== 'error') return;
     recordFreezeEvent('grid-player-error');
     const currentUri = videoSource.uri;
-    if (proxyTriedRef.current || !proxyService.hasWorker() || proxyService.isProxiedUrl(currentUri)) {
-      onError();
+    // Proxy bacagi denenmis basarisizlik hostu oldurmez (worker gecici
+    // bozuk olabilir); direkt bacak terminali oldurur.
+    const viaProxyLeg = proxyTriedRef.current || proxyService.isProxiedUrl(currentUri);
+    if (viaProxyLeg || !proxyService.hasWorker()) {
+      onError(currentUri, viaProxyLeg);
       return;
     }
     proxyTriedRef.current = true;
     const viaProxy = proxyService.forceProxyUrl(url);
     if (!viaProxy || viaProxy === currentUri) {
-      onError();
+      onError(currentUri, true);
       return;
     }
     player.replaceAsync({ uri: getMediaUrl(viaProxy) || viaProxy, headers: getMediaHeaders(viaProxy) })
-      .catch(() => { if (mountedRef.current) onError(); });
+      .catch(() => { if (mountedRef.current) onError(currentUri, true); });
   });
 
   return (
@@ -550,6 +565,17 @@ const styles = StyleSheet.create({
     color: '#FFD700',
     fontSize: 10,
     fontWeight: '700',
+  },
+  mangaBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(237, 37, 83, 0.85)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
   mediaBadge: {
     position: 'absolute',

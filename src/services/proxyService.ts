@@ -12,14 +12,20 @@ class ProxyService {
 
   /**
    * iOS AVPlayer'da TLS handshake'i düşüren CDN host'ları (NSURLError -1200).
-   * Canlı vaka: api-cdn-mp4.rule34.xxx üzerindeki .mp4'ler direkt bağlantıda
-   * "A TLS error caused the secure connection to fail" veriyor, Worker
-   * üzerinden aynı dosya sorunsuz oynuyor. Bu host'lar worker kayıtlıysa
-   * global toggle kapalı olsa bile seçici olarak proxy'lenir; diğer
-   * host'lar doğrudan kalır.
+   * Canlı vakalar: api-cdn-mp4.rule34.xxx ve thumb/mp4-cdn*.xvideos-cdn.com
+   * üzerindeki dosyalar direkt bağlantıda "A TLS error caused the secure
+   * connection to fail" veriyor. Bu host'lar worker kayıtlıysa global
+   * toggle kapalı olsa bile seçici olarak proxy'lenir; diğer host'lar
+   * doğrudan kalır.
    */
   private static readonly TLS_FRAGILE_PATTERNS: RegExp[] = [
     /api-cdn[^/]*\.rule34\.(xxx|us)/i,
+    /thumb-cdn\d*\.xvideos-cdn\.com/i,
+    /thumbs-gcore\.xvideos-cdn\.com/i,
+    /mp4-cdn\d*\.xvideos-cdn\.com/i,
+    /videos\d*\.sex\.com/i,
+    /premium-videos\d*\.sex\.com/i,
+    /nhentai\.net/i,
   ];
 
   /** Ham URL TLS-kırılgan bir CDN'e mi işaret ediyor? */
@@ -91,9 +97,9 @@ class ProxyService {
     }
     out['User-Agent'] =
       'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
-    // xvideos sıkıştırmalı gövdeyi worker yolunda 8KB'de kesiyor (canlı doğrulandı);
-    // sıkıştırmasız istek tam sayfa (27 kart) dönüyor.
-    if (/xvideos\.com/i.test(url)) out['Accept-Encoding'] = 'identity';
+    // xvideos sıkıştırmalı gövdeyi worker yolunda 8KB'de kesiyor;
+    // nhentai.net ise Brotli (br) dönünce React Native iOS çözemeyip takılıyor (canlı doğrulandı).
+    if (/xvideos\.com/i.test(url) || /nhentai\.net/i.test(url)) out['Accept-Encoding'] = 'gzip, deflate, identity';
     return out;
   }
 

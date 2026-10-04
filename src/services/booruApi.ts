@@ -34,9 +34,26 @@ import type { PornhubOrdering, PornhubVideo } from './pornhub';
 import {
   buildSexComSearchCandidates,
   parseSexComListing,
+  excludePremiumPosts,
   SEXCOM_BASE,
   SEXCOM_UA,
 } from './sexcom';
+import {
+  buildHentaiHavenSearchCandidates,
+  parseHentaiHavenListing,
+  fetchHentaiHavenPosts as fetchHHPostsService,
+  searchHentaiHavenTags,
+  HENTAIHAVEN_BASE,
+  HENTAIHAVEN_UA,
+} from './hentaihavens';
+import {
+  buildNHentaiApiCandidates,
+  nhentaiApiHeaders,
+  nhentaiApiSort,
+  parseNHentaiV2Listing,
+  searchNHentaiTags,
+  NHENTAI_API_UA,
+} from './nhentai';
 
 const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
 
@@ -212,8 +229,8 @@ export class BooruApiService {
       });
     }
 
-    // Min Score (RedGifs/XVideos/XHamster/Pornhub/Sex.com'da skor filtresi yok; literal tag olarak gidip sonucu sıfırlar)
-    if (filter.minScore && filter.minScore > 0 && activeSource.type !== 'redgifs' && activeSource.type !== 'xvideos' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub' && activeSource.type !== 'sexcom') {
+    // Min Score (RedGifs/XVideos/XHamster/Pornhub/Sex.com/HentaiHaven/nhentai'de skor filtresi yok; literal tag olarak gidip sonucu sıfırlar)
+    if (filter.minScore && filter.minScore > 0 && activeSource.type !== 'redgifs' && activeSource.type !== 'xvideos' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub' && activeSource.type !== 'sexcom' && activeSource.type !== 'hentaihaven' && activeSource.type !== 'nhentai') {
       parts.push(`score:>=${filter.minScore}`);
     }
 
@@ -222,7 +239,7 @@ export class BooruApiService {
     if (filter.user && filter.user.trim()) {
       if (activeSource.type === 'cumst') {
         parts.push(`creator:${filter.user.trim()}`);
-      } else if (activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom') {
+      } else if (activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven' || activeSource.type === 'nhentai') {
         parts.push(filter.user.trim());
       } else if (activeSource.type !== 'redgifs') {
         parts.push(`user:${filter.user.trim()}`);
@@ -242,7 +259,7 @@ export class BooruApiService {
     // Historical Leaderboard / Anchor Date (Cum.st'e özel; başka motorda
     // literal tag sayılıp sonucu sıfırlar). Haftalık/aylık periyotta çapa
     // takvim başına yaslanır: aynı periyodun günleri aynı sorguyu üretir.
-    if (filter.leaderboardDate && activeSource.type !== 'xvideos' && activeSource.type !== 'redgifs' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub' && activeSource.type !== 'sexcom') {
+    if (filter.leaderboardDate && activeSource.type !== 'xvideos' && activeSource.type !== 'redgifs' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub' && activeSource.type !== 'sexcom' && activeSource.type !== 'hentaihaven' && activeSource.type !== 'nhentai') {
       const anchor =
         activeSource.type === 'cumst'
           ? snapLeaderboardAnchor(filter.leaderboardDate, filter.timeRange)
@@ -261,10 +278,8 @@ export class BooruApiService {
       }
     }
 
-    // Sort By & Time Range (RedGifs/XVideos/XHamster/Pornhub sıralaması order=/sort=/ordering
-    // parametresiyle kendi fetch fonksiyonları içinde yapılır; buraya order:/sort: token'ı
-    // eklenirse literal tag sayılıp sonuç sıfırlanır)
-    if (activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom') {
+    // Sort By & Time Range (RedGifs/XVideos/XHamster/Pornhub/nhentai sıralaması kendi fonksiyonları içinde yapılır)
+    if (activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven' || activeSource.type === 'nhentai') {
       return parts.join(' ').trim();
     }
     if (filter.sortBy === 'score') {
@@ -472,6 +487,10 @@ export class BooruApiService {
         return await this.fetchPornhubPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else if (source.type === 'sexcom') {
         return await this.fetchSexComPosts(source, page, limit, tags, includeBlacklisted);
+      } else if (source.type === 'hentaihaven') {
+        return await this.fetchHentaiHavenPosts(source, page, limit, tags, includeBlacklisted);
+      } else if (source.type === 'nhentai') {
+        return await this.fetchNHentaiPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else {
         return await this.fetchDanbooruPosts(source, page, limit, tags, includeBlacklisted);
       }
@@ -1627,7 +1646,112 @@ export class BooruApiService {
 
     const html = await response.text();
     const posts = parseSexComListing(html, source);
+    // Premium kilitli videoların tam dosyası sunulmuyor: ızgaraya girmez.
+    return await this.filterBlacklistedPosts(excludePremiumPosts(posts), includeBlacklisted);
+  }
+
+  private async fetchHentaiHavenPosts(
+    source: BooruSource,
+    page: number,
+    limit: number,
+    tags: string,
+    includeBlacklisted: boolean = false
+  ): Promise<BooruPost[]> {
+    void limit;
+    const posts = await fetchHHPostsService(source, page, tags);
     return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+  }
+
+  private async fetchNHentaiPosts(
+    source: BooruSource,
+    page: number,
+    limit: number,
+    tags: string,
+    includeBlacklisted: boolean = false,
+    filter?: SearchFilterConfig
+  ): Promise<BooruPost[]> {
+    // YALNIZCA resmi v2 API (https://nhentai.net/api/v2/docs).
+    // API; keywords, "exact phrase", -negation, tag:/artist:/language: filtrelerini,
+    // favorites:>=N eşiğini ve date/popular/popular-today/popular-week/popular-month
+    // sıralamalarını yerel olarak destekler.
+    const fullQuery = tags
+      .split(/\s+/)
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .join(' ');
+    void limit;
+
+    const apiSort = nhentaiApiSort(filter?.sortBy, filter?.timeRange);
+    const candidates = buildNHentaiApiCandidates(page, fullQuery, apiSort, filter?.minScore);
+
+    // Safari-mimikri (cihazda doğrulandı): bot koruması istek parmak izini
+    // bayraklayıp gövdeyi akıtmıyordu; tam Safari formu + Referer yok + AE yok.
+    const headers = nhentaiApiHeaders();
+
+    let lastError: any = null;
+    let saw404 = false;
+    for (const url of candidates) {
+      try {
+        // TEK ATIM: retry yok. Gerekçe: (1) search anonim limiti 10 req/dk —
+        // her retry bütçeyi yakıp 429/tarpit sarmalına sokar; (2) `query=*` +
+        // zaman aralıklı sıralama sunucuda zaten ~4s sürer, 20s tek timeout
+        // yavaş sorguya yeterli alanı tanır.
+        const timeoutMs = 20000;
+        const response = await proxyService.fetchWithFallback(url, { headers }, timeoutMs);
+        if (response.status === 404) {
+          saw404 = true;
+          console.log(`[BooruAPI] nhentai 404 (sayfa sonu): ${url}`);
+          continue;
+        }
+        if (response.status === 429) {
+          // Doküman: anonim IP için 10-15 req/dakika. Ekranda boş grid yerine
+          // anlaşılır hata gösterilir.
+          throw new Error('nhentai API istek sınırı aşıldı (429 Rate limit). Lütfen biraz bekleyin.');
+        }
+        if (!response.ok) {
+          lastError = new Error(`HTTP ${response.status}`);
+          console.log(`[BooruAPI] nhentai HTTP ${response.status}: ${url}`);
+          continue;
+        }
+        const text = await withHardTimeout(response.text(), timeoutMs, 'nhentai body api/v2');
+        if (/just a moment|challenge-platform|cf-challenge|attention required/i.test(text.slice(0, 4000))) {
+          lastError = new Error('Cloudflare challenge sayfası alındı');
+          console.warn(`[BooruAPI] nhentai bot-duvarı sayfası aldı (challenge): ${url}`);
+          continue;
+        }
+        const posts = parseNHentaiV2Listing(text, source);
+        console.log(`[BooruAPI] nhentai sonuc=${posts.length} url=${url}`);
+        if (posts.length > 0) {
+          return await this.filterNHentaiMinScore(
+            await this.filterBlacklistedPosts(posts, includeBlacklisted),
+            filter
+          );
+        }
+      } catch (err) {
+        // 429 fırlatması doğrudan kullanıcıya gösterilir (yutulmaz)
+        if (err instanceof Error && err.message.includes('429')) throw err;
+        lastError = err;
+        console.log(`[BooruAPI] nhentai hata (${err instanceof Error ? err.message : String(err)}): ${url}`);
+      }
+    }
+    if (saw404 && !lastError) {
+      return [];
+    }
+    if (lastError) {
+      console.warn('[BooruAPI] nhentai v2 API başarısız oldu:', lastError);
+    }
+    return [];
+  }
+
+  /**
+   * Min favori eşiği: sunucu sorguya `favorites:>=N` eklediği için çoğu durumda
+   * zaten filtrelidir; bu istemci tarafı ikinci güvenlik ağıdır.
+   */
+  private filterNHentaiMinScore(posts: BooruPost[], filter?: SearchFilterConfig): BooruPost[] {
+    const min = filter?.minScore;
+    if (!min || min <= 0 || posts.length === 0) return posts;
+    if (!posts.some((p) => (p.score || 0) > 0)) return posts;
+    return posts.filter((p) => (p.score || 0) >= min);
   }
 
   private async fetchXHamsterPosts(
@@ -1717,6 +1841,8 @@ export class BooruApiService {
 
   private phDiscoverCache: BooruPost[] = [];
   private phDiscoverCacheAt = 0;
+  /** nhentai v2 API 429 (Rate limit: 10-15 req/dk) alındığında 60s bekleme süresi */
+  private nhentaiApiCooldownUntil = 0;
 
   /** Keşfet önbelleği 15dk geçerli (site düşse bile grid boş kalmaz). */
   private phDiscoverCacheValid(): boolean {
@@ -2214,6 +2340,10 @@ export class BooruApiService {
       } else if (source.type === 'xvideos' || source.type === 'xhamster' || source.type === 'pornhub' || source.type === 'sexcom') {
         // Resmi öneri endpoint'i yok; istemci tarafı filtre yeterli
         return [];
+      } else if (source.type === 'hentaihaven') {
+        return await searchHentaiHavenTags(query, limit);
+      } else if (source.type === 'nhentai') {
+        return await searchNHentaiTags(query, limit);
       } else if (source.type === 'gelbooru' || source.type === 'realbooru') {
         const url = `${source.baseUrl}/autocomplete.php?q=${encodeURIComponent(query.trim())}`;
         const response = await fetchBooru(url, {

@@ -33,6 +33,7 @@ import {
   DEFAULT_FILTER_CONFIG,
 } from '../types/booru';
 import { booruApi } from '../services/booruApi';
+import { nhentaiTagQuery } from '../services/nhentai';
 import { dayDateOptions, weekDateOptions, monthDateOptions, describeAnchor } from '../utils/leaderboardPeriods';
 import { AVAILABLE_SOURCES } from '../services/sources';
 import { useSource } from '../context/SourceContext';
@@ -86,6 +87,16 @@ const SEXCOM_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] 
   { label: '---', value: 'default', desc: 'Varsayılan (Öne Çıkanlar)' },
 ];
 
+const HENTAIHAVEN_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
+  { label: '---', value: 'default', desc: 'Varsayılan (Trend)' },
+];
+
+const NHENTAI_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
+  { label: '---', value: 'default', desc: 'Varsayılan (En Yeniler)' },
+  { label: 'En Yeniler', value: 'id', desc: 'Son Eklenen Mangalar' },
+  { label: 'Popüler', value: 'score', desc: 'En Çok Favorilenenler' },
+];
+
 const CUMST_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
   { label: 'Score (Popülerlik)', value: 'score', desc: 'En Çok Kaydedilenler / Liderlik' },
   { label: 'Id (En Yeniler)', value: 'id', desc: 'Son Eklenen Gönderiler' },
@@ -127,6 +138,16 @@ const MIN_SCORE_OPTIONS: { label: string; value: number | undefined }[] = [
   { label: '50+ Puan', value: 50 },
   { label: '100+ Puan', value: 100 },
   { label: '500+ Puan', value: 500 },
+];
+
+/** nhentai'de skor = favori sayısı; ölçek daha yüksek (binler). */
+const NHENTAI_MIN_SCORE_OPTIONS: { label: string; value: number | undefined }[] = [
+  { label: 'Fark Etmez', value: undefined },
+  { label: '100+ Favori', value: 100 },
+  { label: '500+ Favori', value: 500 },
+  { label: '1.000+ Favori', value: 1000 },
+  { label: '5.000+ Favori', value: 5000 },
+  { label: '10.000+ Favori', value: 10000 },
 ];
 
 interface SearchFilterModalProps {
@@ -205,8 +226,9 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
   }, [tagInput, draft.autocompleteFromServer]);
 
   const handleAddTag = (tagToAdd: string) => {
-    // Boşluk veya virgülle ayrılmış birden fazla etiketi tek tek ayrıştır
-    const parts = tagToAdd.trim().split(/[\s,]+/);
+    // Boşluk veya virgülle ayrılmış birden fazla etiketi tek tek ayrıştır;
+    // tırnaklı grup tek parça kalır (tag:"big breasts" bölünmez)
+    const parts = tagToAdd.trim().match(/("[^"]*"|[^\s,"])+/g) || [];
     const validTags = parts
       .map((p) => p.trim().toLowerCase())
       .filter((p) => p.length > 0 && !draft.tags.includes(p));
@@ -222,14 +244,16 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
     setSuggestions([]);
   };
 
-  const handleSelectSuggestion = (suggestedTag: string) => {
+  const handleSelectSuggestion = (suggestedTag: string, category?: BooruTagSuggestion['category']) => {
     Haptics.selectionAsync();
+    // nhentai: öneri `tag:"ad"` mekaniğiyle eklenir
+    const qualified =
+      activeSource.type === 'nhentai' ? nhentaiTagQuery(suggestedTag, category) : suggestedTag.trim().toLowerCase();
     // Varsa önceki yazılmış token'ları da al, son yazılanı öneri ile tamamla
-    const tokens = tagInput.trim().split(/[\s,]+/);
+    const tokens = tagInput.trim().match(/("[^"]*"|[^\s,"])+/g) || [];
     const previousTokens = tokens.slice(0, -1).map((t) => t.trim().toLowerCase()).filter(Boolean);
-    const cleanSuggested = suggestedTag.trim().toLowerCase();
 
-    const toAdd = [...previousTokens, cleanSuggested].filter((t) => !draft.tags.includes(t));
+    const toAdd = [...previousTokens, qualified].filter((t) => !draft.tags.includes(t));
     if (toAdd.length > 0) {
       setDraft((prev) => ({
         ...prev,
@@ -273,9 +297,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     let finalDraft = { ...draft };
     if (tagInput.trim()) {
-      const extraTags = tagInput
-        .trim()
-        .split(/\s+/)
+      const extraTags = (tagInput.trim().match(/("[^"]*"|[^\s,"])+/g) || [])
         .map((t) => t.trim().toLowerCase())
         .filter(Boolean);
       for (const extraTag of extraTags) {
@@ -313,6 +335,14 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
     }
     if (activeSource.type === 'sexcom') {
       const opt = SEXCOM_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
+      return opt ? opt.label : '---';
+    }
+    if (activeSource.type === 'hentaihaven') {
+      const opt = HENTAIHAVEN_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
+      return opt ? opt.label : '---';
+    }
+    if (activeSource.type === 'nhentai') {
+      const opt = NHENTAI_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
       return opt ? opt.label : '---';
     }
     if (activeSource.type === 'cumst') {
@@ -460,14 +490,14 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                 renderItem={({ item }) => (
                   <TouchableOpacity
                     style={styles.suggestionRow}
-                    onPress={() => handleAddTag(item.name)}
+                    onPress={() => handleSelectSuggestion(item.name, item.category)}
                   >
                     <TagChip
                       name={item.name}
                       category={item.category}
                       count={item.postCount}
                       size="sm"
-                      onPress={() => handleAddTag(item.name)}
+                      onPress={() => handleSelectSuggestion(item.name, item.category)}
                     />
                   </TouchableOpacity>
                 )}
@@ -679,34 +709,41 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                     </View>
                   </TouchableOpacity>
                 </>
-              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' ? null : (
+              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven' ? null : (
                 <>
+                  {/* Rating: nhentai'de tüm içerik 'e' (Explicit) olduğu için anlamsız */}
+                  {activeSource.type !== 'nhentai' ? (
+                    <>
+                      <View style={styles.rowDivider} />
+
+                      {/* Rating Filter */}
+                      <TouchableOpacity
+                        style={styles.rowItem}
+                        onPress={() => setShowRatingPicker(true)}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={styles.rowLabel}>Derecelendirme</Text>
+                        <View style={styles.rowRight}>
+                          <Text style={[styles.rowValue, draft.rating !== 'all' && { color: GOLD_ACCENT }]}>
+                            {getRatingLabel()}
+                          </Text>
+                          <ChevronRight size={18} color={Colors.dark.textMuted} />
+                        </View>
+                      </TouchableOpacity>
+                    </>
+                  ) : null}
+
                   <View style={styles.rowDivider} />
 
-                  {/* Rating Filter */}
-                  <TouchableOpacity
-                    style={styles.rowItem}
-                    onPress={() => setShowRatingPicker(true)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.rowLabel}>Derecelendirme</Text>
-                    <View style={styles.rowRight}>
-                      <Text style={[styles.rowValue, draft.rating !== 'all' && { color: GOLD_ACCENT }]}>
-                        {getRatingLabel()}
-                      </Text>
-                      <ChevronRight size={18} color={Colors.dark.textMuted} />
-                    </View>
-                  </TouchableOpacity>
-
-                  <View style={styles.rowDivider} />
-
-                  {/* Min Score */}
+                  {/* Min Score (nhentai'de = favori sayısı) */}
                   <TouchableOpacity
                     style={styles.rowItem}
                     onPress={() => setShowScorePicker(true)}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.rowLabel}>Min Puan (Score)</Text>
+                    <Text style={styles.rowLabel}>
+                      {activeSource.type === 'nhentai' ? 'Min Favori (Puan)' : 'Min Puan (Score)'}
+                    </Text>
                     <View style={styles.rowRight}>
                       <Text style={[styles.rowValue, draft.minScore ? { color: GOLD_ACCENT } : {}]}>
                         {getScoreLabel()}
@@ -775,6 +812,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                       ? PORNHUB_SORT_OPTIONS
                       : activeSource.type === 'sexcom'
                       ? SEXCOM_SORT_OPTIONS
+                      : activeSource.type === 'hentaihaven'
+                      ? HENTAIHAVEN_SORT_OPTIONS
+                      : activeSource.type === 'nhentai'
+                      ? NHENTAI_SORT_OPTIONS
                       : activeSource.type === 'cumst'
                       ? CUMST_SORT_OPTIONS
                       : SORT_OPTIONS
@@ -909,9 +950,16 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
             <View style={styles.modalOverlay}>
               <TouchableWithoutFeedback>
                 <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>Minimum Puan (Score)</Text>
+                  <Text style={styles.popoverTitle}>
+                    {activeSource.type === 'nhentai'
+                      ? 'Minimum Favori Sayısı'
+                      : 'Minimum Puan (Score)'}
+                  </Text>
                   <View style={styles.popoverList}>
-                    {MIN_SCORE_OPTIONS.map((opt, i) => {
+                    {(activeSource.type === 'nhentai'
+                      ? NHENTAI_MIN_SCORE_OPTIONS
+                      : MIN_SCORE_OPTIONS
+                    ).map((opt, i) => {
                       const isSelected = draft.minScore === opt.value;
                       return (
                         <TouchableOpacity

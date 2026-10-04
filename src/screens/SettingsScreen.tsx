@@ -43,6 +43,7 @@ import { setGridPreviewsEnabled } from '../utils/gridPreviews';
 import { proxyService } from '../services/proxyService';
 import { PORNHUB_UA, PORNHUB_BASE, parsePornhubHtmlListing } from '../services/pornhub';
 import { SEXCOM_UA, SEXCOM_BASE, parseSexComListing } from '../services/sexcom';
+import { HENTAIHAVEN_UA, HENTAIHAVEN_BASE, parseHentaiHavenListing } from '../services/hentaihavens';
 import { XVIDEOS_UA, XVIDEOS_BASE, parseXVideosListing } from '../services/xvideos';
 import { XHAMSTER_UA, XHAMSTER_BASE, parseXhamsterListing } from '../services/xhamster';
 import { BackupService } from '../services/backupService';
@@ -286,6 +287,17 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         parse: (html) => parseSexComListing(html, stubSource('sexcom', SEXCOM_BASE)).length,
       },
       {
+        name: 'HH',
+        url: `${HENTAIHAVEN_BASE}/browse/trending/`,
+        headers: { 'User-Agent': HENTAIHAVEN_UA, Referer: `${HENTAIHAVEN_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
+        parse: (html) => parseHentaiHavenListing(html, stubSource('hentaihaven', HENTAIHAVEN_BASE)).length,
+      },
+      {
+        name: 'SXmp4',
+        url: 'https://videos2.sex.com/1038553/preview_240p.mp4',
+        headers: { 'User-Agent': SEXCOM_UA, Referer: `${SEXCOM_BASE}/` },
+      },
+      {
         name: 'RG',
         url: 'https://api.redgifs.com/v2/gifs/search?type=g&order=trending&count=1&page=1',
         headers: { 'User-Agent': PORNHUB_UA, Origin: 'https://www.redgifs.com', Referer: 'https://www.redgifs.com/', Accept: 'application/json' },
@@ -478,14 +490,14 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </Text>
 
           <View style={styles.card}>
-            {AVAILABLE_SOURCES.map((source, index) => {
+            {AVAILABLE_SOURCES.filter((s) => !s.hidden).map((source, index, list) => {
               const isSelected = activeSource.id === source.id;
               return (
                 <TouchableOpacity
                   key={source.id}
                   style={[
                     styles.sourceRow,
-                    index !== AVAILABLE_SOURCES.length - 1 && styles.borderBottom,
+                    index !== list.length - 1 && styles.borderBottom,
                     isSelected && styles.sourceRowSelected,
                   ]}
                   onPress={() => handleSourceChange(source)}

@@ -20,6 +20,7 @@ const GRID_PREVIEWS_KEY = '@booru_grid_previews_v2';
 const RECENT_VIEWS_KEY = '@booru_recent_views_v2';
 const FEED_ORDER_KEY = '@booru_feed_order_v2';
 const REDGIFS_TOKEN_KEY = '@booru_redgifs_token_v2';
+const HH_LAST_EPISODES_KEY = '@booru_hh_last_episodes_v1';
 
 const VALID_SORT: SortOption[] = ['default', 'id', 'score', 'rating', 'user', 'height', 'width'];
 const VALID_RANGE: TimeRangeOption[] = ['all', '1d', '1w', '1m', '1y'];
@@ -488,6 +489,32 @@ export const StorageService = {
       await AsyncStorage.removeItem(RECENT_VIEWS_KEY);
     } catch (e) {
       console.warn('Error clearing recent views:', e);
+    }
+  },
+
+  /* HENTAIHAVEN LAST WATCHED EPISODE */
+  async getLastWatchedEpisode(seriesId: string): Promise<number | null> {
+    try {
+      if (!seriesId) return null;
+      const data = await AsyncStorage.getItem(HH_LAST_EPISODES_KEY);
+      if (!data) return null;
+      const parsed = JSON.parse(data);
+      const ep = parsed?.[seriesId];
+      return typeof ep === 'number' && Number.isFinite(ep) ? ep : null;
+    } catch {
+      return null;
+    }
+  },
+
+  async setLastWatchedEpisode(seriesId: string, episode: number): Promise<void> {
+    try {
+      if (!seriesId || typeof episode !== 'number' || !Number.isFinite(episode)) return;
+      const data = await AsyncStorage.getItem(HH_LAST_EPISODES_KEY);
+      const map = data ? JSON.parse(data) : {};
+      map[seriesId] = episode;
+      await AsyncStorage.setItem(HH_LAST_EPISODES_KEY, JSON.stringify(map));
+    } catch (e) {
+      console.warn('Error saving last watched episode:', e);
     }
   },
 };
