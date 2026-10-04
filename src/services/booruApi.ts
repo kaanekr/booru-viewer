@@ -119,6 +119,39 @@ export function timeRangeToDays(timeRange: string | undefined): number {
   return 0;
 }
 
+/**
+ * Liderlik çapası hizalama (cum.st): haftalık/aylık periyotta çapayı takvim
+ * periyodunun başına yaslar — aynı periyottaki her gün birebir aynı `date:`
+ * sorgusunu üretir, periyot kaymaz ("2 gün önce + haftanın lideri" === "bugünün
+ * haftasının liderleri"). Sunucu da aynı hizalamayı yapar (canlı doğrulandı:
+ * week→Pazartesi, month→ayın 1'i); istemcide yapmak davranışı garanti altına alır.
+ * Günlük/periyotsuz aralıklar aynen geçer. UTC matematiği kullanılır (SAAT
+ * dilimi kayması yok). Geçersiz girdi aynen geri döner.
+ */
+export function snapLeaderboardAnchor(anchorYMD: string | undefined, timeRange: string | undefined): string {
+  const clean = (anchorYMD || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) return clean;
+  if (timeRange === '1w') {
+    const [y, m, d] = clean.split('-').map(Number);
+    if (m < 1 || m > 12 || d < 1 || d > 31) return clean;
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    // Taşan gün (örn. 30 Şubat) sessizce yuvarlanır — girdiyi bozma, aynen geçir
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) {
+      return clean;
+    }
+    const back = (dt.getUTCDay() + 6) % 7; // Pazartesi=0 … Pazar=6 gün geri
+    dt.setUTCDate(dt.getUTCDate() - back);
+    const p = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+    return `${dt.getUTCFullYear()}-${p(dt.getUTCMonth() + 1)}-${p(dt.getUTCDate())}`;
+  }
+  if (timeRange === '1m') {
+    const [, m, d] = clean.split('-').map(Number);
+    if (m < 1 || m > 12 || d < 1 || d > 31) return clean;
+    return `${clean.slice(0, 4)}-${clean.slice(5, 7)}-01`;
+  }
+  return clean;
+}
+
 export class BooruApiService {
   private currentSource: BooruSource = DEFAULT_SOURCE;
   private lastRequestAt = 0;
@@ -201,9 +234,14 @@ export class BooruApiService {
     }
 
     // Historical Leaderboard / Anchor Date (Cum.st'e özel; başka motorda
-    // literal tag sayılıp sonucu sıfırlar)
+    // literal tag sayılıp sonucu sıfırlar). Haftalık/aylık periyotta çapa
+    // takvim başına yaslanır: aynı periyodun günleri aynı sorguyu üretir.
     if (filter.leaderboardDate && activeSource.type !== 'xvideos' && activeSource.type !== 'redgifs' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub') {
-      parts.push(`date:${filter.leaderboardDate.trim()}`);
+      const anchor =
+        activeSource.type === 'cumst'
+          ? snapLeaderboardAnchor(filter.leaderboardDate, filter.timeRange)
+          : filter.leaderboardDate.trim();
+      parts.push(`date:${anchor}`);
     }
 
     // Rating Filter
