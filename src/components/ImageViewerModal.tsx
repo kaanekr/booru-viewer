@@ -408,9 +408,14 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
                 isActive={index === currentIndex}
                 suspended={suspended}
                 forceFull={previewOriginalId === item.id}
-                onTagsResolved={(tags, allTags) => {
+                onTagsResolved={(tags, allTags, numFavorites) => {
                   item.tags = tags;
                   item.allTags = allTags;
+                  // Skor = favori sayısı: liste HTML'inde yok, detayda gelir
+                  if (numFavorites) {
+                    item.score = numFavorites;
+                    item.favCount = numFavorites;
+                  }
                 }}
                 showControls={showControls}
                 screenWidth={windowWidth}
@@ -556,7 +561,11 @@ interface PostPageItemProps {
   showControls?: boolean;
   screenWidth: number;
   screenHeight: number;
-  onTagsResolved?: (tags: BooruPost['tags'], allTags: string[]) => void;
+  onTagsResolved?: (
+    tags: BooruPost['tags'],
+    allTags: string[],
+    numFavorites?: number
+  ) => void;
   onToggleControls: () => void;
   onOpenDetails: () => void;
   onClose: () => void;
@@ -903,7 +912,9 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         }
         // Detaydan gelen kategorize etiketleri Info paneline aktar
         if (detail.allTags && detail.allTags.length > 0) {
-          onTagsResolved?.(detail.tags, detail.allTags);
+          onTagsResolved?.(detail.tags, detail.allTags, detail.numFavorites);
+        } else if (detail.numFavorites) {
+          onTagsResolved?.(post.tags, post.allTags, detail.numFavorites);
         }
       })
       .catch(() => {})

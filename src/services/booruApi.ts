@@ -1717,9 +1717,10 @@ export class BooruApiService {
     const k = tokens.filter((t) => !t.startsWith('-')).join(' ');
     void limit;
 
-    // Öncelik v2 API'de: favori sayısı (skor) ve zaman aralıklı popülerlik
-    // yalnız orada var. Cihazda TLS kırılgan (worker yoksa düşer) — o durumda
-    // mirror HTML adaylarına düşülür (skor 0 gelir, liste yine dolar).
+    // Sıra: resmi v2 API (nhentai.net/api/v2) ÖNCE — skor/favori, zaman aralıklı
+    // popülerlik ve gerçek etiket sayıları yalnız burada var. Erişilemezse
+    // (cihazda TLS kırılgan olabiliyor) mirror'a düşülür ve bu durum Metro'da
+    // açıkça loglanır.
     const apiSort = nhentaiApiSort(filter?.sortBy, filter?.timeRange);
     const apiCandidates = buildNHentaiApiCandidates(page, k, apiSort);
     const mirrorSort = filter?.sortBy === 'score' ? 'popular' : undefined;
@@ -1741,18 +1742,23 @@ export class BooruApiService {
     let lastError: any = null;
     for (const url of candidates) {
       try {
-        const response = await proxyService.fetchWithFallback(url, { headers }, 10000);
+        // v2 adayları kısa timeout: TLS'e takılıp grid'i bekletmesinler
+        const isApi = url.startsWith(NHENTAI_API_BASE);
+        const response = await proxyService.fetchWithFallback(url, { headers }, isApi ? 3000 : 10000);
         if (response.status === 404) return [];
         if (!response.ok) {
           lastError = new Error(`HTTP ${response.status}`);
           continue;
         }
         const text = await response.text();
-        const isApi = url.startsWith(NHENTAI_API_BASE);
         const posts = isApi
           ? parseNHentaiV2Listing(text, source)
           : parseNHentaiListing(text, source);
         if (posts.length > 0) {
+          const scored = posts.filter((p) => (p.score || 0) > 0).length;
+          console.log(
+            `[BooruAPI] nhentai kaynak=${isApi ? 'api/v2' : 'mirror'} sonuc=${posts.length} skorlu=${scored} url=${url}`
+          );
           return await this.filterNHentaiMinScore(
             await this.filterBlacklistedPosts(posts, includeBlacklisted),
             filter
@@ -1764,6 +1770,10 @@ export class BooruApiService {
     }
     if (lastError) {
       console.warn('[BooruAPI] nhentai adayları başarısız oldu:', lastError);
+    } else if (apiCandidates.length > 0 && mirrorCandidates.length > 0) {
+      console.warn(
+        `[BooruAPI] nhentai: api/v2 listede sonuç vermedi, mirror'a düşüldü (sayfa=${page}, sorgu="${k}")`
+      );
     }
     return [];
   }

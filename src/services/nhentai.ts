@@ -175,6 +175,10 @@ export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): Bo
       const thumb = thumbPath.startsWith('http')
         ? thumbPath
         : `${NHENTAI_API_THUMB_BASE}/${thumbPath.replace(/^\//, '')}`;
+      // Uzantı CDN'de korunur (thumb.webp vs thumb.jpg) — 1. sayfa URL'si
+      // sabit .webp olursa jpg galerilerde 404 veriyor (canlı doğrulandı).
+      const extMatch = thumb.match(/\.(jpg|jpeg|png|webp|gif)(?:\?|$)/i);
+      const ext = (extMatch ? extMatch[1].toLowerCase() : 'webp').replace('jpeg', 'jpg');
       const cover = thumb.replace(/\/thumb\./i, '/cover.');
       const width = Number(item.thumbnail_width) || 250;
       const height = Number(item.thumbnail_height) || 350;
@@ -189,7 +193,7 @@ export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): Bo
         title: title || undefined,
         previewUrl: thumb,
         sampleUrl: cover,
-        originalUrl: `${NHENTAI_API_IMAGE_BASE}/galleries/${mediaId}/1.webp`,
+        originalUrl: `${NHENTAI_API_IMAGE_BASE}/galleries/${mediaId}/1.${ext}`,
         width,
         height,
         aspectRatio,
@@ -198,8 +202,12 @@ export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): Bo
         favCount: favorites,
         tags: { artist: [], character: [], copyright: [], general: [], meta: ['manga'] },
         allTags: [],
-        sourceLink: `${base}/g/${id}/`,
-        fileExt: 'webp',
+        // Dikkat: nhentai.net ve ayna (nhentai.xxx) FARKLI galeri id uzayına sahip
+        // (canlı doğrulandı: net 685915 "Furina Hu Tao", ayna 685915 "Houkago
+        // Dorei Club"). Bu yüzden v2 kaydının detayı daima net'ten çözülür;
+        // detay çözümü kaynağı sourceLink host'una bakar.
+        sourceLink: `https://nhentai.net/g/${id}/`,
+        fileExt: ext,
         createdAt: new Date().toISOString(),
         pageCount: pageCount > 0 ? pageCount : undefined,
         mediaId,
@@ -595,7 +603,7 @@ export function parseNHentaiV2DetailTags(jsonText: string): { tags: BooruTagGrou
  * nhentai galeri detayını (sayfalar + etiketler) çözer.
  */
 export async function resolveNHentaiGalleryDetail(
-  post: { id?: string; sourceLink?: string; mediaId?: string; pageCount?: number },
+  post: { id?: string; sourceLink?: string; mediaId?: string; pageCount?: number; fileExt?: string },
   signal?: AbortSignal
 ): Promise<NHentaiResolvedGallery> {
   const empty: NHentaiResolvedGallery = {
@@ -608,7 +616,15 @@ export async function resolveNHentaiGalleryDetail(
   const rawId = (post.id || '').replace(/^nh_/, '');
   if (!rawId) return empty;
 
-  const base = post.sourceLink?.match(/^https?:\/\/[^/]+/i)?.[0] || NHENTAI_BASE;
+  const linkHost = post.sourceLink?.match(/^https?:\/\/([^/]+)/i)?.[1] || '';
+  const base = linkHost ? `https://${linkHost}` : NHENTAI_BASE;
+  /**
+   * Ayna (nhentai.xxx) ve net FARKLI galeri id uzayına sahip (canlı doğrulandı:
+   * net 685915 = "Furina Hu Tao", ayna 685915 = "Houkago Dorei Club"). Bu yüzden
+   * detay çözümü tek kaynağa bağlıdır: net kayıtları sadece v2 API'den, ayna
+   * kayıtları sadece ayna HTML'inden çözülür. Karıştırma yanlış manga açar.
+   */
+  const isNetGallery = /(^|\.)nhentai\.net$/i.test(linkHost) || /^\d+$/.test(String(post.mediaId || ''));
 
   const headers = {
     'User-Agent': NHENTAI_UA,
@@ -633,53 +649,62 @@ export async function resolveNHentaiGalleryDetail(
     }
   };
 
-  // 1. Detay HTML sayfası: /g/{id}/
+  // Net kayıtları: v2 detay (sayfalar + adlı etiketler + favori sayısı)
+  if (isNetGallery) {
+    const v2Text = await fetchWithTimeout(`${NHENTAI_API_BASE}/galleries/${rawId}`, 8000);
+    if (v2Text) {
+      const pages = parseNHentaiGalleryPages(v2Text, rawId);
+      const detail = parseNHentaiV2DetailTags(v2Text);
+      if (pages.length > 0) {
+        return {
+          pages,
+          tags: detail.tags,
+          allTags: detail.allTags,
+          pageCount: pages.length,
+          numFavorites: detail.numFavorites || undefined,
+        };
+      }
+    }
+    // Sentetik güvenlik ağı (net CDN, uzantı korunur)
+    if (post.mediaId && post.pageCount && post.pageCount > 0) {
+      const ext = (post.fileExt || 'webp').toLowerCase().replace('jpeg', 'jpg');
+      const synthetic: string[] = [];
+      for (let p = 1; p <= post.pageCount; p++) {
+        synthetic.push(`${NHENTAI_API_IMAGE_BASE}/galleries/${post.mediaId}/${p}.${ext}`);
+      }
+      return { ...empty, pages: synthetic, pageCount: synthetic.length };
+    }
+    return empty;
+  }
+
+  // Ayna kayıtları: detay HTML sayfası /g/{id}/
   const detailUrl = `${base}/g/${rawId}/`;
   const detailText = await fetchWithTimeout(detailUrl, 9000);
   if (detailText) {
     const pages = parseNHentaiGalleryPages(detailText, rawId);
     const parsedTags = parseNHentaiTagsFromHtml(detailText);
+    const mirrorFavorites = parseNHentaiFavoritesFromHtml(detailText);
     if (pages.length > 0) {
       return {
         pages,
         tags: parsedTags.tags,
         allTags: parsedTags.allTags,
         pageCount: pages.length,
+        numFavorites: mirrorFavorites || undefined,
       };
     }
   }
 
-  // 2. v2 API detay: sayfalar + adlı etiketler + favori sayısı
-  const v2Url = `${NHENTAI_API_BASE}/galleries/${rawId}`;
-  const v2Text = await fetchWithTimeout(v2Url, 8000);
-  if (v2Text) {
-    const pages = parseNHentaiGalleryPages(v2Text, rawId);
-    const detail = parseNHentaiV2DetailTags(v2Text);
-    if (pages.length > 0 && detail.allTags.length > 0) {
-      return {
-        pages,
-        tags: detail.tags,
-        allTags: detail.allTags,
-        pageCount: pages.length,
-        numFavorites: detail.numFavorites || undefined,
-      };
-    }
-    if (pages.length > 0) {
-      return {
-        pages,
-        tags: detail.tags,
-        allTags: detail.allTags,
-        pageCount: pages.length,
-        numFavorites: detail.numFavorites || undefined,
-      };
-    }
-  }
-
-  // 3. Sentetik Güvenlik Ağı
+  // Sentetik güvenlik ağı: ayna CDN'i (i5.nhentaimg.com/018/<slug>/N.webp)
   if (post.mediaId && post.pageCount && post.pageCount > 0) {
+    const isSlug = !/^\d+$/.test(String(post.mediaId));
     const synthetic: string[] = [];
     for (let p = 1; p <= post.pageCount; p++) {
-      synthetic.push(`${NHENTAI_IMAGE_BASE}/galleries/${post.mediaId}/${p}.jpg`);
+      synthetic.push(
+        isSlug
+          ? `https://i5.nhentaimg.com/018/${post.mediaId}/${p}.webp`
+          : `${NHENTAI_IMAGE_BASE}/galleries/${post.mediaId}/${p}.jpg`
+      );
     }
     return {
       ...empty,
@@ -767,6 +792,20 @@ const COMMON_NHENTAI_TAGS: Array<{ name: string; category: TagCategory; postCoun
   { name: 'manga', category: 'meta', postCount: 350000 },
   { name: 'color', category: 'meta', postCount: 16000 },
 ];
+
+/** Aynadaki (nhentai.xxx) favori sayısı: `<span class="fv_cnt">107</span>` */
+export function parseNHentaiFavoritesFromHtml(html: string): number {
+  if (!html) return 0;
+  const m = html.match(/class=["'][^"']*fv_cnt[^"']*["'][^>]*>([^<]+)</i);
+  if (!m) return 0;
+  const raw = decodeEntities(m[1]).trim();
+  const km = raw.match(/([\d.,]+)\s*([KMB])?/i);
+  if (!km) return 0;
+  const val = parseFloat(km[1].replace(/,/g, ''));
+  if (!Number.isFinite(val)) return 0;
+  const unit = (km[2] || '').toUpperCase();
+  return Math.round(val * (unit === 'K' ? 1000 : unit === 'M' ? 1000000 : unit === 'B' ? 1e9 : 1));
+}
 
 /** v2 etiket tipi -> uygulama kategorisi */
 function nhentaiTagCategory(type: string): TagCategory {
