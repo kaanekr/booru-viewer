@@ -173,6 +173,7 @@ export interface HentaiHavenFiles {
   mp4: string;
   thumb: string;
   durationSec?: number;
+  episodes?: HentaiHavenEpisode[];
 }
 
 /**
@@ -350,5 +351,6 @@ export async function resolveHentaiHavenEpisodeUrls(
     console.warn('[HentaiHaven] HLS bulunamadı');
     return null;
   }
+  files.episodes = episodes;
   return files;
 }
