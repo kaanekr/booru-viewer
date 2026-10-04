@@ -82,6 +82,10 @@ const PORNHUB_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[]
   { label: 'Oy Oranı', value: 'rating', desc: 'En Beğenilenler' },
 ];
 
+const SEXCOM_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
+  { label: '---', value: 'default', desc: 'Varsayılan (Öne Çıkanlar)' },
+];
+
 const CUMST_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
   { label: 'Score (Popülerlik)', value: 'score', desc: 'En Çok Kaydedilenler / Liderlik' },
   { label: 'Id (En Yeniler)', value: 'id', desc: 'Son Eklenen Gönderiler' },
@@ -305,6 +309,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
     }
     if (activeSource.type === 'pornhub') {
       const opt = PORNHUB_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
+      return opt ? opt.label : '---';
+    }
+    if (activeSource.type === 'sexcom') {
+      const opt = SEXCOM_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
       return opt ? opt.label : '---';
     }
     if (activeSource.type === 'cumst') {
@@ -671,7 +679,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                     </View>
                   </TouchableOpacity>
                 </>
-              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' ? null : (
+              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' ? null : (
                 <>
                   <View style={styles.rowDivider} />
 
@@ -765,6 +773,8 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                       ? XHAMSTER_SORT_OPTIONS
                       : activeSource.type === 'pornhub'
                       ? PORNHUB_SORT_OPTIONS
+                      : activeSource.type === 'sexcom'
+                      ? SEXCOM_SORT_OPTIONS
                       : activeSource.type === 'cumst'
                       ? CUMST_SORT_OPTIONS
                       : SORT_OPTIONS
