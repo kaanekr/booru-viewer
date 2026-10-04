@@ -58,6 +58,11 @@ export interface NHentaiGalleryDetail {
 /**
  * Arama ve Keşfet URL adayları (önce nhentai.xxx aynası, sonra net).
  * sort: 'popular' -> en çok favorilenenler (mirror'un desteklediği tek sıralama).
+ *
+ * Not: mirror ana sayfada (?page=N) sort parametresini yok sayar (canlı doğrulandı:
+ * `/?page=1&sort=popular` ile `/?page=1` bayt-bayt aynı). Bu yüzden etiketsiz
+ * popüler istek search endpoint'ine (`/search/?key=%20&sort=popular`) yönlenir;
+ * etiketsiz latest ise ana sayfa pagination'ını kullanır (`/` + `/?page=N`).
  */
 export function buildNHentaiSearchCandidates(
   baseUrl: string,
@@ -68,15 +73,23 @@ export function buildNHentaiSearchCandidates(
   const base = (baseUrl || NHENTAI_BASE).replace(/\/$/, '');
   const p = Math.max(1, page);
   const q = (keyword || '').trim();
-  const sortSuffix = sort === 'popular' ? '&sort=popular' : '';
+  const wantPopular = sort === 'popular';
   if (!q) {
+    if (wantPopular) {
+      return [
+        `${base}/search/?key=%20&page=${p}&sort=popular`,
+        `${base}/api/galleries/all?page=${p}`,
+        `https://nhentai.net/api/galleries/all?page=${p}`,
+      ];
+    }
     return [
-      `${base}/?page=${p}${sortSuffix}`,
+      p <= 1 ? `${base}/` : `${base}/?page=${p}`,
       `${base}/api/galleries/all?page=${p}`,
       `https://nhentai.net/api/galleries/all?page=${p}`,
     ];
   }
   const encoded = encodeURIComponent(q);
+  const sortSuffix = wantPopular ? '&sort=popular' : '';
   return [
     `${base}/search/?key=${encoded}&page=${p}${sortSuffix}`,
     `${base}/search/?q=${encoded}&page=${p}${sortSuffix}`,

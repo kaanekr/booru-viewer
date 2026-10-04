@@ -47,8 +47,11 @@ test('extFromType converts nhentai short types to file extensions', () => {
 test('buildNHentaiSearchCandidates builds feed and search URLs with paging', () => {
   const nh = loadNHentai();
   const feed = nh.buildNHentaiSearchCandidates('https://nhentai.xxx', 1, '');
-  assert.equal(feed[0], 'https://nhentai.xxx/?page=1');
+  assert.equal(feed[0], 'https://nhentai.xxx/');
   assert.equal(feed[1], 'https://nhentai.xxx/api/galleries/all?page=1');
+
+  const feed2 = nh.buildNHentaiSearchCandidates('https://nhentai.xxx', 2, '');
+  assert.equal(feed2[0], 'https://nhentai.xxx/?page=2');
 
   const search = nh.buildNHentaiSearchCandidates('https://nhentai.xxx/', 2, 'genshin impact');
   assert.equal(search[0], 'https://nhentai.xxx/search/?key=genshin%20impact&page=2');
@@ -57,14 +60,18 @@ test('buildNHentaiSearchCandidates builds feed and search URLs with paging', () 
 
 test('buildNHentaiSearchCandidates appends sort=popular for popular sort', () => {
   const nh = loadNHentai();
+  // Etiketsiz popüler ana sayfada yok sayılır -> search endpoint'i kullanılır
   const feed = nh.buildNHentaiSearchCandidates('https://nhentai.xxx', 1, '', 'popular');
-  assert.equal(feed[0], 'https://nhentai.xxx/?page=1&sort=popular');
+  assert.equal(feed[0], 'https://nhentai.xxx/search/?key=%20&page=1&sort=popular');
+
+  const feed2 = nh.buildNHentaiSearchCandidates('https://nhentai.xxx', 3, '', 'popular');
+  assert.equal(feed2[0], 'https://nhentai.xxx/search/?key=%20&page=3&sort=popular');
 
   const search = nh.buildNHentaiSearchCandidates('https://nhentai.xxx/', 2, 'naruto', 'popular');
   assert.equal(search[0], 'https://nhentai.xxx/search/?key=naruto&page=2&sort=popular');
 
   const plain = nh.buildNHentaiSearchCandidates('https://nhentai.xxx', 1, '', undefined);
-  assert.equal(plain[0], 'https://nhentai.xxx/?page=1');
+  assert.equal(plain[0], 'https://nhentai.xxx/');
 });
 
 const JSON_LISTING = JSON.stringify({
