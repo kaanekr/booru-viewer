@@ -12,8 +12,8 @@ import { proxyService } from './proxyService';
  */
 
 export const NHENTAI_BASE = 'https://nhentai.net';
-export const NHENTAI_IMAGE_BASE = 'https://i3.nhentai.net';
-export const NHENTAI_THUMB_BASE = 'https://t3.nhentai.net';
+export const NHENTAI_IMAGE_BASE = 'https://i2.nhentai.net';
+export const NHENTAI_THUMB_BASE = 'https://t2.nhentai.net';
 
 /**
  * Resmi v2 API (https://nhentai.net/api/v2/docs).
@@ -25,9 +25,9 @@ export const NHENTAI_THUMB_BASE = 'https://t3.nhentai.net';
  * kartlar yine de görsel gösterir (PostCard thumb->cover fallback'i).
  */
 export const NHENTAI_API_BASE = 'https://nhentai.net/api/v2';
-export const NHENTAI_API_THUMB_BASE = 'https://t3.nhentai.net';
-export const NHENTAI_API_THUMB_FALLBACK_BASE = 'https://t2.nhentai.net';
-export const NHENTAI_API_IMAGE_BASE = 'https://i3.nhentai.net';
+export const NHENTAI_API_THUMB_BASE = 'https://t2.nhentai.net';
+export const NHENTAI_API_THUMB_FALLBACK_BASE = 'https://t3.nhentai.net';
+export const NHENTAI_API_IMAGE_BASE = 'https://i2.nhentai.net';
 
 /**
  * v2 API istekleri Safari'yi birebir taklit eder (cihazda doğrulandı: aynı URL
