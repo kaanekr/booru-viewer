@@ -570,6 +570,27 @@ export function getVideoCandidates(
 }
 
 /**
+ * Birincil oynatılabilir aday seçimi (viewer + testler için tek kaynak).
+ * Çözülmüş orijinal URL önceliklidir ANCAK iOS'ta açılamayan bir formatsa
+ * (örn. WebM) atlanır — yoksa guard listedeki oynatılabilir bir adayı görüp
+ * geçerken oynatıcıya desteklenmeyen URL gider (AVFoundation -11828).
+ * Hepsi desteklenmiyorsa webm döner; çağıran taraftaki webm-guard + mp4
+ * yükseltme akışı devreye girer.
+ */
+export function selectPrimaryVideoCandidate(
+  resolvedOriginalUrl: string | null | undefined,
+  videoCandidates: string[],
+  fallbackUrl: string
+): string {
+  const usable =
+    resolvedOriginalUrl &&
+    !(Platform.OS === 'ios' && isUnsupportedOnIOS(resolvedOriginalUrl))
+      ? resolvedOriginalUrl
+      : '';
+  return usable || (videoCandidates.length > 0 ? videoCandidates[0] : fallbackUrl);
+}
+
+/**
  * Converts a .webm media URL to a corresponding .mp4 URL while preserving query strings and hashes.
  * Returns null if the URL does not have a .webm extension or is invalid.
  */

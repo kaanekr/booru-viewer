@@ -23,6 +23,14 @@ Dal: `fix/ios-player-lifecycle`, başlangıç: `main` / `8403404`.
 - Keşfet'te eski kaynak/sıra istekleri yeni listeyi ve yüklenme durumunu
   değiştirebiliyordu. İstek kimliği ve kaynak anahtarı kontrol ediliyor.
   Boş/tekrarlanan sayfa otomatik sayfalamayı durduruyor; yenileme tekrar açıyor.
+- İzleyicide çözülmüş orijinal URL (WebM) öncelik sırasını atlayıp doğrudan
+  oynatıcıya gidiyordu: guard listedeki MP4'ü görüp geçiyor, oyuncu WebM'i
+  alıp AVFoundation -11828 uyarı fırtınası üretiyordu (realbooru vakası).
+  Birincil seçim `selectPrimaryVideoCandidate` (`media.ts:586`) altında toplandı:
+  iOS'ta açılamayan çözülmüş URL atlanır, sıradaki oynatılabilir aday oynar
+  (`ImageViewerModal.tsx:776`). `VideoPlayerView` ayrıca unmount sonrası biten
+  async devamlarında bırakılmış oyuncuya dokunmaz (NotFoundException gürültüsü
+  bitti) ve desteklenmeyen URL'yi yüklemeden hata kartına düşer.
 - Ayarlar > Görsel Kalitesi altında "Video Önizlemeler" anahtarı:
   kapalıysa ızgara kartları statik kapak gösterir, hiç oyuncu kurulmaz
   (`src/utils/gridPreviews.ts`, `PostCard.tsx:109`). İzleyici oynatmayı etkilemez.
