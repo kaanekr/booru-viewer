@@ -63,7 +63,9 @@ import {
   resolvePornhubVideoUrls,
   selectPrimaryVideoCandidate,
 } from '../utils/media';
-import { resolveSexComVideoUrls } from '../services/sexcom';
+import { resolveSexComVideoUrls, selectSexComPlayable } from '../services/sexcom';
+import { resolveHentaiHavenEpisodeUrls, listHentaiHavenEpisodes, resolveHentaiHavenEpisodeUrl, HentaiHavenEpisode } from '../services/hentaihavens';
+import { resolveNHentaiPages, resolveNHentaiGalleryDetail, rotateNhentaiImageHost } from '../services/nhentai';
 
 const { width: DEFAULT_SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -406,6 +408,16 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
                 isActive={index === currentIndex}
                 suspended={suspended}
                 forceFull={previewOriginalId === item.id}
+                onTagsResolved={(tags, allTags, numFavorites) => {
+                  item.tags = tags;
+                  item.allTags = allTags;
+                  // Skor = favori sayısı: liste HTML'inde yok, detayda gelir
+                  if (numFavorites) {
+                    item.score = numFavorites;
+                    item.favCount = numFavorites;
+                  }
+                }}
+                showControls={showControls}
                 screenWidth={windowWidth}
                 screenHeight={windowHeight}
                 onToggleControls={handleToggleControls}
@@ -540,14 +552,98 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   );
 };
 
+/**
+ * Manga tek sayfa görseli: hata verirse sıradaki CDN hostuna geçer
+ * (i3->i2->i4->i1; bazı ağlar tekil hostları engeller). expo-image takılan
+ * bağlantıda onError vermeden asılı kalır; 15sn stall-guard aynı rotasyonu
+ * tetikler. Yüklenmeyen sayfa boş siyah kare yerine bilgi metni gösterir.
+ */
+const MangaPageImage: React.FC<{
+  uri: string;
+  pageLabel: string;
+  width: number;
+  height: number;
+}> = React.memo(({ uri, pageLabel, width, height }) => {
+  const [src, setSrc] = React.useState(uri);
+  const [failed, setFailed] = React.useState(false);
+  const srcRef = React.useRef(src);
+  srcRef.current = src;
+  const loadedRef = React.useRef(false);
+  React.useEffect(() => {
+    setSrc(uri);
+    setFailed(false);
+    loadedRef.current = false;
+  }, [uri]);
+  const advance = React.useCallback(() => {
+    const next = rotateNhentaiImageHost(srcRef.current);
+    if (next) {
+      loadedRef.current = false;
+      setSrc(next);
+    } else {
+      setFailed(true);
+    }
+  }, []);
+  // Stall-guard: ne onLoad ne onError ateşlenirse host değiştir. Süre KISA
+  // tutulur (4sn): ölü hostta beklemek yerine sıradaki host hemen denenir;
+  // hata verirse zaten anında geçilir (onError). Yavaş ama çalışan hostta
+  // 4sn dolmadan onLoad geleceği için erken geçiş olmaz.
+  React.useEffect(() => {
+    if (failed) return;
+    const t = setTimeout(() => {
+      if (!loadedRef.current) advance();
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [src, failed, advance]);
+  return (
+    <View
+      style={{
+        width,
+        height,
+        backgroundColor: '#000000',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      {!failed ? (
+        <Image
+          source={{
+            uri: src,
+            headers: getMediaHeaders(src),
+            cacheKey: `${src}:manga-page`,
+          }}
+          style={{ width, height }}
+          contentFit="contain"
+          contentPosition="center"
+          cachePolicy="memory-disk"
+          transition={150}
+          onLoad={() => {
+            loadedRef.current = true;
+          }}
+          onError={advance}
+        />
+      ) : (
+        <Text style={{ color: '#666666', fontSize: 13 }}>
+          {`Sayfa ${pageLabel} yüklenemedi`}
+        </Text>
+      )}
+    </View>
+  );
+});
+
 interface PostPageItemProps {
   post: BooruPost;
   isActive: boolean;
   suspended?: boolean;
   /** Info modalındaki Original satırından tek seferlik full önizleme */
   forceFull?: boolean;
+  showControls?: boolean;
   screenWidth: number;
   screenHeight: number;
+  onTagsResolved?: (
+    tags: BooruPost['tags'],
+    allTags: string[],
+    numFavorites?: number
+  ) => void;
   onToggleControls: () => void;
   onOpenDetails: () => void;
   onClose: () => void;
@@ -561,14 +657,17 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   isActive,
   suspended = false,
   forceFull = false,
+  showControls = true,
   screenWidth,
   screenHeight,
+  onTagsResolved,
   onToggleControls,
   onOpenDetails,
   onClose,
   onZoomChange,
   onScrubbingChange,
 }) => {
+  const insets = useSafeAreaInsets();
   const [sampleLoading, setSampleLoading] = useState(true);
   const [sampleLoaded, setSampleLoaded] = useState(false);
   const [fullLoading, setFullLoading] = useState(false);
@@ -587,6 +686,25 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const [pornhubWebviewOn, setPornhubWebviewOn] = useState(false);
   const [videoResolveFailed, setVideoResolveFailed] = useState(false);
   const [realDims, setRealDims] = useState<{ w: number; h: number } | null>(null);
+  // HentaiHaven: seri karti -> bolum listesi + secili bolum (EP secici).
+  const [hhEpisodes, setHhEpisodes] = useState<HentaiHavenEpisode[]>([]);
+  const [hhActiveEp, setHhActiveEp] = useState<number | null>(null);
+  const [hhEpLoading, setHhEpLoading] = useState(false);
+  const sortedHhEpisodes = useMemo(
+    () => [...hhEpisodes].sort((a, b) => a.ep - b.ep),
+    [hhEpisodes]
+  );
+  // nhentai: manga dikey okuyucu sayfaları ve aktif sayfa göstergesi
+  const [mangaPages, setMangaPages] = useState<string[]>([]);
+  const [mangaLoading, setMangaLoading] = useState(false);
+  const [currentMangaPage, setCurrentMangaPage] = useState(1);
+  const [isMangaZoomed, setIsMangaZoomed] = useState(false);
+  const mangaScrollRef = useRef<ScrollView>(null);
+  const isMangaZoomedRef = useRef(false);
+  const mangaLastTapRef = useRef<number>(0);
+  const mangaSingleTapTimerRef = useRef<any>(null);
+  const mangaOffsetYRef = useRef<number>(0);
+  const mangaZoomScaleRef = useRef<number>(1);
   const [isZoomed, setIsZoomed] = useState(false);
   const [hasUpgradedToFull, setHasUpgradedToFull] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -600,6 +718,10 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       if (singleTapTimerRef.current) {
         clearTimeout(singleTapTimerRef.current);
         singleTapTimerRef.current = null;
+      }
+      if (mangaSingleTapTimerRef.current) {
+        clearTimeout(mangaSingleTapTimerRef.current);
+        mangaSingleTapTimerRef.current = null;
       }
     };
   }, []);
@@ -641,8 +763,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     }
 
     // Eğer post zaten sample'dan farklı gerçek bir originalUrl'e sahipse fetch etme
-    // Not: XHamster, XVideos ve Sex.com süreli token/geçici preview taşıdığı için her zaman detaydan taze çözülür
-    const needsFreshVideoResolution = post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom';
+    // Not: XHamster, XVideos, Sex.com ve HentaiHaven süreli token/geçici preview taşıdığı için her zaman detaydan taze çözülür
+    const needsFreshVideoResolution = post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom' || post.sourceId === 'hentaihaven';
     if (post.originalUrl && post.originalUrl !== post.sampleUrl && !needsFreshVideoResolution) {
       setResolvedOriginalUrl(post.originalUrl);
       return () => {
@@ -673,9 +795,53 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       } else if (post.sourceId === 'sexcom') {
         resolveSexComVideoUrls(post, abortCtrl.signal)
           .then((files) => {
-            if (alive && files) {
-              setResolvedOriginalUrl(files.hls || files.mp4 || null);
+            if (!alive) return;
+            if (files) {
+              // Premium kilitli HLS anonim oynaticida acilmaz: sessizce
+              // onizlemeye dusulur (hata kartindan iyidir) ama sebebi
+              // Metro'da gorunur olsun. HLS'siz detay da aynidir.
+              if (files.premium) {
+                console.warn('[Viewer] sexcom premium video, önizleme oynuyor');
+              } else if (!files.hls) {
+                console.warn('[Viewer] sexcom tam video bulunamadı, önizleme oynuyor');
+              }
+              setResolvedOriginalUrl(selectSexComPlayable(files));
+            } else {
+              // Detay cekilemedi (direkt + worker ikisi de olmedi): izleyici
+              // karttaki onizlemede kalir. Metro'daki bu satir sebebini soyler.
+              console.warn('[Viewer] sexcom detay çözülemedi, önizleme oynuyor');
             }
+          })
+          .catch(() => {});
+      } else if (post.sourceId === 'hentaihaven') {
+        StorageService.getLastWatchedEpisode(post.id)
+          .then((savedEp) => {
+            if (!alive) return;
+            return resolveHentaiHavenEpisodeUrls(post, abortCtrl.signal, savedEp)
+              .then((files) => {
+                if (!alive) return;
+                const eps = files?.episodes;
+                if (eps && eps.length > 0) {
+                  setHhEpisodes(eps);
+                  const effectiveEp =
+                    savedEp != null && eps.some((e) => e.ep === savedEp)
+                      ? savedEp
+                      : eps[0].ep;
+                  setHhActiveEp(effectiveEp);
+                  StorageService.setLastWatchedEpisode(post.id, effectiveEp).catch(() => {});
+                }
+                if (files?.tags) {
+                  onTagsResolved?.(files.tags, files.allTags || [], files.views);
+                }
+                const playable = files?.hls || files?.mp4;
+                if (playable) {
+                  console.log('[Viewer] hentaihaven bölüm çözüldü, oynatılıyor');
+                  setResolvedOriginalUrl(playable);
+                } else {
+                  // Seri/bölüm çekilemedi ya da HLS yok: kapak fotoğrafta kalır.
+                  console.warn('[Viewer] hentaihaven bölüm çözülemedi, kapak kalıyor');
+                }
+              });
           })
           .catch(() => {});
       } else if (post.sourceId === 'pornhub') {
@@ -707,6 +873,54 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     };
   }, [isActive, suspended, resolveNonce, post.id, post.sourceId, post.sourceLink, post.originalUrl, post.sampleUrl]);
 
+  // HentaiHaven: seri kartindaki tum bolumler (EP secici icin yedek).
+  // Ana resolve sirasinda zaten gelir; gelmediyse tek seferlik buradan denenir.
+  useEffect(() => {
+    if (post.sourceId !== 'hentaihaven' || !isActive || suspended || !post.sourceLink) return;
+    if (hhEpisodes.length > 0) return;
+    let alive = true;
+    const ctrl = new AbortController();
+    listHentaiHavenEpisodes(post, ctrl.signal)
+      .then((eps) => {
+        if (!alive || eps.length === 0) return;
+        setHhEpisodes(eps);
+        setHhActiveEp((cur) => (cur === null ? eps[0].ep : cur));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      ctrl.abort();
+    };
+  }, [isActive, suspended, post.id, post.sourceId, post.sourceLink, hhEpisodes.length]);
+
+  const handleSelectHhEpisode = useCallback(
+    (ep: HentaiHavenEpisode) => {
+      if (hhEpLoading || ep.ep === hhActiveEp) return;
+      const baseM = post.sourceLink?.match(/^https?:\/\/[^/]+/i);
+      const base = baseM ? baseM[0] : 'https://hentaihaven.xxx';
+      const targetUrl = ep.streamUrl || ep.url;
+      const url = /^https?:\/\//i.test(targetUrl) ? targetUrl : base + targetUrl;
+      setHhActiveEp(ep.ep);
+      setHhEpLoading(true);
+      setResolvedOriginalUrl(null);
+      // Son izlenen / seçilen bölümü cihaz hafızasına kaydet (favoriden açıldığında da buradan başlar).
+      StorageService.setLastWatchedEpisode(post.id, ep.ep).catch(() => {});
+      resolveHentaiHavenEpisodeUrl(url)
+        .then((files) => {
+          const playable = files?.hls || files?.mp4;
+          if (playable) {
+            console.log('[Viewer] hentaihaven bölüm çözüldü, oynatılıyor (EP ' + ep.ep + ')');
+            setResolvedOriginalUrl(playable);
+          } else {
+            console.warn('[Viewer] hentaihaven bölüm çözülemedi, kapak kalıyor (EP ' + ep.ep + ')');
+          }
+        })
+        .catch(() => {})
+        .finally(() => setHhEpLoading(false));
+    },
+    [hhEpLoading, hhActiveEp, post.id, post.sourceLink]
+  );
+
   // Sigorta: fetch + WebView toplamı 30 sn'yi geçerse spinner'ı öldürüp
   // Tekrar Dene kartını göster. (Asılı bağlantıda hiçbir dal sonlanmayabiliyordu.)
   useEffect(() => {
@@ -725,6 +939,15 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     setPornhubWebviewOn(false);
     setVideoResolveFailed(false);
     setResolveNonce(0);
+    setHhEpisodes([]);
+    setHhActiveEp(null);
+    setHhEpLoading(false);
+    setMangaPages([]);
+    setCurrentMangaPage(1);
+    setMangaLoading(false);
+    setIsMangaZoomed(false);
+    mangaOffsetYRef.current = 0;
+    mangaZoomScaleRef.current = 1;
     setHasUpgradedToFull(false);
     setSampleLoading(true);
     setSampleLoaded(false);
@@ -742,7 +965,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     // Video sitelerinde (PH/XV/XH) izleme sayfasında boyut bilgisi yok;
     // ölçü listeden gelir (PH 640x360). Bu fetch, video açılışındaki
     // çift sayfa indirmenin yarısıydı — atlanınca kasma azalır.
-    if (post.sourceId === 'pornhub' || post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom') {
+    if (post.sourceId === 'pornhub' || post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom' || post.sourceId === 'hentaihaven' || post.sourceId === 'nhentai') {
       return;
     }
     let alive = true;
@@ -756,6 +979,35 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       alive = false;
     };
   }, [isActive, suspended, post.id, post.sourceLink, post.originalUrl, post.sampleUrl]);
+
+  // nhentai: manga albümünün tüm sayfalarını ve etiketlerini çözer (dikey okuyucu için)
+  useEffect(() => {
+    if (post.sourceId !== 'nhentai' || !isActive || suspended) return;
+    let alive = true;
+    const ctrl = new AbortController();
+    setMangaLoading(true);
+    resolveNHentaiGalleryDetail(post, ctrl.signal)
+      .then((detail) => {
+        if (!alive) return;
+        if (detail.pages && detail.pages.length > 0) {
+          setMangaPages(detail.pages);
+        }
+        // Detaydan gelen kategorize etiketleri Info paneline aktar
+        if (detail.allTags && detail.allTags.length > 0) {
+          onTagsResolved?.(detail.tags, detail.allTags, detail.numFavorites);
+        } else if (detail.numFavorites) {
+          onTagsResolved?.(post.tags, post.allTags, detail.numFavorites);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setMangaLoading(false);
+      });
+    return () => {
+      alive = false;
+      ctrl.abort();
+    };
+  }, [isActive, suspended, post.id, post.sourceId, post.sourceLink, post.mediaId, post.pageCount]);
 
   /**
    * Çözünürlüğe göre net zoom tavanı: contain-fit'te 1:1 piksele denk gelen
@@ -902,6 +1154,18 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       setIsZoomed(false);
       onZoomChange?.(false);
     }
+    if (!isActive && isMangaZoomedRef.current && mangaScrollRef.current) {
+      mangaScrollRef.current.scrollResponderZoomTo({
+        x: 0,
+        y: 0,
+        width: screenWidth,
+        height: screenHeight,
+        animated: false,
+      });
+      isMangaZoomedRef.current = false;
+      setIsMangaZoomed(false);
+      onZoomChange?.(false);
+    }
   }, [isActive, onZoomChange, screenWidth, screenHeight]);
 
   // Swipe Down to Dismiss tracking (only active when not zoomed)
@@ -918,6 +1182,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     }
 
     if (!zoomed) {
+      if (post.sourceId === 'nhentai') return;
       const offsetY = e.nativeEvent.contentOffset.y;
       if (offsetY < -80 && !dismissingRef.current) {
         dismissingRef.current = true;
@@ -931,6 +1196,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   };
 
   const handleScrollEndDrag = (e: any) => {
+    if (post.sourceId === 'nhentai') return;
     const zoomScale = e.nativeEvent.zoomScale || 1;
     if (zoomScale <= 1.05) {
       const offsetY = e.nativeEvent.contentOffset.y;
@@ -1010,62 +1276,235 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     }
   };
 
-  return (
-    <ScrollView
-      ref={scrollRef}
-      style={{ width: screenWidth, height: screenHeight }}
-      contentContainerStyle={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000', alignItems: 'center', justifyContent: 'center' }}
-      showsVerticalScrollIndicator={false}
-      showsHorizontalScrollIndicator={false}
-      maximumZoomScale={canPlayVideo ? 1 : maxZoom}
-      minimumZoomScale={1}
-      bouncesZoom={true}
-      centerContent={true}
-      scrollEventThrottle={16}
-      scrollEnabled={!isScrubbingActive}
-      onScroll={handleScroll}
-      onScrollEndDrag={handleScrollEndDrag}
-    >
-      <TouchableWithoutFeedback onPress={handleImageTouch}>
-        <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
-          {/* PH bot-duvarı yedeği çözüm sırasında loader'ın arkasında çalışır. */}
-          {pornhubWebviewOn &&
-          !resolvedOriginalUrl &&
-          isActive &&
-          !suspended &&
-          post.sourceId === 'pornhub' &&
-          post.sourceLink ? (
-            <PornhubWebViewResolver
-              pageUrl={post.sourceLink}
-              onResolve={(files) => {
-                if (files) {
-                  setResolvedOriginalUrl(files.high || files.hls || files.low || null);
-                } else {
-                  setVideoResolveFailed(true);
-                }
-                setPornhubWebviewOn(false);
-              }}
-            />
-          ) : null}
+  const handleMangaDoubleTap = (event: any) => {
+    const now = Date.now();
+    const DOUBLE_TAP_DELAY = 280;
 
-          {isResolvingPornhubVideo ? (
-            <View style={styles.loaderCenter} pointerEvents="none">
-              <ActivityIndicator size="large" color={Colors.dark.primary} />
+    if (now - mangaLastTapRef.current < DOUBLE_TAP_DELAY) {
+      if (mangaSingleTapTimerRef.current) {
+        clearTimeout(mangaSingleTapTimerRef.current);
+        mangaSingleTapTimerRef.current = null;
+      }
+      mangaLastTapRef.current = 0;
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+
+      if (isMangaZoomedRef.current) {
+        // 1x'e geri dön: o an bulunulan dikey sayfada kal (1. sayfaya sıçrama yapma)
+        const currentScale = mangaZoomScaleRef.current || 1;
+        const targetY = Math.max(0, mangaOffsetYRef.current / currentScale);
+        mangaScrollRef.current?.scrollResponderZoomTo({
+          x: 0,
+          y: targetY,
+          width: screenWidth,
+          height: screenHeight,
+          animated: true,
+        });
+        isMangaZoomedRef.current = false;
+        setIsMangaZoomed(false);
+        onZoomChange?.(false);
+      } else {
+        // Çift dokunulan sayfaya/noktaya 2.2x tümleşik zoom:
+        // pageY ekran üstü mutlak koordinattır. ScrollView'ın anlık kaydırma
+        // ofseti (mangaOffsetYRef.current) eklenerek tam dokunulan sayfaya zoom yapılır.
+        const tapZoom = 2.2;
+        const pageX = event.nativeEvent.pageX ?? event.nativeEvent.locationX ?? (screenWidth / 2);
+        const pageY = event.nativeEvent.pageY ?? (screenHeight / 2);
+        const viewportY = Math.max(0, pageY - insets.top);
+        const contentY = mangaOffsetYRef.current + viewportY;
+
+        const targetWidth = screenWidth / tapZoom;
+        const targetHeight = screenHeight / tapZoom;
+        const targetX = Math.max(0, pageX - targetWidth / 2);
+        const targetY = Math.max(0, contentY - targetHeight / 2);
+
+        mangaScrollRef.current?.scrollResponderZoomTo({
+          x: targetX,
+          y: targetY,
+          width: targetWidth,
+          height: targetHeight,
+          animated: true,
+        });
+        isMangaZoomedRef.current = true;
+        setIsMangaZoomed(true);
+        onZoomChange?.(true);
+      }
+    } else {
+      mangaLastTapRef.current = now;
+      if (mangaSingleTapTimerRef.current) {
+        clearTimeout(mangaSingleTapTimerRef.current);
+      }
+      mangaSingleTapTimerRef.current = setTimeout(() => {
+        onToggleControls();
+      }, DOUBLE_TAP_DELAY);
+    }
+  };
+
+  const handleMangaScroll = (e: any) => {
+    const scale = e.nativeEvent.zoomScale || 1;
+    const zoomed = scale > 1.05;
+    mangaZoomScaleRef.current = scale;
+    mangaOffsetYRef.current = e.nativeEvent.contentOffset.y;
+
+    if (zoomed !== isMangaZoomedRef.current) {
+      isMangaZoomedRef.current = zoomed;
+      setIsMangaZoomed(zoomed);
+      onZoomChange?.(zoomed);
+    }
+
+    // Dikey kaydırmaya göre anlık sayfa göstergesi
+    const pageHeight = Math.round(screenWidth * 1.42);
+    const offsetY = e.nativeEvent.contentOffset.y;
+    const effectivePageHeight = pageHeight * scale;
+    if (effectivePageHeight > 0) {
+      const pagesCount = mangaPages.length || post.pageCount || 1;
+      const p = Math.min(
+        pagesCount,
+        Math.max(1, Math.floor((offsetY + screenHeight * 0.3) / effectivePageHeight) + 1)
+      );
+      setCurrentMangaPage(p);
+    }
+  };
+
+  // nhentai: manga okuyucu (tümleşik global canvas zoom)
+  if (post.sourceId === 'nhentai') {
+    const pages = mangaPages.length > 0 ? mangaPages : [post.sampleUrl || post.previewUrl];
+    const pageHeight = Math.round(screenWidth * 1.42);
+    return (
+      <View style={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000' }}>
+        {mangaLoading && mangaPages.length === 0 ? (
+          <View style={styles.loaderCenter} pointerEvents="none">
+            <ActivityIndicator size="large" color={Colors.dark.primary} />
+          </View>
+        ) : null}
+
+        <ScrollView
+          ref={mangaScrollRef}
+          style={{ width: screenWidth, height: screenHeight }}
+          contentContainerStyle={{
+            backgroundColor: '#000000',
+            alignItems: 'center',
+            paddingBottom: Math.max(insets.bottom + 40, 60),
+          }}
+          maximumZoomScale={3.5}
+          minimumZoomScale={1}
+          bouncesZoom={true}
+          showsVerticalScrollIndicator={true}
+          showsHorizontalScrollIndicator={false}
+          scrollEventThrottle={16}
+          onScroll={handleMangaScroll}
+        >
+          <TouchableWithoutFeedback onPress={handleMangaDoubleTap}>
+            <View style={{ width: screenWidth, alignItems: 'center', backgroundColor: '#000000' }}>
+              {pages.map((item, index) => {
+                // Pencereleme: yalnız görünen sayfa ±5 monte edilir. 50+ sayfanın
+                // hepsini aynı anda indirmek mobil hattı tıkayıp okuyucuyu
+                // kilitliyordu; uzak sayfalar yer tutucu olarak bekler.
+                const activeIdx = currentMangaPage - 1;
+                const nearActive = Math.abs(index - activeIdx) <= 5;
+                return (
+                  <View
+                    key={`${item}-${index}`}
+                    style={{
+                      width: screenWidth,
+                      height: pageHeight,
+                      backgroundColor: '#000000',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                  >
+                    {nearActive ? (
+                      <MangaPageImage
+                        uri={item}
+                        pageLabel={String(index + 1)}
+                        width={screenWidth}
+                        height={pageHeight}
+                      />
+                    ) : (
+                      <Text style={{ color: '#333333', fontSize: 13 }}>
+                        {`${index + 1}`}
+                      </Text>
+                    )}
+                  </View>
+                );
+              })}
             </View>
-          ) : canPlayVideo && isActive ? (
-            <VideoPlayerView
-              url={activeVideoUrl}
-              suspended={suspended}
-              screenWidth={screenWidth}
-              screenHeight={screenHeight}
-              onLoaded={() => setSampleLoading(false)}
-              onScrubbingChange={(scrubbing) => {
-                setIsScrubbingActive(scrubbing);
-                onScrubbingChange?.(scrubbing);
-              }}
-            />
-          ) : (
-            <>
+          </TouchableWithoutFeedback>
+        </ScrollView>
+
+        {/* Floating Page Indicator Pill: Sayfa X / Y */}
+        <View
+          style={[
+            styles.mangaPagePill,
+            { bottom: Math.max(insets.bottom + 20, 28) },
+          ]}
+          pointerEvents="none"
+        >
+          <Text style={styles.mangaPagePillText}>
+            {currentMangaPage} / {mangaPages.length || post.pageCount || 1}
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000' }}>
+      <ScrollView
+        ref={scrollRef}
+        style={{ width: screenWidth, height: screenHeight }}
+        contentContainerStyle={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000', alignItems: 'center', justifyContent: 'center' }}
+        showsVerticalScrollIndicator={false}
+        showsHorizontalScrollIndicator={false}
+        maximumZoomScale={canPlayVideo ? 1 : maxZoom}
+        minimumZoomScale={1}
+        bouncesZoom={true}
+        centerContent={true}
+        scrollEventThrottle={16}
+        scrollEnabled={!isScrubbingActive}
+        onScroll={handleScroll}
+        onScrollEndDrag={handleScrollEndDrag}
+      >
+        <TouchableWithoutFeedback onPress={handleImageTouch}>
+          <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
+            {/* PH bot-duvarı yedeği çözüm sırasında loader'ın arkasında çalışır. */}
+            {pornhubWebviewOn &&
+            !resolvedOriginalUrl &&
+            isActive &&
+            !suspended &&
+            post.sourceId === 'pornhub' &&
+            post.sourceLink ? (
+              <PornhubWebViewResolver
+                pageUrl={post.sourceLink}
+                onResolve={(files) => {
+                  if (files) {
+                    setResolvedOriginalUrl(files.high || files.hls || files.low || null);
+                  } else {
+                    setVideoResolveFailed(true);
+                  }
+                  setPornhubWebviewOn(false);
+                }}
+              />
+            ) : null}
+
+            {isResolvingPornhubVideo ? (
+              <View style={styles.loaderCenter} pointerEvents="none">
+                <ActivityIndicator size="large" color={Colors.dark.primary} />
+              </View>
+            ) : canPlayVideo && isActive ? (
+              <VideoPlayerView
+                url={activeVideoUrl}
+                suspended={suspended}
+                screenWidth={screenWidth}
+                screenHeight={screenHeight}
+                onLoaded={() => setSampleLoading(false)}
+                onToggleControls={onToggleControls}
+                onScrubbingChange={(scrubbing) => {
+                  setIsScrubbingActive(scrubbing);
+                  onScrubbingChange?.(scrubbing);
+                }}
+              />
+            ) : (
+              <>
               {/* Sample ilk yükleme göstergesi: sample henüz boyanmamışken ve full yüklenmemişken */}
               {sampleLoading && !sampleLoaded && !fullLoaded && (
                 <View style={styles.loaderCenter} pointerEvents="none">
@@ -1248,7 +1687,49 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         </View>
       </TouchableWithoutFeedback>
     </ScrollView>
-  );
+
+    {/* HentaiHaven EP secici: ScrollView ve VideoPlayerView uzerinde yuzer */}
+    {post.sourceId === 'hentaihaven' &&
+    isActive &&
+    !suspended &&
+    hhEpisodes.length > 1 &&
+    showControls ? (
+      <View
+        style={[
+          styles.hhEpisodeBar,
+          { top: Math.max(insets.top + 60, 76) },
+        ]}
+        pointerEvents="box-none"
+      >
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.hhEpisodeRow}
+        >
+          {sortedHhEpisodes.map((ep) => {
+            const selected = ep.ep === (hhActiveEp ?? sortedHhEpisodes[0].ep);
+            return (
+              <TouchableOpacity
+                key={ep.url}
+                style={[styles.hhEpisodeChip, selected && styles.hhEpisodeChipSelected]}
+                activeOpacity={0.7}
+                disabled={hhEpLoading}
+                onPress={() => handleSelectHhEpisode(ep)}
+              >
+                <Text style={[styles.hhEpisodeText, selected && styles.hhEpisodeTextSelected]}>
+                  EP {ep.ep}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+          {hhEpLoading ? (
+            <ActivityIndicator size="small" color="#FFFFFF" style={{ marginLeft: 6 }} />
+          ) : null}
+        </ScrollView>
+      </View>
+    ) : null}
+  </View>
+);
 };
 
 // Helper to format playback time
@@ -1274,6 +1755,7 @@ interface VideoPlayerViewProps {
   screenWidth: number;
   screenHeight: number;
   onLoaded?: () => void;
+  onToggleControls?: () => void;
   onScrubbingChange?: (isScrubbing: boolean) => void;
 }
 
@@ -1284,6 +1766,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   screenWidth,
   screenHeight,
   onLoaded,
+  onToggleControls,
   onScrubbingChange,
 }) => {
   const insets = useSafeAreaInsets();
@@ -1478,6 +1961,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       if (next) resetHideTimer();
       return next;
     });
+    onToggleControls?.();
   };
 
   const handlePlayPause = () => {
@@ -2202,5 +2686,59 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.65)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  // HentaiHaven EP secici: ust barda baslik altinda yuzer yatay serit.
+  hhEpisodeBar: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    zIndex: 30,
+    elevation: 10,
+  },
+  hhEpisodeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+  },
+  hhEpisodeChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: 'rgba(20, 22, 30, 0.88)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.22)',
+    marginRight: 8,
+  },
+  hhEpisodeChipSelected: {
+    backgroundColor: Colors.dark.primary,
+    borderColor: Colors.dark.primary,
+  },
+  hhEpisodeText: {
+    color: '#E0E0E0',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  hhEpisodeTextSelected: {
+    color: '#FFFFFF',
+  },
+  // nhentai: dikey okuyucu sayfa gosterge hapi (Sayfa X / Y)
+  mangaPagePill: {
+    position: 'absolute',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.78)',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.22)',
+    zIndex: 25,
+    elevation: 8,
+  },
+  mangaPagePillText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
 });

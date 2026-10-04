@@ -1,4 +1,5 @@
 ﻿import type { BooruPost, BooruSource } from '../types/booru';
+import { proxyService } from './proxyService';
 
 /**
  * Sex.com (https://www.sex.com) entegrasyonu - saf yardimcilar.
@@ -79,7 +80,7 @@ export function parseSexComListing(html: string, source: BooruSource): BooruPost
       c.match(/title="([^"]+)"/);
     const title = titleM ? decodeEntities(titleM[1]).trim() : '';
 
-    const thumbM = c.match(/src="(https:\/\/images\.sxccdn\.com\/videos\/\d+\/\d+\/thumbnail\.[^"]+)"/);
+    const thumbM = c.match(/src="(https:\/\/images\.sxccdn\.com\/videos\/\d+\/\d+\/(?:thumbnail\.[^"]+|poster\.webp))"/);
     const thumb = thumbM ? thumbM[1].trim() : '';
     const pvM = c.match(/<video[^>]*src="([^"]+)"/i);
     const previewVideo = pvM ? decodeEntities(pvM[1]).trim() : undefined;
@@ -93,6 +94,9 @@ export function parseSexComListing(html: string, source: BooruSource): BooruPost
     const viewsRaw = viewsM ? decodeEntities(viewsM[1]).trim() : '';
     const rateM = c.match(/>([0-9]{1,3})%<\/span>/);
     const ratingPct = rateM ? rateM[1] : '';
+    // Karttaki video etiketinde premium isareti (yoksa bilinmiyor -> dahil).
+    const premiumM = c.match(/data-premium="([01])"/);
+    const isPremium = premiumM ? premiumM[1] === '1' : false;
 
     const score = parseSexComViewsCount(viewsRaw);
     const artist = channel ? [channel] : [];
@@ -131,6 +135,7 @@ export function parseSexComListing(html: string, source: BooruSource): BooruPost
       sourceLink: base + decodeEntities(hrefM[1]),
       fileExt: 'mp4',
       createdAt: new Date().toISOString(),
+      isPremium,
     });
   }
 
@@ -141,6 +146,8 @@ export interface SexComFiles {
   hls: string;
   mp4: string;
   thumb: string;
+  /** contentUrl premium kilitli hosttaysa (premium-*) true: anonim oynatıcı açamaz. */
+  premium: boolean;
   title?: string;
   durationSec?: number;
 }
@@ -159,14 +166,22 @@ export function parseSexComISODuration(raw: string | undefined): number | null {
  * sayfadaki video etiketi mp4'u. HLS iOS'ta native oynar.
  */
 export function parseSexComDetail(html: string): SexComFiles {
-  const out: SexComFiles = { hls: '', mp4: '', thumb: '' };
+  const out: SexComFiles = { hls: '', mp4: '', thumb: '', premium: false };
   if (!html) return out;
   const ldM = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
   const scope = ldM ? ldM[1] : html;
 
   const hlsM = scope.match(/"contentUrl"\s*:\s*"([^"]+)"/i);
-  if (hlsM && /\.m3u8$/i.test(hlsM[1].split('?')[0])) {
-    out.hls = hlsM[1].trim();
+  if (hlsM) {
+    const cu = hlsM[1].trim();
+    const base = cu.split('?')[0];
+    if (/\.m3u8$/i.test(base)) {
+      out.hls = cu;
+      const hostM = cu.match(/^https?:\/\/([^/]+)/i);
+      out.premium = !!hostM && /^premium-/i.test(hostM[1]);
+    } else if (/\.mp4$/i.test(base) && !out.mp4) {
+      out.mp4 = cu;
+    }
   }
   const thM = scope.match(/"thumbnailUrl"\s*:\s*"([^"]+)"/i);
   if (thM) out.thumb = thM[1].trim();
@@ -185,8 +200,29 @@ export function parseSexComDetail(html: string): SexComFiles {
   }
 
   const mp4M = html.match(/<video[^>]*src="([^"]+\.mp4[^"]*)"/i);
-  if (mp4M) out.mp4 = decodeEntities(mp4M[1]).trim();
+  if (mp4M && !out.mp4) out.mp4 = decodeEntities(mp4M[1]).trim();
   return out;
+}
+
+/**
+ * Premium kilitli gönderileri listeden çıkarır. sex.com'da tam dosya
+ * sunulmayan videolar ızgaraya girmez; izleyiciye kalanlar ücretsizdir,
+ * önizlemede takılma olursa sebep çözümleme/TLS hatasıdır (logda görünür).
+ */
+export function excludePremiumPosts<T extends { isPremium?: boolean }>(posts: T[]): T[] {
+  if (!posts) return posts;
+  return posts.filter((p) => !p || !p.isPremium);
+}
+
+/**
+ * Izleyicide calinacak URL secimi (viewer + testler icin tek kaynak):
+ * premium kilitli HLS anonim oynaticida acilmaz; varsa onizleme mp4'u
+ * oynar (hata kartindan iyidir). Normalde HLS, yoksa mp4.
+ */
+export function selectSexComPlayable(files: SexComFiles | null): string | null {
+  if (!files) return null;
+  if (files.premium) return files.mp4 || null;
+  return files.hls || files.mp4 || null;
 }
 
 /**
@@ -207,15 +243,21 @@ export async function resolveSexComVideoUrls(
   }
 
   try {
-    const response = await fetch(post.sourceLink, {
-      headers: {
-        'User-Agent': SEXCOM_UA,
-        Referer: SEXCOM_BASE + '/',
-        'Accept-Language': 'en-US,en;q=0.9',
-        Accept: 'text/html,application/xhtml+xml',
+    // Dogrudan koparsa (TLS -1200 / bot duvari) kayitli worker varsa tek
+    // seferlik oradan denenir; workersiz direktten oteye gidilemez.
+    const response = await proxyService.fetchWithFallback(
+      post.sourceLink,
+      {
+        headers: {
+          'User-Agent': SEXCOM_UA,
+          Referer: SEXCOM_BASE + '/',
+          'Accept-Language': 'en-US,en;q=0.9',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+        signal: ctrl.signal,
       },
-      signal: ctrl.signal,
-    });
+      10000
+    );
     clearTimeout(timeout);
     if (!response.ok) return null;
     const html = await response.text();

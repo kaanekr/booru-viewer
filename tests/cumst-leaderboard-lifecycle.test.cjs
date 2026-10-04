@@ -26,6 +26,8 @@ function loadApi() {
       if (id === './pornhub') return {};
       if (id === '../utils/guards') return {};
       if (id === './sexcom') return {};
+      if (id === './hentaihavens') return {};
+      if (id === './nhentai') return { searchNHentaiTags: async () => [] };
       throw new Error('Unexpected dependency: ' + id);
     },
     console: { warn() {} },

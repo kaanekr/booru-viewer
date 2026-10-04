@@ -14,7 +14,10 @@ function loadSexCom() {
   const module = { exports: {} };
   vm.runInNewContext(js, {
     module, exports: module.exports,
-    require: (id) => { throw new Error('sexcom must be dependency-free, got: ' + id); },
+    require: (id) => {
+      if (id === './proxyService') return {};
+      throw new Error('sexcom must be UI-dependency-free, got: ' + id);
+    },
   }, { filename });
   return module.exports;
 }
@@ -29,7 +32,7 @@ function cardHtml(o) {
     '<img alt=\"' + o.title + '\" decoding=\"async\" srcSet=\"https://images.sxccdn.com/videos/' + o.id + '/288/thumbnail.0000012.jpg.webp 288w\" src=\"https://images.sxccdn.com/videos/' + o.id + '/288/thumbnail.0000012.jpg.webp\"/>' +
     '</div>' +
     '<div><div><time>' + o.duration + '</time></div></div>' +
-    '<video src=\"' + o.preview + '\" preload=\"none\" data-id=\"' + o.id + '\" data-title=\"' + o.title + '\" data-state=\"paused\"></video>' +
+    '<video src=\"' + o.preview + '\" preload=\"none\" data-premium=\"' + (o.premium || '0') + '\" data-id=\"' + o.id + '\" data-title=\"' + o.title + '\" data-state=\"paused\"></video>' +
     '</div></a>' +
     '<div><div>' +
     (o.channel ? '<div><a data-testid=\"video-link-to-source-channel\" href=\"/en/channels/600\">' + o.channel + '</a></div>' : '') +
@@ -134,4 +137,84 @@ test('iso durations parse, garbage returns null', () => {
   assert.equal(sx.parseSexComISODuration('garbage'), null);
   assert.equal(sx.parseSexComISODuration(''), null);
   assert.equal(sx.parseSexComISODuration(undefined), null);
+});
+
+const PREMIUM_DETAIL = '<html><head><script type="application/ld+json">' +
+  '{"@context":"https://schema.org","@type":"VideoObject","name":"Premium Clip",' +
+  '"thumbnailUrl":"https://images.sxccdn.com/videos/978584/908/poster.jpeg",' +
+  '"uploadDate":"2025-10-28T14:10:59Z","duration":"P0Y0M0DT0H0M1921S",' +
+  '"contentUrl":"https://premium-videos2.sex.com/978584/video.m3u8"}' +
+  '</script></head><body>' +
+  '<video src="https://videos2.sex.com/978584/preview_240p.mp4"></video>' +
+  '</body></html>';
+
+test('premium-locked hls is flagged and falls back to preview mp4', () => {
+  const sx = loadSexCom();
+  const files = sx.parseSexComDetail(PREMIUM_DETAIL);
+  assert.equal(files.hls, 'https://premium-videos2.sex.com/978584/video.m3u8');
+  assert.equal(files.premium, true);
+  assert.equal(sx.selectSexComPlayable(files), 'https://videos2.sex.com/978584/preview_240p.mp4');
+});
+
+test('playable selection prefers hls, then mp4, null when empty', () => {
+  const sx = loadSexCom();
+  assert.equal(sx.selectSexComPlayable(null), null);
+  assert.equal(
+    sx.selectSexComPlayable({ hls: 'https://videos2.sex.com/1/video.m3u8', mp4: 'https://videos2.sex.com/1/preview_240p.mp4', thumb: '', premium: false }),
+    'https://videos2.sex.com/1/video.m3u8'
+  );
+  assert.equal(
+    sx.selectSexComPlayable({ hls: '', mp4: 'https://videos2.sex.com/1/preview_240p.mp4', thumb: '', premium: false }),
+    'https://videos2.sex.com/1/preview_240p.mp4'
+  );
+  assert.equal(
+    sx.selectSexComPlayable({ hls: 'https://premium-videos2.sex.com/1/video.m3u8', mp4: '', thumb: '', premium: true }),
+    null
+  );
+});
+
+test('mp4 contentUrl is used directly', () => {
+  const sx = loadSexCom();
+  const files = sx.parseSexComDetail(
+    '<html><head><script type="application/ld+json">{"@type":"VideoObject",' +
+    '"contentUrl":"https://videos2.sex.com/5/video_720p.mp4"}</script></head><body></body></html>'
+  );
+  assert.equal(files.hls, '');
+  assert.equal(files.premium, false);
+  assert.equal(files.mp4, 'https://videos2.sex.com/5/video_720p.mp4');
+  assert.equal(sx.selectSexComPlayable(files), 'https://videos2.sex.com/5/video_720p.mp4');
+});
+
+test('poster.webp covers parse when no thumbnail frames exist', () => {
+  const sx = loadSexCom();
+  const html = '<html><body>' +
+    '<div data-testid="video-card" data-analytics-video_id="978584">' +
+    '<a data-testid="video-link" href="/en/videos/978584">' +
+    '<img alt="Poster Only Clip" src="https://images.sxccdn.com/videos/978584/288/poster.webp"/>' +
+    '<div><time>8:12</time></div>' +
+    '<video src="https://videos2.sex.com/978584/preview_240p.mp4" data-title="Poster Only Clip"></video>' +
+    '</a></div></body></html>';
+  const posts = sx.parseSexComListing(html, SOURCE);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].previewUrl, 'https://images.sxccdn.com/videos/978584/288/poster.webp');
+});
+
+test('premium cards are flagged and excluded from listings', () => {
+  const sx = loadSexCom();
+  const free = sx.parseSexComListing(LISTING, SOURCE);
+  assert.ok(free.every((p) => p.isPremium === false));
+  const premiumHtml = '<html><body>' + cardHtml({
+    id: '999999', title: 'Premium Clip', duration: '22:10',
+    preview: 'https://videos2.sex.com/999999/preview_240p.mp4',
+    channel: 'Ocean Channel', views: '5K', rating: '99', premium: '1',
+  }) + '</body></html>';
+  const mixed = sx.parseSexComListing(LISTING + premiumHtml, SOURCE);
+  assert.equal(mixed.length, 3);
+  const premium = mixed.filter((p) => p.isPremium);
+  assert.equal(premium.length, 1);
+  assert.equal(premium[0].id, 'sx_999999');
+  const kept = sx.excludePremiumPosts(mixed);
+  assert.equal(kept.length, 2);
+  assert.ok(kept.every((p) => !p.isPremium));
+  assert.equal(sx.excludePremiumPosts([]).length, 0);
 });

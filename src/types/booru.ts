@@ -1,4 +1,4 @@
-export type BooruType = 'danbooru' | 'gelbooru' | 'moebooru' | 'realbooru' | 'cumst' | 'redgifs' | 'xvideos' | 'xhamster' | 'pornhub' | 'sexcom';
+export type BooruType = 'danbooru' | 'gelbooru' | 'moebooru' | 'realbooru' | 'cumst' | 'redgifs' | 'xvideos' | 'xhamster' | 'pornhub' | 'sexcom' | 'hentaihaven' | 'nhentai';
 
 export interface BooruSource {
   id: string;
@@ -10,6 +10,8 @@ export interface BooruSource {
   authParams?: string;
   /** JSON API farklı host'ta ise burada tutulur */
   apiBaseUrl?: string;
+  /** true ise kaynak seçicide listelenmez (kayıtlı tercihler çalışmaya devam eder) */
+  hidden?: boolean;
 }
 
 export interface BooruTagGroups {
@@ -48,6 +50,11 @@ export interface BooruPost {
   createdAt: string;
   /** RedGifs kategori (niche) id'leri, örn. ['3-somes', 'natural-tits'] */
   niches?: string[];
+  /** Premium kilitli içerik (örn. sex.com): listelerde elenir, izleyicide önizleme oynar */
+  isPremium?: boolean;
+  /** Manga / doujinshi sayfa sayısı ve medya id'si (nhentai vb.) */
+  pageCount?: number;
+  mediaId?: string;
 }
 
 export interface BooruTagSuggestion {

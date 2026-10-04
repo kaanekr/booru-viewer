@@ -31,6 +31,7 @@ import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
 import { BooruPost, TagCategory } from '../types/booru';
 import { StorageService, ImageQuality } from '../services/storage';
+import { nhentaiTagQuery } from '../services/nhentai';
 import { resolveRealDimensions } from '../utils/media';
 import { onlyStrings } from '../utils/guards';
 
@@ -303,10 +304,15 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     Haptics.selectionAsync();
     setSelectedTag(null);
     // RedGifs sanatçı adı etiketi aranırsa 0 döner; 'user:' mekaniğiyle ara
+    // nhentai: kategoriye göre `tag:"ad"` / `artist:"ad"` mekaniğiyle ara
+    // (düz kelime full-text eşleşir, etiket eşleşmesi yapmaz)
+    const isNhentai = post?.sourceId === 'nhentai' && !/^[a-z][a-z-]*:/i.test(tag);
     const query =
       category === 'artist' && post?.sourceId === 'redgifs' && !tag.toLowerCase().startsWith('user:')
         ? `user:${tag}`
-        : tag;
+        : isNhentai
+          ? nhentaiTagQuery(tag, category)
+          : tag;
     dismissThen(() => onSearchTag(query));
   };
 
@@ -317,7 +323,11 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     Haptics.selectionAsync();
     setSelectedTag(null);
     // RedGifs sanatçısı aramaya kullanıcı olarak eklenir
-    const query = isRedGifsArtist(tag, category) ? `user:${tag}` : tag;
+    const query = isRedGifsArtist(tag, category)
+      ? `user:${tag}`
+      : post?.sourceId === 'nhentai' && !/^[a-z][a-z-]*:/i.test(tag)
+        ? nhentaiTagQuery(tag, category)
+        : tag;
     dismissThen(() => {
       if (onAddTagToSearch) {
         onAddTagToSearch(query);
@@ -331,7 +341,12 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     Haptics.selectionAsync();
     setSelectedTag(null);
     // RedGifs sanatçısı '-user:' olarak dışlanır
-    const query = isRedGifsArtist(tag, category) ? `-user:${tag}` : `-${tag}`;
+    // nhentai: `-tag:"ad"` (çok kelimeli etiket `-"a b"` gibi tek parça kalır)
+    const query = isRedGifsArtist(tag, category)
+      ? `-user:${tag}`
+      : post?.sourceId === 'nhentai' && !/^[a-z][a-z-]*:|-/i.test(tag)
+        ? `-${nhentaiTagQuery(tag, category)}`
+        : `-${tag}`;
     dismissThen(() => {
       if (onExcludeTagFromSearch) {
         onExcludeTagFromSearch(query);
