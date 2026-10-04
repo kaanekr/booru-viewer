@@ -42,6 +42,7 @@ function loadFeed() {
     },
     '../context/SourceContext': { useSource: () => ({ activeSource: source }) },
     '../context/MediaPlaybackContext': { useMediaPlaybackAllowed: () => true },
+    '../services/hentaihavens': { HENTAIHAVEN_FEED_SECTIONS: [] },
     '../utils/freezeProbe': { updateFreezeProbe() {} },
     '../services/storage': { StorageService: {
       getFavorites: async () => [], getFeedOrder: async () => null, setFeedOrder: async () => {},

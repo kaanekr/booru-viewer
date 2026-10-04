@@ -34,6 +34,7 @@ import {
 } from '../types/booru';
 import { booruApi } from '../services/booruApi';
 import { nhentaiTagQuery } from '../services/nhentai';
+import { hentaiHavenTagQuery } from '../services/hentaihavens';
 import { dayDateOptions, weekDateOptions, monthDateOptions, describeAnchor } from '../utils/leaderboardPeriods';
 import { AVAILABLE_SOURCES } from '../services/sources';
 import { useSource } from '../context/SourceContext';
@@ -88,7 +89,8 @@ const SEXCOM_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] 
 ];
 
 const HENTAIHAVEN_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
-  { label: '---', value: 'default', desc: 'Varsayılan (Trend)' },
+  { label: 'En Yeniler', value: 'default', desc: 'Son eklenen seriler (hentai/all)' },
+  { label: 'Ayın Trendleri', value: 'score', desc: 'En çok izlenenler (home/trending)' },
 ];
 
 const NHENTAI_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
@@ -246,9 +248,14 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
   const handleSelectSuggestion = (suggestedTag: string, category?: BooruTagSuggestion['category']) => {
     Haptics.selectionAsync();
-    // nhentai: öneri `tag:"ad"` mekaniğiyle eklenir
+    // nhentai: öneri `tag:"ad"` / `artist:"ad"` mekaniğiyle eklenir
+    // hentaihaven: öneri `tag:...` veya `artist:...` mekaniğiyle eklenir
     const qualified =
-      activeSource.type === 'nhentai' ? nhentaiTagQuery(suggestedTag, category) : suggestedTag.trim().toLowerCase();
+      activeSource.type === 'nhentai'
+        ? nhentaiTagQuery(suggestedTag, category)
+        : activeSource.type === 'hentaihaven'
+          ? hentaiHavenTagQuery(suggestedTag, category)
+          : suggestedTag.trim().toLowerCase();
     // Varsa önceki yazılmış token'ları da al, son yazılanı öneri ile tamamla
     const tokens = tagInput.trim().match(/("[^"]*"|[^\s,"])+/g) || [];
     const previousTokens = tokens.slice(0, -1).map((t) => t.trim().toLowerCase()).filter(Boolean);

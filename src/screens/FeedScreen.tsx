@@ -14,7 +14,7 @@ import { Layers, RefreshCw, AlertCircle, Flame } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { booruApi } from '../services/booruApi';
-import { BooruPost, BooruSource, DEFAULT_FILTER_CONFIG, SearchFilterConfig, RedGifsTrendingTag } from '../types/booru';
+import { BooruPost, BooruSource, DEFAULT_FILTER_CONFIG, HentaiHavenFeedSection, SearchFilterConfig, RedGifsTrendingTag } from '../types/booru';
 import { PostCard } from '../components/PostCard';
 import { TagChip } from '../components/TagChip';
 import { pushViewer, pushSearchDetail } from '../navigation/rootNavigation';
@@ -25,6 +25,7 @@ import { useVisibleIds, useMountedIds, useFocusedCardIds, CardLayout } from '../
 import { useSource } from '../context/SourceContext';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { StorageService, FeedOrder } from '../services/storage';
+import { HENTAIHAVEN_FEED_SECTIONS } from '../services/hentaihavens';
 import { updateFreezeProbe } from '../utils/freezeProbe';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -39,7 +40,7 @@ const FEED_ORDER_OPTIONS: { key: string; label: string; order: FeedOrder }[] = [
 ];
 
 function feedOrderKey(order: FeedOrder): string {
-  return `${order.sortBy}|${order.timeRange}`;
+  return `${order.sortBy}|${order.timeRange}|${order.hentaiHavenSection ?? ''}`;
 }
 
 interface FeedScreenProps {
@@ -84,6 +85,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const isFocused = useIsFocused();
   const mediaAllowed = useMediaPlaybackAllowed();
   const isRedGifs = activeSource.type === 'redgifs';
+  const isHentaiHaven = activeSource.type === 'hentaihaven';
   const feedKey = `${activeSource.id}|${feedOrderKey(feedOrder)}`;
   const feedKeyRef = useRef(feedKey);
   feedKeyRef.current = feedKey;
@@ -139,6 +141,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           ...DEFAULT_FILTER_CONFIG,
           sortBy: feedOrder.sortBy,
           timeRange: feedOrder.timeRange,
+          hentaiHavenSection: feedOrder.hentaiHavenSection,
         };
         const newPosts = await booruApi.fetchPosts(pageNum, 24, '', feedFilter);
         // Kaynak/sıra değişirken biten eski istek yeni listenin üstüne yazamaz.
@@ -222,6 +225,14 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const handleSelectOrder = (order: FeedOrder) => {
     if (feedOrderKey(order) === feedOrderKey(feedOrder)) return;
     Haptics.selectionAsync();
+    setFeedOrder(order);
+    StorageService.setFeedOrder(order);
+  };
+
+  const handleSelectHentaiHavenSection = (section: HentaiHavenFeedSection) => {
+    if (feedOrder.hentaiHavenSection === section && feedOrder.sortBy === 'default') return;
+    Haptics.selectionAsync();
+    const order: FeedOrder = { sortBy: 'default', timeRange: 'all', hentaiHavenSection: section };
     setFeedOrder(order);
     StorageService.setFeedOrder(order);
   };
@@ -337,6 +348,33 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
         )}
       </View>
 
+      {/* HentaiHaven bölüm seçici: En Yeni (sayfalı) + Trend/Son Bölümler/Türler (home/genre) */}
+      {isHentaiHaven && (
+        <View style={styles.orderBar}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.orderBarContent}
+          >
+            {HENTAIHAVEN_FEED_SECTIONS.map((opt) => {
+              const activeSection = feedOrder.hentaiHavenSection ?? 'latest';
+              const isSelected = activeSection === opt.key;
+              return (
+                <TouchableOpacity
+                  key={opt.key}
+                  style={[styles.orderChip, isSelected && styles.orderChipActive]}
+                  onPress={() => handleSelectHentaiHavenSection(opt.key)}
+                  activeOpacity={0.7}
+                >
+                  <Text style={[styles.orderChipText, isSelected && styles.orderChipTextActive]}>
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
       {/* Sıra seçici: yalnız RedGifs'te anlamlı (order= trending/latest/top7/top28) */}
       {isRedGifs && (
         <View style={styles.orderBar}>

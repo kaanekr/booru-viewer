@@ -488,7 +488,7 @@ export class BooruApiService {
       } else if (source.type === 'sexcom') {
         return await this.fetchSexComPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'hentaihaven') {
-        return await this.fetchHentaiHavenPosts(source, page, limit, tags, includeBlacklisted);
+        return await this.fetchHentaiHavenPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else if (source.type === 'nhentai') {
         return await this.fetchNHentaiPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else {
@@ -1655,10 +1655,14 @@ export class BooruApiService {
     page: number,
     limit: number,
     tags: string,
-    includeBlacklisted: boolean = false
+    includeBlacklisted: boolean = false,
+    filter?: SearchFilterConfig
   ): Promise<BooruPost[]> {
     void limit;
-    const posts = await fetchHHPostsService(source, page, tags);
+    const posts = await fetchHHPostsService(source, page, tags, {
+      section: filter?.hentaiHavenSection ?? null,
+      sortBy: filter?.sortBy,
+    });
     return await this.filterBlacklistedPosts(posts, includeBlacklisted);
   }
 

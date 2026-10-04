@@ -33,6 +33,7 @@ import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { booruApi } from '../services/booruApi';
 import { nhentaiTagQuery } from '../services/nhentai';
+import { hentaiHavenTagQuery } from '../services/hentaihavens';
 import { useNavigation, type RouteProp, useIsFocused } from '@react-navigation/native';
 import {
   BooruPost,
@@ -194,7 +195,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   // Stable key for initialFilter/initialTag to prevent re-search loops on parent re-renders
   const lastInitialKeyRef = useRef<string>('');
   const initialFilterKey = initialFilter
-    ? `${JSON.stringify(initialFilter.tags)}|${initialFilter.rating}|${initialFilter.sortBy}|${initialFilter.timeRange}|${initialFilter.minScore ?? ''}|${initialFilter.cumstService ?? ''}|${initialFilter.cumstMediaType ?? ''}|${initialFilter.jumpToPage}`
+    ? `${JSON.stringify(initialFilter.tags)}|${initialFilter.rating}|${initialFilter.sortBy}|${initialFilter.timeRange}|${initialFilter.minScore ?? ''}|${initialFilter.cumstService ?? ''}|${initialFilter.cumstMediaType ?? ''}|${initialFilter.jumpToPage}|${initialFilter.hentaiHavenSection ?? ''}`
     : '';
   const initialTagKey = effectiveTag ? `${effectiveTag}:${effectiveMode}` : '';
   const combinedInitialKey = initialFilterKey ? `f:${initialFilterKey}` : initialTagKey ? `t:${initialTagKey}` : '';
@@ -353,10 +354,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const handleSelectSuggestion = (suggestedTag: string, immediateSearch = false, category?: TagCategory) => {
     Haptics.selectionAsync();
 
-    // nhentai: öneri gerçek etiketse `tag:"ad"` mekaniğiyle ara (düz kelime
-    // full-text eşleşir, etiket eşleşmesi yapmaz).
+    // nhentai / hentaihaven: öneri gerçek etiketse `tag:...` veya `artist:...`
+    // mekaniğiyle ara (diğer sunuculardaki gibi).
     const qualifiedTag =
-      activeSource.type === 'nhentai' ? nhentaiTagQuery(suggestedTag, category) : suggestedTag;
+      activeSource.type === 'nhentai'
+        ? nhentaiTagQuery(suggestedTag, category)
+        : activeSource.type === 'hentaihaven'
+          ? hentaiHavenTagQuery(suggestedTag, category)
+          : suggestedTag;
 
     const parts = query.match(/("[^"]*"|[^\s"])+/g) || [];
     let newQuery = '';
@@ -556,6 +561,24 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     if (isSearchActive || updated.tags.length > 0) {
       executeSearchWithConfig(updated);
     }
+  };
+
+  // HentaiHaven: tür sayfaları tek dokunuşla aranır (tek token -> genre/{id}),
+  // Trend akışı boş sorgu + score sıralamasıyla home.trending_month'tan gelir.
+  const HENTAIHAVEN_QUICK_GENRES = ['yuri', 'ecchi', 'harem', 'anal', 'milf', 'bdsm'];
+
+  const handleHentaiHavenTrend = () => {
+    Haptics.selectionAsync();
+    const updated: SearchFilterConfig = {
+      ...filterConfig,
+      tags: [],
+      sortBy: filterConfig.sortBy === 'score' ? 'default' : 'score',
+      timeRange: '1m',
+      jumpToPage: 1,
+    };
+    setQuery('');
+    setFilterConfig(updated);
+    executeSearchWithConfig(updated);
   };
 
   const hasCustomFilters =
@@ -933,6 +956,61 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               </>
             ) : (
               <>
+                {/* HentaiHaven: Trend + tek dokunuşla tür aramaları.
+                    Genel score/safe çipleri bu kaynakta etkisiz (API desteklemez). */}
+                {activeSource.type === 'hentaihaven' ? (
+                  <>
+                    <TouchableOpacity
+                      style={[
+                        styles.quickChip,
+                        filterConfig.sortBy === 'score' &&
+                          filterConfig.tags.length === 0 &&
+                          styles.quickChipActive,
+                      ]}
+                      onPress={handleHentaiHavenTrend}
+                      activeOpacity={0.7}
+                    >
+                      <Flame
+                        size={13}
+                        color={
+                          filterConfig.sortBy === 'score' && filterConfig.tags.length === 0
+                            ? '#111216'
+                            : '#FF7B72'
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.quickChipText,
+                          filterConfig.sortBy === 'score' &&
+                            filterConfig.tags.length === 0 &&
+                            styles.quickChipTextActive,
+                        ]}
+                      >
+                        Ayın Trendleri
+                      </Text>
+                    </TouchableOpacity>
+
+                    {HENTAIHAVEN_QUICK_GENRES.map((genre) => {
+                      const isActive =
+                        filterConfig.tags.length === 1 && filterConfig.tags[0] === genre;
+                      return (
+                        <TouchableOpacity
+                          key={`hh-quick-${genre}`}
+                          style={[styles.quickChip, isActive && styles.quickChipActive]}
+                          onPress={() => executeSearch(genre)}
+                          activeOpacity={0.7}
+                        >
+                          <Text
+                            style={[styles.quickChipText, isActive && styles.quickChipTextActive]}
+                          >
+                            {genre.charAt(0).toUpperCase() + genre.slice(1)}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </>
+                ) : (
+                  <>
                 {/* Quick Popularity: This Week */}
                 <TouchableOpacity
                   style={[
@@ -1040,11 +1118,24 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                     50+ Puan
                   </Text>
                 </TouchableOpacity>
+                  </>
+                )
+              }
               </>
             )}
           </ScrollView>
         </View>
 
+        {/* HentaiHaven: boşluklu sorgular VE ile birleşir, tırnaklı grup tek tür arar */}
+        {activeSource.type === 'hentaihaven' && (
+          <View style={styles.syntaxHintBar}>
+            <Text style={styles.syntaxHintText}>
+              Tür: <Text style={styles.syntaxHintMono}>yuri</Text> · Çok kelime:{' '}
+              <Text style={styles.syntaxHintMono}>"big breasts" anal</Text> · Dışla:{' '}
+              <Text style={styles.syntaxHintMono}>-etiket</Text>
+            </Text>
+          </View>
+        )}
         {/* RedGifs: sunucu etiket dışlama/tahmin yapmıyor; niş ve kullanıcı
           açık öneklerle aranır, küçük ipucu satırı bunu gösterir. */}
         {activeSource.type === 'redgifs' && (

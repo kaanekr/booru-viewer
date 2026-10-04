@@ -1,13 +1,23 @@
-﻿import type { BooruPost, BooruSource, BooruTagSuggestion, TagCategory } from '../types/booru';
+﻿import type { BooruPost, BooruSource, BooruTagSuggestion, HentaiHavenFeedSection, TagCategory } from '../types/booru';
 import { proxyService } from './proxyService';
 
 /**
  * HentaiHaven (https://hentaihaven.xxx / https://api.hentaihaven.app/v1) entegrasyonu.
  * - Birincil: Haniversity/hhaven standardında resmi mobil REST API (api.hentaihaven.app/v1).
- *   /warden token yetkilendirmesi, /hentai/all, /search?q=..., /genre/..., /hentai/{id}.
+ *   /warden token yetkilendirmesi, /hentai/all, /hentai/home, /search?q=...,
+ *   /genre/all, /genre/{id}, /hentai/{id}.
  *   Bölüm stream URL'leri (m3u8) doğrudan `chapter_content` alanında gelir.
  * - İkincil / Yedek: SSR HTML ayrıştırma (Cloudflare veya ağ hatasında güvenlik ağı).
  * React importu YOK - node ile doğrudan test edilebilir.
+ *
+ * API davranış notları (canlı doğrulandı):
+ * - `search?q=` tek kelimede başlık eşleşmesi yapar, sayfalama YOKTUR (`&p`
+ *   yoksayılır, her zaman aynı liste döner). Çok kelimeli sorgu TÜMCE (phrase)
+ *   aramasıdır: "school girl" veya "big breasts" 0 sonuç döner.
+ * - `genre/all` tam tür listesi DEĞİLDİR (örn. Yuri/Tentacle/Uncensored eksik);
+ *   eksikler HENTAIHAVEN_KNOWN_GENRES ile tamamlanır.
+ * - `hentai/home` bölümleri (last/trending_month/yuri/ecchi/incest/tentacle/
+ *   uncensored/last_episodes) 20'şer öğeliktir, sayfalaması yoktur.
  */
 
 export const HENTAIHAVEN_BASE = 'https://hentaihaven.xxx';
@@ -352,7 +362,7 @@ export function parseHentaiHavenEpisodeDetail(html: string): HentaiHavenFiles {
 }
 
 // -------------------------------------------------------------
-// TÜRLER / GENRE HAVUZU (Önbellek)
+// TÜRLER / GENRE HAVUZU (Önbellek + statik tamamlayıcı)
 // -------------------------------------------------------------
 
 interface HHGenreItem {
@@ -363,6 +373,107 @@ interface HHGenreItem {
   thumbnail?: string;
 }
 
+/**
+ * Keşfet bölüm anahtarları (UI sırası). Tür bölümleri sayfalı
+ * genre/{id} üzerinden, trend/bölüm akışları hentai/home üzerinden gelir.
+ */
+export const HENTAIHAVEN_FEED_SECTIONS: { key: HentaiHavenFeedSection; label: string }[] = [
+  { key: 'latest', label: 'En Yeni' },
+  { key: 'trending', label: 'Trend' },
+  { key: 'episodes', label: 'Son Bölümler' },
+  { key: 'yuri', label: 'Yuri' },
+  { key: 'ecchi', label: 'Ecchi' },
+  { key: 'incest', label: 'Incest' },
+  { key: 'tentacle', label: 'Tentacle' },
+  { key: 'uncensored', label: 'Uncensored' },
+];
+
+/** Tür bölümü -> resmi genre term_id (canlı doğrulandı). */
+export const HENTAIHAVEN_SECTION_GENRE_IDS: Record<string, number> = {
+  yuri: 102,
+  ecchi: 2594,
+  incest: 64,
+  tentacle: 244,
+  uncensored: 107,
+};
+
+/**
+ * `genre/all` yanıtında yer almayan çekirdek türler (canlı doğrulandı:
+ * total_results sayılarıyla). Dinamik liste önceliklidir, bunlar yalnızca
+ * eksik term_id'leri tamamlar.
+ */
+const HENTAIHAVEN_KNOWN_GENRES: HHGenreItem[] = [
+  { term_id: 102, name: 'Yuri', slug: 'yuri', count: 194 },
+  { term_id: 244, name: 'Tentacle', slug: 'tentacle', count: 88 },
+  { term_id: 107, name: 'Uncensored Hentai', slug: 'uncensored', count: 186 },
+  { term_id: 106, name: 'Tsundere', slug: 'tsundere', count: 234 },
+  { term_id: 66, name: 'Teen Hentai', slug: 'teen-hentai', count: 142 },
+  { term_id: 67, name: 'Young Hentai', slug: 'young', count: 141 },
+  { term_id: 104, name: 'Yaoi', slug: 'yaoi', count: 32 },
+  { term_id: 2627, name: 'Softcore', slug: 'softcore', count: 48 },
+  { term_id: 2605, name: 'Umemaro 3D', slug: 'umemaro-3d', count: 12 },
+];
+
+/**
+ * HentaiHaven resmi stüdyolar / yazarlar (kırmızı etiketler).
+ * API'de post_authors içinde gelir ve tag/{term_id} veya genre/{term_id}
+ * üzerinden serileri listelenir.
+ */
+export const HENTAIHAVEN_KNOWN_AUTHORS: HHGenreItem[] = [
+  { term_id: 167, name: 'Pink Pineapple', slug: 'pink-pineapple', count: 161 },
+  { term_id: 231, name: 'MS Pictures', slug: 'ms-pictures', count: 87 },
+  { term_id: 69, name: 'PoRO', slug: 'poro', count: 62 },
+  { term_id: 301, name: 'Mary Jane', slug: 'mary-jane', count: 54 },
+  { term_id: 472, name: 'Queen Bee', slug: 'queen-bee', count: 53 },
+  { term_id: 1041, name: 'T-Rex', slug: 't-rex', count: 48 },
+  { term_id: 2579, name: 'nur', slug: 'nur', count: 29 },
+  { term_id: 864, name: 'Suzuki Mirano', slug: 'suzuki-mirano', count: 25 },
+  { term_id: 2349, name: 'Majin Petit', slug: 'majin-petit', count: 23 },
+  { term_id: 199, name: 'Bunnywalker', slug: 'bunnywalker', count: 22 },
+  { term_id: 1714, name: 'Showten', slug: 'showten', count: 21 },
+  { term_id: 262, name: 'Pixy Soft', slug: 'pixy-soft', count: 17 },
+  { term_id: 923, name: 'Pashmina', slug: 'pashmina', count: 17 },
+  { term_id: 209, name: 'Collaboration Works', slug: 'collaboration-works', count: 15 },
+  { term_id: 1146, name: 'Lune Pictures', slug: 'lune-pictures', count: 15 },
+  { term_id: 134, name: 'Magin Label', slug: 'magin-label', count: 13 },
+  { term_id: 345, name: 'ZIZ', slug: 'ziz', count: 13 },
+  { term_id: 223, name: 'Edge', slug: 'edge', count: 12 },
+  { term_id: 275, name: 'SELFISH', slug: 'selfish', count: 11 },
+  { term_id: 2447, name: 'GOLD BEAR', slug: 'gold-bear', count: 9 },
+  { term_id: 1048, name: 'Bootleg', slug: 'bootleg', count: 7 },
+  { term_id: 920, name: 'Studio 9 Maiami', slug: 'studio-9-maiami', count: 6 },
+  { term_id: 2583, name: 'White Bear', slug: 'white-bear', count: 6 },
+  { term_id: 2427, name: 'BOMB! CUTE! BOMB!', slug: 'bomb-cute-bomb', count: 6 },
+  { term_id: 2620, name: 'King Bee', slug: 'king-bee', count: 5 },
+  { term_id: 2592, name: 'Studio FOW', slug: 'studio-fow', count: 4 },
+  { term_id: 2631, name: 'Seven', slug: 'seven', count: 3 },
+  { term_id: 1711, name: 'Hokiboshi', slug: 'hokiboshi', count: 3 },
+  { term_id: 2678, name: 'Suiseisha', slug: 'suiseisha', count: 3 },
+  { term_id: 2243, name: 'Comic Media', slug: 'comic-media', count: 3 },
+  { term_id: 2667, name: 'Rene Pictures', slug: 'rene-pictures', count: 1 },
+  { term_id: 2611, name: 'POLLUX ANIMATION', slug: 'pollux-animation', count: 1 },
+  { term_id: 2646, name: 'Sakura Purin', slug: 'sakura-purin', count: 1 },
+];
+
+/** Post detaylarından dinamik olarak öğrenilen author/stüdyo havuzu */
+const dynamicAuthorsMap = new Map<number, HHGenreItem>();
+
+/** Post detayından bir author'u önbelleğe kaydeder. */
+export function registerHentaiHavenAuthor(author: { term_id?: number; name?: string; count?: number }): void {
+  const termId = Number(author?.term_id);
+  const name = (author?.name || '').trim();
+  if (Number.isFinite(termId) && name) {
+    if (!dynamicAuthorsMap.has(termId)) {
+      dynamicAuthorsMap.set(termId, {
+        term_id: termId,
+        name,
+        slug: hentaiHavenTagSlug(name),
+        count: Number(author.count) || 0,
+      });
+    }
+  }
+}
+
 let cachedGenres: HHGenreItem[] | null = null;
 let genresPromise: Promise<HHGenreItem[]> | null = null;
 
@@ -371,41 +482,252 @@ async function getAllGenres(): Promise<HHGenreItem[]> {
   if (genresPromise) return genresPromise;
 
   genresPromise = (async () => {
+    let dynamic: HHGenreItem[] = [];
     try {
       const data = await fetchHentaiHavenApi<HHGenreItem[]>('genre/all', {}, 10000);
-      if (Array.isArray(data)) {
-        cachedGenres = data;
-        return data;
-      }
-      return [];
+      if (Array.isArray(data)) dynamic = data;
     } catch {
-      return [];
+      dynamic = [];
     } finally {
       genresPromise = null;
     }
+    const seen = new Set(dynamic.map((g) => g.term_id));
+    const merged = [...dynamic];
+    for (const known of HENTAIHAVEN_KNOWN_GENRES) {
+      if (!seen.has(known.term_id)) merged.push(known);
+    }
+    // Bilinen stüdyoları ve dinamik öğrenilen yazarları da ekle
+    for (const author of HENTAIHAVEN_KNOWN_AUTHORS) {
+      if (!seen.has(author.term_id)) {
+        seen.add(author.term_id);
+        merged.push(author);
+      }
+    }
+    for (const author of dynamicAuthorsMap.values()) {
+      if (!seen.has(author.term_id)) {
+        seen.add(author.term_id);
+        merged.push(author);
+      }
+    }
+    cachedGenres = merged;
+    return merged;
   })();
 
   return genresPromise;
 }
 
+/** Testler için tür önbelleğini sıfırlar. */
+export function clearHentaiHavenGenreCache(): void {
+  cachedGenres = null;
+  genresPromise = null;
+  dynamicAuthorsMap.clear();
+}
+
 /**
- * HentaiHaven etiket / tür arama ve otomatik tamamlama.
- * 50+ kategori türünü (Yuri, School, 3D Hentai vb.) tam sayılarıyla önerir.
+ * Bilgi penceresinden aramaya düşen HH etiketini diğer sunuculardaki
+ * gibi nitelikli `tag:...` veya `artist:...` biçimine sokar.
+ * - category === 'artist' (kırmızı etiket): `artist:"name"` veya `artist:name`
+ * - diğer kategoriler: `tag:"name"` veya `tag:name`
+ * - halihazırda önekli ise (`tag:`, `artist:`, `genre:`): dokunmaz
+ */
+export function hentaiHavenTagQuery(tag: string | undefined, category?: TagCategory): string {
+  const t = (tag || '').trim();
+  if (!t) return '';
+  if (/^[a-z][a-z-]*:/i.test(t)) return t;
+  const lower = t.toLowerCase();
+  const prefix = category === 'artist' ? 'artist' : 'tag';
+  return /\s/.test(lower) ? `${prefix}:"${lower}"` : `${prefix}:${lower}`;
+}
+
+/**
+ * Resmi tür adları (https://hentaihaven.xxx/genres/ + resmi API hasadı, 61).
+ * Bilgi penceresinde bu türler farklı renkle gösterilir.
+ */
+export const HENTAIHAVEN_OFFICIAL_GENRE_NAMES: string[] = [
+  'Incest Hentai', 'Rape', 'Teen Hentai', 'Young Hentai', 'Yuri', 'Romance',
+  'Yaoi', 'Harem', 'Tsundere', 'Uncensored Hentai', 'BDSM', 'Furry', 'Milf',
+  'Anal', 'Futanari', 'Tentacle', 'Beastiality', 'Monster', 'Hentai School',
+  'Horror', '3D Hentai', 'BBW', 'Gender Bender Hentai', 'Ecchi', 'Umemaro 3D',
+  'Softcore', 'FemBoy', 'Femdom', 'Ahegao', 'Creampie', 'Blow Job',
+  'Censored', 'Big Boobs', 'School', 'Masturbation', 'Fantasy', 'Nudity',
+  'Exhibitionism', 'Big Breasts', 'Blowjob', 'HD', 'Paizuri', 'Hentai',
+  'Comedy', 'Corruption', 'Office lady', 'Ntr', 'Cheating', 'Big Tits',
+  'Sex Toys', 'Schoolgirl', 'Mind break', 'Elf', 'Impregnation', 'Gyaru',
+  'Teasing', 'Erotic Game', 'Group Sex', 'Monster girl', 'Threesome',
+  'Housewife',
+];
+
+let officialGenreKeys: Set<string> | null = null;
+
+/**
+ * Etiketin resmi HH türü olup olmadığı (bilgi penceresi rengi için).
+ * Boşluk/tire duyarsız ve ' Hentai' ekine toleranslıdır: temizlenmiş
+ * 'Incest' etiketi resmi 'Incest Hentai' türüyle eşleşir.
+ */
+export function isHentaiHavenOfficialGenre(name: string | undefined): boolean {
+  if (!officialGenreKeys) {
+    officialGenreKeys = new Set<string>();
+    for (const g of HENTAIHAVEN_OFFICIAL_GENRE_NAMES) {
+      const n = normHentaiHavenToken(g);
+      officialGenreKeys.add(n);
+      officialGenreKeys.add(n.replace(/\s+/g, ''));
+      const base = stripHentaiAffix(n);
+      if (base) {
+        officialGenreKeys.add(base);
+        officialGenreKeys.add(base.replace(/\s+/g, ''));
+      }
+    }
+  }
+  const n = normHentaiHavenToken(name);
+  if (!n) return false;
+  return officialGenreKeys.has(n) || officialGenreKeys.has(n.replace(/\s+/g, ''));
+}
+
+/** Testler için home önbelleğini sıfırlar. */
+export function clearHentaiHavenHomeCache(): void {
+  homeCache = null;
+}
+
+/** 'School Girl' -> 'school girl'; ayraçlar tek boşluğa iner. */
+function normHentaiHavenToken(s: string | undefined): string {
+  return (s || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** 'Incest Hentai' -> 'incest', 'Hentai School' -> 'school' (ikisi de denenir). */
+function stripHentaiAffix(n: string): string {
+  return n
+    .replace(/^hentai\s+/g, '')
+    .replace(/\s+hentai$/g, '')
+    .trim();
+}
+
+/**
+ * Serbest yazımı türle eşleştirir. Boşluk/tire/altçizgi duyarsızdır
+ * ('school girl' -> 'Schoolgirl'), ' Hentai' ön/son eki düşebilir
+ * ('incest' -> 'Incest Hentai', 'school' -> 'Hentai School').
+ * Birden çok adayda birebir eşleşme, sonra yüksek sayılı tür kazanır.
+ */
+export function findHentaiHavenGenre(
+  genres: HHGenreItem[],
+  token: string | undefined
+): HHGenreItem | null {
+  const n = normHentaiHavenToken(token);
+  if (!n) return null;
+  const compact = n.replace(/\s+/g, '');
+  const scored: { g: HHGenreItem; rank: number }[] = [];
+  for (const g of genres) {
+    const gn = normHentaiHavenToken(g.name);
+    const gs = normHentaiHavenToken(g.slug);
+    if (
+      n === gn ||
+      n === gs ||
+      compact === gn.replace(/\s+/g, '') ||
+      compact === gs.replace(/\s+/g, '')
+    ) {
+      scored.push({ g, rank: 0 });
+      continue;
+    }
+    const base = stripHentaiAffix(gn);
+    if (base && (n === base || compact === base.replace(/\s+/g, ''))) {
+      scored.push({ g, rank: 1 });
+    }
+  }
+  scored.sort((a, b) => a.rank - b.rank || (b.g.count || 0) - (a.g.count || 0));
+  return scored.length > 0 ? scored[0].g : null;
+}
+
+export interface HentaiHavenParsedQuery {
+  include: string[];
+  exclude: string[];
+}
+
+/**
+ * Boşluklu sorguyu token'lara böler. Tırnaklı grup tek token kalır
+ * (`"big breasts"`), `-` öneki dışlamaya düşer, `tag:`/`genre:` gibi
+ * booru önekleri sıyrılır. En fazla 12 token işlenir.
+ */
+export function parseHentaiHavenQuery(raw: string | undefined): HentaiHavenParsedQuery {
+  const include: string[] = [];
+  const exclude: string[] = [];
+  const seenIn = new Set<string>();
+  const seenEx = new Set<string>();
+  const push = (tok: string, neg: boolean) => {
+    let t = (tok || '').trim();
+    if (!t) return;
+    if (!neg && t.startsWith('-')) {
+      neg = true;
+      t = t.replace(/^-+/, '').trim();
+    }
+    t = t.replace(/^(tag|genre|artist|character|parody|group|language|category):/i, '').trim();
+    // Tırnaklar sökülür: tag:"big breasts" -> big breasts
+    if (t.length >= 2 && t.startsWith('"') && t.endsWith('"')) t = t.slice(1, -1).trim();
+    if (!t) return;
+    const key = t.toLowerCase();
+    if (neg) {
+      if (!seenEx.has(key)) {
+        seenEx.add(key);
+        exclude.push(t);
+      }
+    } else {
+      if (!seenIn.has(key)) {
+        seenIn.add(key);
+        include.push(t);
+      }
+    }
+  };
+
+  let rest = raw || '';
+  // Önce -?"..." grupları (örn. -"big breasts" dışlaması da çalışır)
+  rest = rest.replace(/(-?)"([^"]*)"/g, (_m, neg: string, inner: string) => {
+    push((neg ? '-' : '') + inner, false);
+    return ' ';
+  });
+  for (const part of rest.split(/\s+/)) {
+    if (!part) continue;
+    push(part, false);
+    if (include.length + exclude.length >= 12) break;
+  }
+  return { include, exclude };
+}
+
+/**
+ * HentaiHaven etiket / tür / stüdyo arama ve otomatik tamamlama.
+ * Türler ve stüdyo havuzu (authors) taranır, eşleşen stüdyolar 'artist'
+ * kategorisiyle (kırmızı rozet), türler 'general' ile önerilir.
  */
 export async function searchHentaiHavenTags(
   query: string,
   limit: number = 12
 ): Promise<BooruTagSuggestion[]> {
-  const q = (query || '').toLowerCase().trim();
+  const q = normHentaiHavenToken(query);
   if (!q) return [];
-  const genres = await getAllGenres();
-  const matched = genres.filter(
-    (g) => g.name.toLowerCase().includes(q) || g.slug.toLowerCase().includes(q)
-  );
+  const qc = q.replace(/\s+/g, '');
+  const terms = await getAllGenres();
+  const authorIds = new Set([
+    ...HENTAIHAVEN_KNOWN_AUTHORS.map((a) => a.term_id),
+    ...dynamicAuthorsMap.keys(),
+  ]);
+
+  const matched = terms.filter((g) => {
+    const name = normHentaiHavenToken(g.name);
+    const slug = normHentaiHavenToken(g.slug);
+    return (
+      name.includes(q) ||
+      slug.includes(q) ||
+      name.replace(/\s+/g, '').includes(qc) ||
+      slug.replace(/\s+/g, '').includes(qc)
+    );
+  });
+  matched.sort((a, b) => (b.count || 0) - (a.count || 0));
 
   return matched.slice(0, limit).map((g) => ({
     name: g.name,
-    category: 'general' as TagCategory,
+    category: (authorIds.has(g.term_id) ? 'artist' : 'general') as TagCategory,
     postCount: g.count,
   }));
 }
@@ -419,12 +741,60 @@ function mapApiItemToPost(item: any, source: BooruSource): BooruPost {
   const slug = item.post_name || String(numericId);
   const base = (source.baseUrl || HENTAIHAVEN_BASE).replace(/\/$/, '');
   const poster = item.post_thumbnail || '';
+  // Trend akışı izlenme sayısını da verir (hentai/all vermez -> 0 kalır).
+  const views = Number(item.post_views) || 0;
 
   return {
     id: 'hh_' + numericId,
     sourceId: source.id,
     sourceName: source.name,
     title: item.post_title || undefined,
+    previewUrl: poster,
+    previewVideoUrl: undefined,
+    previewThumbUrl: undefined,
+    previewThumbs: undefined,
+    sampleUrl: poster,
+    originalUrl: '',
+    width: 600,
+    height: 900,
+    aspectRatio: 2 / 3,
+    rating: 'e',
+    score: views,
+    favCount: views,
+    tags: {
+      artist: [],
+      character: [],
+      copyright: [],
+      general: [],
+      meta: ['video'],
+    },
+    allTags: [],
+    sourceLink: `${base}/watch/${slug}/`,
+    mediaId: String(numericId),
+    fileExt: 'mp4',
+    createdAt: item.post_date || new Date().toISOString(),
+  };
+}
+
+/**
+ * hentai/home `last_episodes` öğesini seri kartına çevirir. Bölüm kapağı
+ * (chapter_thumbnail) önizleme olur, kart seri detayına (post_ID) bağlanır.
+ */
+function mapApiEpisodeItemToPost(item: any, source: BooruSource): BooruPost | null {
+  const numericId = Number(item.post_ID);
+  if (!Number.isFinite(numericId)) return null;
+  const slug = item.post_name || String(numericId);
+  const base = (source.baseUrl || HENTAIHAVEN_BASE).replace(/\/$/, '');
+  const poster = item.chapter_thumbnail || item.post_thumbnail || '';
+  if (!poster) return null;
+  const epName = item.chapter_name || 'Episode';
+  const title = item.post_title ? `${item.post_title} — ${epName}` : epName;
+
+  return {
+    id: 'hh_ep_' + (item.chapter_id ?? `${numericId}_${epName}`),
+    sourceId: source.id,
+    sourceName: source.name,
+    title,
     previewUrl: poster,
     previewVideoUrl: undefined,
     previewThumbUrl: undefined,
@@ -448,64 +818,254 @@ function mapApiItemToPost(item: any, source: BooruSource): BooruPost {
     sourceLink: `${base}/watch/${slug}/`,
     mediaId: String(numericId),
     fileExt: 'mp4',
-    createdAt: item.post_date || new Date().toISOString(),
+    createdAt: item.chapter_date || item.post_date || new Date().toISOString(),
   };
+}
+
+// -------------------------------------------------------------
+// HOME / KEŞFET BÖLÜMLERİ
+// -------------------------------------------------------------
+
+interface HentaiHavenHome {
+  last?: any[];
+  trending_month?: any[];
+  last_episodes?: any[];
+  yuri?: any[];
+  ecchi?: any[];
+  incest?: any[];
+  tentacle?: any[];
+  uncensored?: any[];
+}
+
+let homeCache: { at: number; data: HentaiHavenHome } | null = null;
+const HOME_CACHE_TTL_MS = 60 * 1000;
+
+/** hentai/home bölümlerini kısa süreli önbellekle getirir. */
+export async function fetchHentaiHavenHome(): Promise<HentaiHavenHome> {
+  const now = Date.now();
+  if (homeCache && now - homeCache.at < HOME_CACHE_TTL_MS) return homeCache.data;
+  const data = await fetchHentaiHavenApi<HentaiHavenHome>('hentai/home', {}, 12000);
+  homeCache = { at: now, data: data || {} };
+  return homeCache.data;
+}
+
+async function fetchGenreItems(termId: number, page: number): Promise<any[]> {
+  try {
+    const data = await fetchHentaiHavenApi<{ hentais: any[] }>(`genre/${termId}?p=${page}`);
+    const list = Array.isArray(data?.hentais) ? data.hentais : [];
+    return list;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Tek kelimelik başlık araması. `search` tek sayfadır: sayfa > 1 istenirse
+ * ağa çıkmadan boş dönülür (API `&p` parametresini yoksayar, aynı listeyi
+ * döndürür; tekrar sayfa çekmek yinelenen kartlar üretirdi).
+ */
+async function fetchSearchItems(query: string, page: number): Promise<any[]> {
+  if (page > 1) return [];
+  try {
+    const data = await fetchHentaiHavenApi<any[]>(`search?q=${encodeURIComponent(query)}`);
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Tek token: önce tür eşleşmesi, yoksa başlık araması. */
+async function fetchSingleTokenItems(
+  genres: HHGenreItem[],
+  token: string,
+  page: number
+): Promise<any[]> {
+  const matched = findHentaiHavenGenre(genres, token);
+  if (matched) return fetchGenreItems(matched.term_id, page);
+  return fetchSearchItems(token, page);
+}
+
+function postIdOf(item: any): number | null {
+  const id = Number(item?.post_ID);
+  return Number.isFinite(id) ? id : null;
+}
+
+/**
+ * Çok token'lı sorgu: her token ayrı çözülür (tür sayfası veya başlık
+ * araması), sonuçlar post_ID üzerinden kesiştirilir (VE mantığı).
+ * Kesişim boşsa BİRLŞİM (VEYA) döndürülür — boş ekran yerine ilgili içerik.
+ * Karışık (tür + başlık) sorgular sayfalanamaz: sayfa > 1'de başlık
+ * araması boş döneceği için kesişim anlamsız olur, union yerine boş dönülür
+ * (yalnızca tüm token'lar tür ise sayfalı VE çalışır).
+ */
+async function fetchMultiTokenItems(
+  genres: HHGenreItem[],
+  tokens: string[],
+  page: number
+): Promise<any[]> {
+  const limited = tokens.slice(0, 5);
+  const lists: any[][] = [];
+  let hasSearchToken = false;
+  for (const t of limited) {
+    const matched = findHentaiHavenGenre(genres, t);
+    if (matched) {
+      lists.push(await fetchGenreItems(matched.term_id, page));
+    } else {
+      hasSearchToken = true;
+      lists.push(await fetchSearchItems(t, page));
+    }
+  }
+  const nonEmpty = lists.filter((l) => l.length > 0);
+  if (nonEmpty.length === 0) return [];
+  // Sayfa > 1'de başlık araması zaten boş döndü; kalan tür sayfalarıyla
+  // kesişim kurmak yanlış olur.
+  if (page > 1 && hasSearchToken) return [];
+
+  const hits = new Map<number, { item: any; count: number; firstSeen: number }>();
+  let order = 0;
+  lists.forEach((list) => {
+    const seenInList = new Set<number>();
+    for (const item of list) {
+      const id = postIdOf(item);
+      if (id === null || seenInList.has(id)) continue;
+      seenInList.add(id);
+      const prev = hits.get(id);
+      if (prev) {
+        prev.count += 1;
+      } else {
+        hits.set(id, { item, count: 1, firstSeen: order++ });
+      }
+    }
+  });
+  const total = lists.length;
+  const all = [...hits.values()];
+  const inter = all.filter((h) => h.count === total).sort((a, b) => a.firstSeen - b.firstSeen);
+  if (inter.length > 0) return inter.map((h) => h.item);
+  // VE boşsa VEYA: en çok token'la eşleşen önce
+  all.sort((a, b) => b.count - a.count || a.firstSeen - b.firstSeen);
+  return all.map((h) => h.item);
+}
+
+/**
+ * Başlık dışlamaları (`-token`) liste öğelerinde etiket olmadığı için
+ * başlık-alt-dize eşleşmesiyle uygulanır (en iyi çaba).
+ */
+function applyHentaiHavenExcludes(posts: BooruPost[], exclude: string[]): BooruPost[] {
+  const norms = exclude
+    .map((e) => normHentaiHavenToken(e).replace(/\s+/g, ''))
+    .filter(Boolean);
+  if (norms.length === 0) return posts;
+  return posts.filter((p) => {
+    const hay = normHentaiHavenToken(p.title || '').replace(/\s+/g, '');
+    if (!hay) return true;
+    return !norms.some((n) => hay.includes(n));
+  });
+}
+
+/**
+ * Keşfet akışı: bölüm anahtarı sayfalı kaynağa yönlenir. Tür bölümleri
+ * genre/{id}, trend/bölüm akışları tek sayfalık home bölümleridir.
+ */
+export async function fetchHentaiHavenFeedPosts(
+  source: BooruSource,
+  section: HentaiHavenFeedSection,
+  page: number
+): Promise<BooruPost[]> {
+  if (section === 'trending' || section === 'episodes') {
+    if (page > 1) return [];
+    const home = await fetchHentaiHavenHome();
+    if (section === 'trending') {
+      const list = Array.isArray(home.trending_month) ? home.trending_month : [];
+      return list.map((item) => mapApiItemToPost(item, source));
+    }
+    const list = Array.isArray(home.last_episodes) ? home.last_episodes : [];
+    const posts: BooruPost[] = [];
+    for (const item of list) {
+      const mapped = mapApiEpisodeItemToPost(item, source);
+      if (mapped) posts.push(mapped);
+    }
+    return posts;
+  }
+  if (section === 'latest') {
+    const data = await fetchHentaiHavenApi<{ hentais: any[] }>(`hentai/all?p=${page}`);
+    const list = Array.isArray(data?.hentais) ? data.hentais : [];
+    return list.map((item) => mapApiItemToPost(item, source));
+  }
+  const termId = HENTAIHAVEN_SECTION_GENRE_IDS[section];
+  if (termId) {
+    const items = await fetchGenreItems(termId, page);
+    return items.map((item) => mapApiItemToPost(item, source));
+  }
+  const data = await fetchHentaiHavenApi<{ hentais: any[] }>(`hentai/all?p=${page}`);
+  const list = Array.isArray(data?.hentais) ? data.hentais : [];
+  return list.map((item) => mapApiItemToPost(item, source));
 }
 
 /**
  * Resmi API üzerinden Hentai Haven içeriklerini listeler.
- * - Sorgu boş: `GET /hentai/all?p=N`
- * - Tür eşleşmesi: `GET /genre/{term_id}?p=N`
- * - Metin araması: `GET /search?q={query}&p=N`
+ * - Sorgu boş -> Keşfet bölümü (`section`: latest/trending/türler/episodes).
+ *   Bölüm verilmezse sıralamadan türetilir (score -> trend, diğer -> en yeni).
+ * - Tek token -> tür eşleşmesi (`genre/{id}`) veya başlık araması (`search?q=`).
+ * - Çok token -> token başına çözüm + post_ID kesişimi (VE), boşsa birleşim.
+ * - `search` tek sayfadır; sayfa > 1'de başlık araması boş döner.
  */
 export async function fetchHentaiHavenPosts(
   source: BooruSource,
   page: number,
-  tags: string = ''
+  tags: string = '',
+  opts: { section?: HentaiHavenFeedSection | null; sortBy?: string } = {}
 ): Promise<BooruPost[]> {
-  const cleanQuery = tags
-    .split(/\s+/)
-    .map((t) => t.trim())
-    .filter(Boolean)
-    .filter((t) => !t.startsWith('-'))
-    .join(' ');
+  const { include, exclude } = parseHentaiHavenQuery(tags);
 
   try {
-    // 1. Sorgu boş -> Tüm liste
-    if (!cleanQuery) {
-      const data = await fetchHentaiHavenApi<{ hentais: any[] }>(`hentai/all?p=${page}`);
-      const list = Array.isArray(data?.hentais) ? data.hentais : [];
-      return list.map((item) => mapApiItemToPost(item, source));
+    // 1. Sorgu boş -> Keşfet bölümü
+    if (include.length === 0) {
+      const section: HentaiHavenFeedSection =
+        opts.section ?? (opts.sortBy === 'score' ? 'trending' : 'latest');
+      return await fetchHentaiHavenFeedPosts(source, section, page);
     }
 
-    // 2. Tür kontrolü
     const genres = await getAllGenres();
-    const cleanLower = cleanQuery.toLowerCase().replace(/^tag:\s*/i, '').trim();
-    const matchedGenre = genres.find(
-      (g) => g.name.toLowerCase() === cleanLower || g.slug === cleanLower
-    );
 
-    if (matchedGenre) {
-      const data = await fetchHentaiHavenApi<{ hentais: any[] }>(
-        `genre/${matchedGenre.term_id}?p=${page}`
-      );
-      const list = Array.isArray(data?.hentais) ? data.hentais : [];
-      return list.map((item) => mapApiItemToPost(item, source));
+    // 1b. Eğer sorgu tümce olarak (tırnaksız yazılsa dahi) bilinen bir tür veya stüdyo ile eşleşiyorsa:
+    // Örn. "Pink Pineapple", "Studio FOW", "Big Breasts", "Hentai School"
+    // Bu çoklu kelimeyi parçalamadan doğrudan o terimin sayfasına gönder!
+    if (include.length > 1 && !tags.includes('"')) {
+      const rawClean = tags
+        .replace(/^(tag|genre|artist|character):"?/i, '')
+        .replace(/"$/, '')
+        .trim();
+      const wholeMatch = findHentaiHavenGenre(genres, rawClean);
+      if (wholeMatch) {
+        const items = await fetchGenreItems(wholeMatch.term_id, page);
+        return applyHentaiHavenExcludes(
+          items.map((item) => mapApiItemToPost(item, source)),
+          exclude
+        );
+      }
     }
 
-    // 3. Genel metin araması (search?q=...)
-    const pageSuffix = page > 1 ? `&p=${page}` : '';
-    const data = await fetchHentaiHavenApi<any[]>(
-      `search?q=${encodeURIComponent(cleanQuery)}${pageSuffix}`
-    );
+    // 2. Tek token -> tür veya başlık araması
+    if (include.length === 1) {
+      const items = await fetchSingleTokenItems(genres, include[0], page);
+      return applyHentaiHavenExcludes(
+        items.map((item) => mapApiItemToPost(item, source)),
+        exclude
+      );
+    }
 
-    const list = Array.isArray(data) ? data : [];
-    return list.map((item) => mapApiItemToPost(item, source));
+    // 3. Çok token'lı (boşluklu) arama -> VE kesişimi / VEYA birleşimi
+    const items = await fetchMultiTokenItems(genres, include, page);
+    return applyHentaiHavenExcludes(
+      items.map((item) => mapApiItemToPost(item, source)),
+      exclude
+    );
   } catch (apiErr: any) {
     console.warn('[HentaiHaven] API hatası, HTML yedeğine geçiliyor:', apiErr?.message || apiErr);
 
-    // 4. Güvenlik ağı: HTML Kazıma Yedeği
-    const candidates = buildHentaiHavenSearchCandidates(source.baseUrl || HENTAIHAVEN_BASE, page, cleanQuery);
+    // 4. Güvenlik ağı: HTML Kazıma Yedeği (ilk token ile)
+    const fallbackQuery = include[0] || '';
+    const candidates = buildHentaiHavenSearchCandidates(source.baseUrl || HENTAIHAVEN_BASE, page, fallbackQuery);
     if (candidates.length === 0) return [];
     const url = candidates[0];
     const headers = {
@@ -709,19 +1269,16 @@ export async function resolveHentaiHavenGalleryDetail(
     if (m) targetId = parseInt(m[1], 10);
   }
 
-  // 2. Sayısal bulunamadıysa slug ile API aramasından bul
+  // 2. Sayısal bulunamadıysa slug ile API aramasından bul.
+  // Slug kelimeleri tek tümce olarak aranmaz (API tümce araması kırılgandır);
+  // kelime bazlı VE kesişimi içinden birebir slug eşleşmesi seçilir.
   if (!targetId && postRef.sourceLink) {
     const slugM = postRef.sourceLink.match(/\/watch\/([a-z0-9-]+)\//i);
     if (slugM) {
       const slug = slugM[1];
-      const searchWords = slug.replace(/-/g, ' ');
       try {
-        const results = await fetchHentaiHavenApi<any[]>(
-          `search?q=${encodeURIComponent(searchWords)}`,
-          {},
-          8000,
-          signal
-        );
+        const genres = await getAllGenres();
+        const results = await fetchMultiTokenItems(genres, slug.split(/-/).filter(Boolean), 1);
         if (Array.isArray(results)) {
           const matched = results.find((r) => r.post_name === slug || r.post_ID === Number(slug));
           if (matched?.post_ID) targetId = matched.post_ID;
@@ -774,7 +1331,10 @@ export async function resolveHentaiHavenGalleryDetail(
     const artistTags: string[] = [];
     if (Array.isArray(data.post_authors)) {
       data.post_authors.forEach((a: any) => {
-        if (a.name && !isHentaiHavenSpamTag(a.name)) artistTags.push(a.name.trim());
+        if (a.name && !isHentaiHavenSpamTag(a.name)) {
+          artistTags.push(a.name.trim());
+          registerHentaiHavenAuthor(a);
+        }
       });
     }
 
