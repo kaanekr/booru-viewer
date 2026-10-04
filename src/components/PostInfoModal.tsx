@@ -32,6 +32,7 @@ import * as Clipboard from 'expo-clipboard';
 import { BooruPost, TagCategory } from '../types/booru';
 import { StorageService, ImageQuality } from '../services/storage';
 import { nhentaiTagQuery } from '../services/nhentai';
+import { hentaiHavenTagQuery, isHentaiHavenOfficialGenre } from '../services/hentaihavens';
 import { resolveRealDimensions } from '../utils/media';
 import { onlyStrings } from '../utils/guards';
 
@@ -225,7 +226,15 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     });
   }
 
-  const getTagColor = (category: TagCategory) => {
+  const getTagColor = (category: TagCategory, name?: string) => {
+    // HentaiHaven resmi türleri (/genres/) diğer genel etiketlerden ayrışır
+    if (
+      category === 'general' &&
+      post?.sourceId === 'hentaihaven' &&
+      isHentaiHavenOfficialGenre(name)
+    ) {
+      return '#39C5CF'; // Teal: resmi tür
+    }
     switch (category) {
       case 'copyright':
         return '#D2A8FF'; // Purple / Magenta
@@ -306,13 +315,17 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     // RedGifs sanatçı adı etiketi aranırsa 0 döner; 'user:' mekaniğiyle ara
     // nhentai: kategoriye göre `tag:"ad"` / `artist:"ad"` mekaniğiyle ara
     // (düz kelime full-text eşleşir, etiket eşleşmesi yapmaz)
+    // hentaihaven: boşluklu tür `tag:"ad"` olur, yoksa kelimelere bölünürdü
     const isNhentai = post?.sourceId === 'nhentai' && !/^[a-z][a-z-]*:/i.test(tag);
+    const isHentaiHaven = post?.sourceId === 'hentaihaven' && !/^[a-z][a-z-]*:/i.test(tag);
     const query =
       category === 'artist' && post?.sourceId === 'redgifs' && !tag.toLowerCase().startsWith('user:')
         ? `user:${tag}`
         : isNhentai
           ? nhentaiTagQuery(tag, category)
-          : tag;
+          : isHentaiHaven
+            ? hentaiHavenTagQuery(tag, category)
+            : tag;
     dismissThen(() => onSearchTag(query));
   };
 
@@ -323,11 +336,14 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     Haptics.selectionAsync();
     setSelectedTag(null);
     // RedGifs sanatçısı aramaya kullanıcı olarak eklenir
+    const isHentaiHavenAdd = post?.sourceId === 'hentaihaven' && !/^[a-z][a-z-]*:/i.test(tag);
     const query = isRedGifsArtist(tag, category)
       ? `user:${tag}`
       : post?.sourceId === 'nhentai' && !/^[a-z][a-z-]*:/i.test(tag)
         ? nhentaiTagQuery(tag, category)
-        : tag;
+        : isHentaiHavenAdd
+          ? hentaiHavenTagQuery(tag, category)
+          : tag;
     dismissThen(() => {
       if (onAddTagToSearch) {
         onAddTagToSearch(query);
@@ -342,11 +358,15 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     setSelectedTag(null);
     // RedGifs sanatçısı '-user:' olarak dışlanır
     // nhentai: `-tag:"ad"` (çok kelimeli etiket `-"a b"` gibi tek parça kalır)
+    // hentaihaven: `-artist:"ad"` veya `-tag:"ad"`
+    const isHentaiHavenEx = post?.sourceId === 'hentaihaven' && !/^(-|[a-z][a-z-]*:)/i.test(tag);
     const query = isRedGifsArtist(tag, category)
       ? `-user:${tag}`
       : post?.sourceId === 'nhentai' && !/^[a-z][a-z-]*:|-/i.test(tag)
         ? `-${nhentaiTagQuery(tag, category)}`
-        : `-${tag}`;
+        : isHentaiHavenEx
+          ? `-${hentaiHavenTagQuery(tag, category)}`
+          : `-${tag}`;
     dismissThen(() => {
       if (onExcludeTagFromSearch) {
         onExcludeTagFromSearch(query);
@@ -622,7 +642,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
 
             <View style={styles.sectionBody}>
               {allTagItems.map((item, idx) => {
-                const color = getTagColor(item.category);
+                const color = getTagColor(item.category, item.name);
                 return (
                   <React.Fragment key={`info-tag-${item.name}-${idx}`}>
                     {idx > 0 && <View style={styles.rowDivider} />}

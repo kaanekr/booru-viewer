@@ -1,13 +1,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BooruPost, SortOption, TimeRangeOption } from '../types/booru';
+import { BooruPost, HentaiHavenFeedSection, SortOption, TimeRangeOption } from '../types/booru';
 import { DEFAULT_SOURCE } from './sources';
 
 export type ImageQuality = 'preview' | 'auto' | 'full';
 
-/** Keşfet akışının sıralaması (RedGifs: trend / en yeni / top7 / top28). */
+/** Keşfet akışının sıralaması (RedGifs: trend / en yeni / top7 / top28; HentaiHaven: bölüm). */
 export interface FeedOrder {
   sortBy: SortOption;
   timeRange: TimeRangeOption;
+  /** HentaiHaven Keşfet bölümü (diğer kaynaklarda yoksayılır) */
+  hentaiHavenSection?: HentaiHavenFeedSection;
 }
 
 const FAVORITES_KEY = '@booru_favorites_v2';
@@ -24,6 +26,16 @@ const HH_LAST_EPISODES_KEY = '@booru_hh_last_episodes_v1';
 
 const VALID_SORT: SortOption[] = ['default', 'id', 'score', 'rating', 'user', 'height', 'width'];
 const VALID_RANGE: TimeRangeOption[] = ['all', '1d', '1w', '1m', '1y'];
+const VALID_HH_SECTION: HentaiHavenFeedSection[] = [
+  'latest',
+  'trending',
+  'episodes',
+  'yuri',
+  'ecchi',
+  'incest',
+  'tentacle',
+  'uncensored',
+];
 
 let cachedRecentViews: BooruPost[] | null = null;
 
@@ -317,7 +329,11 @@ export const StorageService = {
       if (!VALID_SORT.includes(parsed?.sortBy) || !VALID_RANGE.includes(parsed?.timeRange)) {
         return null;
       }
-      return { sortBy: parsed.sortBy, timeRange: parsed.timeRange };
+      const order: FeedOrder = { sortBy: parsed.sortBy, timeRange: parsed.timeRange };
+      if (VALID_HH_SECTION.includes(parsed?.hentaiHavenSection)) {
+        order.hentaiHavenSection = parsed.hentaiHavenSection;
+      }
+      return order;
     } catch {
       return null;
     }

@@ -530,3 +530,344 @@ test('cleanHentaiHavenTags filters out SEO spam tags and normalizes redundant su
   assert.equal(cleaned.filter((t) => t.toLowerCase() === 'yuri').length, 1);
   assert.equal(cleaned.filter((t) => t.toLowerCase() === 'paizuri').length, 1);
 });
+
+test('parseHentaiHavenQuery tokenizes spaces, quotes, excludes and prefixes', () => {
+  const hh = loadHentai();
+  // vm bağlamında üretilen nesnelerin prototipi farklıdır; JSON ile karşılaştır.
+  const parsed = (raw) => JSON.stringify(hh.parseHentaiHavenQuery(raw));
+  const want = (include, exclude) => JSON.stringify({ include, exclude });
+
+  assert.equal(parsed(''), want([], []));
+  assert.equal(parsed('  '), want([], []));
+
+  // Boşluklu arama ayrı token'lara bölünür
+  assert.equal(parsed('school girl'), want(['school', 'girl'], []));
+
+  // Tırnaklı grup tek token kalır
+  assert.equal(parsed('"big breasts" anal'), want(['big breasts', 'anal'], []));
+
+  // Dışlama ve booru önekleri
+  assert.equal(parsed('yuri -anal tag:ecchi genre:harem'), want(['yuri', 'ecchi', 'harem'], ['anal']));
+
+  // Tırnaklı dışlama
+  assert.equal(parsed('-"big breasts" yuri'), want(['yuri'], ['big breasts']));
+
+  // Tekrarlar tekilleşir
+  assert.equal(parsed('yuri Yuri YURI'), want(['yuri'], []));
+});
+
+test('findHentaiHavenGenre matches spaced, hyphenated and affixed spellings', () => {
+  const hh = loadHentai();
+  const genres = [
+    { term_id: 102, name: 'Yuri', slug: 'yuri', count: 194 },
+    { term_id: 815, name: 'Hentai School', slug: 'hentai-school', count: 466 },
+    { term_id: 11714, name: 'School', slug: 'school', count: 5 },
+    { term_id: 11732, name: 'Schoolgirl', slug: 'schoolgirl', count: 3 },
+    { term_id: 64, name: 'Incest Hentai', slug: 'incest', count: 305 },
+  ];
+
+  assert.equal(hh.findHentaiHavenGenre(genres, 'yuri').term_id, 102);
+  assert.equal(hh.findHentaiHavenGenre(genres, 'YURI').term_id, 102);
+  // 'school girl' sıkıştırılınca 'schoolgirl' olur
+  assert.equal(hh.findHentaiHavenGenre(genres, 'school girl').term_id, 11732);
+  assert.equal(hh.findHentaiHavenGenre(genres, 'school-girl').term_id, 11732);
+  // Birebir eşleşme önceliklidir
+  assert.equal(hh.findHentaiHavenGenre(genres, 'school').term_id, 11714);
+  // ' Hentai' son eki düşebilir
+  assert.equal(hh.findHentaiHavenGenre(genres, 'incest').term_id, 64);
+  assert.equal(hh.findHentaiHavenGenre(genres, undefined), null);
+  assert.equal(hh.findHentaiHavenGenre(genres, '!!!'), null);
+  assert.equal(hh.findHentaiHavenGenre(genres, 'yaoi'), null);
+});
+
+function hhItem(id, title, name) {
+  return {
+    post_ID: id,
+    post_title: title,
+    post_name: name || ('title-' + id),
+    post_thumbnail: 'https://img.hentaihaven.xxx/' + id + '.jpg',
+  };
+}
+
+// genre/all bilerek eksik tutulur (Yuri yok) -> statik tamamlayıcı devreye girer.
+function mockHentaiApi(log) {
+  return async (url) => {
+    if (log) log.push(url);
+    if (url.includes('/warden')) {
+      return { ok: true, status: 200, json: async () => ({ success: true, data: { token: 'mock-token' } }) };
+    }
+    if (url.includes('genre/all')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          success: true,
+          data: [
+            { term_id: 222, name: 'Anal', slug: 'anal', count: 331 },
+            { term_id: 11732, name: 'Schoolgirl', slug: 'schoolgirl', count: 3 },
+            { term_id: 815, name: 'Hentai School', slug: 'hentai-school', count: 466 },
+          ],
+        }),
+      };
+    }
+    if (url.includes('genre/222?p=1')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ success: true, data: { hentais: [hhItem(1, 'Anal Title One'), hhItem(2, 'Shared Title')] } }),
+      };
+    }
+    if (url.includes('genre/102?p=1')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ success: true, data: { hentais: [hhItem(2, 'Shared Title'), hhItem(3, 'Yuri Title')] } }),
+      };
+    }
+    if (url.includes('genre/11732?p=1')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ success: true, data: { hentais: [hhItem(9, 'Lone Schoolgirl')] } }),
+      };
+    }
+    if (url.includes('genre/2627?p=1')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ success: true, data: { hentais: [hhItem(11, 'Softcore Title')] } }),
+      };
+    }
+    if (url.includes('genre/2605?p=1')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ success: true, data: { hentais: [hhItem(12, 'Umemaro 3D Title')] } }),
+      };
+    }
+    if (url.includes('genre/815?p=1')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ success: true, data: { hentais: [hhItem(20, 'Hentai School Title')] } }),
+      };
+    }
+    if (url.includes('genre/167?p=1') || url.includes('tag/167?p=1')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          success: true,
+          data: {
+            term: { term_id: 167, name: 'Pink Pineapple', slug: 'pink-pineapple', count: 161 },
+            hentais: [hhItem(1671, 'Pineapple Hit One'), hhItem(1672, 'Pineapple Hit Two')],
+          },
+        }),
+      };
+    }
+    if (url.includes('search?q=school')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ success: true, data: [hhItem(2, 'Shared Title'), hhItem(7, 'School Days')] }),
+      };
+    }
+    if (url.includes('search?q=maid')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ success: true, data: [hhItem(8, 'Maid Kyouiku')] }),
+      };
+    }
+    if (url.includes('hentai/all?p=1')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({ success: true, data: { hentais: [hhItem(50, 'Latest One'), hhItem(51, 'Latest Two')] } }),
+      };
+    }
+    if (url.includes('hentai/home')) {
+      return {
+        ok: true, status: 200,
+        json: async () => ({
+          success: true,
+          data: {
+            trending_month: [{ ...hhItem(60, 'Trend One'), post_views: '342000' }],
+            last_episodes: [
+              {
+                chapter_id: 4334, chapter_name: 'Episode 1', chapter_slug: 'episode-1',
+                chapter_thumbnail: 'https://coverlanyvd.org/thumb.webp',
+                chapter_date: '2026-10-01 16:21:10',
+                post_ID: 7486, post_title: 'Kami Machi Sana-chan', post_name: 'kami-machi-sana-chan',
+              },
+            ],
+          },
+        }),
+      };
+    }
+    return { ok: false, status: 404 };
+  };
+}
+
+test('spaced search intersects per-token results (AND), static genre fallback included', async () => {
+  const hh = loadHentai(null, mockHentaiApi());
+  // 'anal' -> genre/222 [1,2]; 'yuri' -> statik 102 -> genre/102 [2,3]; kesişim [2]
+  const posts = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'anal yuri');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].id, 'hh_2');
+  assert.equal(posts[0].mediaId, '2');
+});
+
+test('empty intersection falls back to union instead of empty screen', async () => {
+  const hh = loadHentai(null, mockHentaiApi());
+  // genre/222 [1,2] ∩ genre/11732 [9] = boş -> birleşim [1,2,9]
+  const posts = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'anal schoolgirl');
+  assert.equal(JSON.stringify(posts.map((p) => p.id)), JSON.stringify(['hh_1', 'hh_2', 'hh_9']));
+});
+
+test('quoted phrase resolves as single genre token', async () => {
+  const hh = loadHentai(null, mockHentaiApi());
+  // '"school girl"' tek token 'school girl' -> compact 'schoolgirl' -> genre/11732
+  const posts = await hh.fetchHentaiHavenPosts(SOURCE, 1, '"school girl"');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].id, 'hh_9');
+});
+
+test('title search is single-page: page > 1 hits no network and returns []', async () => {
+  const log = [];
+  const hh = loadHentai(null, mockHentaiApi(log));
+  const posts = await hh.fetchHentaiHavenPosts(SOURCE, 2, 'maid');
+  assert.equal(posts.length, 0);
+  assert.ok(!log.some((u) => u.includes('search?q=')), 'search must not paginate, got: ' + log.join(' | '));
+});
+
+test('feed sections route to latest / trending / episodes', async () => {
+  const log = [];
+  const hh = loadHentai(null, mockHentaiApi(log));
+
+  const latest = await hh.fetchHentaiHavenPosts(SOURCE, 1, '');
+  assert.equal(JSON.stringify(latest.map((p) => p.id)), JSON.stringify(['hh_50', 'hh_51']));
+
+  const trending = await hh.fetchHentaiHavenPosts(SOURCE, 1, '', { section: 'trending' });
+  assert.equal(trending.length, 1);
+  assert.equal(trending[0].id, 'hh_60');
+  assert.equal(trending[0].score, 342000);
+
+  const trendingPage2 = await hh.fetchHentaiHavenPosts(SOURCE, 2, '', { section: 'trending' });
+  assert.equal(trendingPage2.length, 0);
+
+  const episodes = await hh.fetchHentaiHavenPosts(SOURCE, 1, '', { section: 'episodes' });
+  assert.equal(episodes.length, 1);
+  assert.equal(episodes[0].id, 'hh_ep_4334');
+  assert.equal(episodes[0].mediaId, '7486');
+  assert.equal(episodes[0].sourceLink, 'https://hentaihaven.xxx/watch/kami-machi-sana-chan/');
+});
+
+test('genre feed sections use static term ids without genre/all', async () => {
+  const log = [];
+  const hh = loadHentai(null, mockHentaiApi(log));
+  const posts = await hh.fetchHentaiHavenPosts(SOURCE, 1, '', { section: 'yuri' });
+  assert.equal(JSON.stringify(posts.map((p) => p.id)), JSON.stringify(['hh_2', 'hh_3']));
+  assert.ok(!log.some((u) => u.includes('genre/all')), 'section feed must not need genre/all');
+});
+
+test('empty-query search honors score sort as trending fallback', async () => {
+  const hh = loadHentai(null, mockHentaiApi());
+  const posts = await hh.fetchHentaiHavenPosts(SOURCE, 1, '', { sortBy: 'score' });
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].id, 'hh_60');
+});
+
+test('tag suggestions include statically-known genres missing from genre/all', async () => {
+  const hh = loadHentai(null, mockHentaiApi());
+  const tags = await hh.searchHentaiHavenTags('yuri');
+  assert.ok(tags.some((t) => t.name === 'Yuri'), 'Yuri must be suggested, got: ' + JSON.stringify(tags));
+  const yuri = tags.find((t) => t.name === 'Yuri');
+  assert.equal(yuri.postCount, 194);
+});
+
+test('tag: prefix keeps multi-word genres as one token (other sources mechanic)', async () => {
+  const hh = loadHentai(null, mockHentaiApi());
+
+  // `tag:"big breasts" anal` -> ['big breasts', 'anal'] (önek sıyrılır)
+  let parsed = hh.parseHentaiHavenQuery('tag:"big breasts" anal');
+  assert.equal(
+    JSON.stringify([parsed.include, parsed.exclude]),
+    JSON.stringify([['big breasts', 'anal'], []])
+  );
+
+  // `tag:"school girl"` tek token -> Schoolgirl tür sayfası
+  const quoted = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'tag:"school girl"');
+  assert.equal(quoted.length, 1);
+  assert.equal(quoted[0].id, 'hh_9');
+
+  // `genre:` öneki de aynı işler
+  const genrePrefixed = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'genre:softcore');
+  assert.equal(genrePrefixed.length, 1);
+  assert.equal(genrePrefixed[0].id, 'hh_11');
+});
+
+test('hentaiHavenTagQuery qualifies info-window tags like other sources', () => {
+  const hh = loadHentai();
+  // Boşluklu tür -> tag:"..."
+  assert.equal(hh.hentaiHavenTagQuery('Hentai School'), 'tag:"hentai school"');
+  // Boşluksuz tür -> tag:...
+  assert.equal(hh.hentaiHavenTagQuery('Anal'), 'tag:anal');
+  // Kırmızı etiket (artist) boşluklu -> artist:"..."
+  assert.equal(hh.hentaiHavenTagQuery('Pink Pineapple', 'artist'), 'artist:"pink pineapple"');
+  // Kırmızı etiket (artist) boşluksuz -> artist:...
+  assert.equal(hh.hentaiHavenTagQuery('PoRO', 'artist'), 'artist:poro');
+  // Zaten önekli olanlar korunur
+  assert.equal(hh.hentaiHavenTagQuery('tag:"yuri"'), 'tag:"yuri"');
+  assert.equal(hh.hentaiHavenTagQuery('genre:harem'), 'genre:harem');
+  assert.equal(hh.hentaiHavenTagQuery('artist:suiseisha'), 'artist:suiseisha');
+  assert.equal(hh.hentaiHavenTagQuery(''), '');
+  assert.equal(hh.hentaiHavenTagQuery(undefined), '');
+});
+
+test('red artist tags resolve to official studio posts end-to-end', async () => {
+  const hh = loadHentai(null, mockHentaiApi());
+  // 1. Bilgi penceresindeki kırmızı stüdyo etiketine tıklandığında üretilen artist sorgusu
+  const query = hh.hentaiHavenTagQuery('Pink Pineapple', 'artist');
+  assert.equal(query, 'artist:"pink pineapple"');
+
+  const posts = await hh.fetchHentaiHavenPosts(SOURCE, 1, query);
+  assert.equal(posts.length, 2);
+  assert.equal(posts[0].id, 'hh_1671');
+  assert.equal(posts[1].id, 'hh_1672');
+
+  // 2. Düz metin olarak stüdyo adı arandığında da term_id 167 ile eşleşir
+  const plainPosts = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'Pink Pineapple');
+  assert.equal(plainPosts.length, 2);
+  assert.equal(plainPosts[0].id, 'hh_1671');
+});
+
+test('isHentaiHavenOfficialGenre covers the /genres/ list leniently', () => {
+  const hh = loadHentai();
+  assert.equal(hh.HENTAIHAVEN_OFFICIAL_GENRE_NAMES.length, 61);
+  const yes = [
+    'Yuri', 'yuri', 'Schoolgirl', 'school girl', 'school-girl', 'Incest',
+    'Incest Hentai', '3D Hentai', 'Umemaro 3D', 'Softcore', 'Yaoi',
+    'Big Breasts', 'blowjob', 'Hentai School', 'Teen Hentai',
+  ];
+  for (const n of yes) assert.equal(hh.isHentaiHavenOfficialGenre(n), true, n);
+  const no = ['Maid Kyouiku', 'Studio A', 'video', '', '!!!', 'school days', 'Anal Mania'];
+  for (const n of no) assert.equal(hh.isHentaiHavenOfficialGenre(n), false, n);
+});
+
+test('info-window tag tap resolves to the genre page end to end', async () => {
+  const hh = loadHentai(null, mockHentaiApi());
+  // Bilgi penceresindeki 'Hentai School' satırı `tag:"hentai school"` olur
+  const query = hh.hentaiHavenTagQuery('Hentai School');
+  const posts = await hh.fetchHentaiHavenPosts(SOURCE, 1, query);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].id, 'hh_20');
+});
+
+test('harvested official genres resolve without genre/all', async () => {
+  const hh = loadHentai(null, mockHentaiApi());
+
+  // softcore / umemaro 3d: genre/all'da yok, statik tamamlayıcıdan gelir
+  const softcore = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'softcore');
+  assert.equal(softcore.length, 1);
+  assert.equal(softcore[0].id, 'hh_11');
+
+  const umemaro = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'tag:"umemaro 3d"');
+  assert.equal(umemaro.length, 1);
+  assert.equal(umemaro[0].id, 'hh_12');
+
+  // Önerilerde de görünürler
+  const sug = await hh.searchHentaiHavenTags('soft');
+  assert.ok(sug.some((t) => t.name === 'Softcore'), 'Softcore must be suggested');
+  const yaoi = await hh.searchHentaiHavenTags('yaoi');
+  assert.ok(yaoi.some((t) => t.name === 'Yaoi'), 'Yaoi must be suggested');
+});

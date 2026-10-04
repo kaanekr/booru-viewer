@@ -83,6 +83,22 @@ export type RatingFilterOption = 'all' | 'safe' | 'questionable' | 'explicit';
 export type CumstServiceOption = 'all' | 'onlyfans' | 'fansly';
 export type CumstMediaTypeOption = 'all' | 'photos' | 'videos' | 'audio' | 'media';
 
+/**
+ * HentaiHaven Keşfet bölümü. Resmi v1 API karşılığı:
+ * latest -> hentai/all (sayfalı), trending/yuri/ecchi/incest/tentacle/
+ * uncensored -> hentai/home bölümleri, episodes -> home.last_episodes,
+ * tür bölümleri 2. sayfadan itibaren genre/{id}?p ile sayfalanır.
+ */
+export type HentaiHavenFeedSection =
+  | 'latest'
+  | 'trending'
+  | 'episodes'
+  | 'yuri'
+  | 'ecchi'
+  | 'incest'
+  | 'tentacle'
+  | 'uncensored';
+
 export interface SearchFilterConfig {
   tags: string[];
   sortBy: SortOption;
@@ -96,6 +112,8 @@ export interface SearchFilterConfig {
   jumpToPage: number;
   includeBlacklisted: boolean;
   autocompleteFromServer: boolean;
+  /** HentaiHaven Keşfet/boş-arama akışının hangi bölümü listeleyeceği (diğer kaynaklarda yoksayılır) */
+  hentaiHavenSection?: HentaiHavenFeedSection;
 }
 
 export const DEFAULT_FILTER_CONFIG: SearchFilterConfig = {
