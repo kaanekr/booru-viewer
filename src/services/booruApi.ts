@@ -1746,8 +1746,8 @@ export class BooruApiService {
       const tag = isApi ? 'api/v2' : 'mirror';
       try {
         // v2 API sorguları (özellikle popular-month 650K galeri sunucu sıralaması)
-        // mobilde 4-8s sürebilir; 15s zaman aşımı yeterli alan tanır.
-        const timeoutMs = isApi ? 15000 : 10000;
+        // mobilde 4-8s sürebilir; 12s zaman aşımı yeterli alan tanır.
+        const timeoutMs = isApi ? 12000 : 10000;
         const response = await proxyService.fetchWithFallback(url, { headers }, timeoutMs);
         if (response.status === 404) {
           saw404 = true;
@@ -1764,7 +1764,29 @@ export class BooruApiService {
           console.log(`[BooruAPI] nhentai ${tag} HTTP ${response.status}: ${url}`);
           continue;
         }
-        const text = await withHardTimeout(response.text(), timeoutMs, `nhentai body ${tag}`);
+        // Teşhis: cihazın gerçekte hangi kodlamayı aldığı (RN iOS Brotli'yi
+        // çözemezse gövde burada takılır; logda `br` görülürse kanıtlanır).
+        let contentEncoding = '';
+        try {
+          contentEncoding = response.headers?.get?.('content-encoding') || '';
+        } catch {}
+        const startedAt = Date.now();
+        let text: string;
+        try {
+          text = await withHardTimeout(response.text(), timeoutMs, `nhentai body ${tag}`);
+        } catch (bodyErr) {
+          // Gövde takılması çoğunlukla geçici soket sorunudur: aynı URL'yi
+          // taze bağlantıyla BİR kez daha dene, sonra sıradaki adaya geç.
+          console.log(
+            `[BooruAPI] nhentai ${tag} gövde takıldı (ce=${contentEncoding || '?'} ${Date.now() - startedAt}ms), tekrar deneniyor: ${url}`
+          );
+          const retryRes = await proxyService.fetchWithFallback(url, { headers }, timeoutMs);
+          if (!retryRes.ok) {
+            lastError = new Error(`HTTP ${retryRes.status} (retry)`);
+            continue;
+          }
+          text = await withHardTimeout(retryRes.text(), timeoutMs, `nhentai body-retry ${tag}`);
+        }
         if (/just a moment|challenge-platform|cf-challenge|attention required/i.test(text.slice(0, 4000))) {
           console.warn(`[BooruAPI] nhentai ${tag} bot-duvarı sayfası aldı (challenge): ${url}`);
           lastError = new Error('Cloudflare challenge sayfası alındı');
