@@ -12,14 +12,17 @@ class ProxyService {
 
   /**
    * iOS AVPlayer'da TLS handshake'i düşüren CDN host'ları (NSURLError -1200).
-   * Canlı vaka: api-cdn-mp4.rule34.xxx üzerindeki .mp4'ler direkt bağlantıda
-   * "A TLS error caused the secure connection to fail" veriyor, Worker
-   * üzerinden aynı dosya sorunsuz oynuyor. Bu host'lar worker kayıtlıysa
-   * global toggle kapalı olsa bile seçici olarak proxy'lenir; diğer
-   * host'lar doğrudan kalır.
+   * Canlı vakalar: api-cdn-mp4.rule34.xxx ve thumb/mp4-cdn*.xvideos-cdn.com
+   * üzerindeki dosyalar direkt bağlantıda "A TLS error caused the secure
+   * connection to fail" veriyor. Bu host'lar worker kayıtlıysa global
+   * toggle kapalı olsa bile seçici olarak proxy'lenir; diğer host'lar
+   * doğrudan kalır.
    */
   private static readonly TLS_FRAGILE_PATTERNS: RegExp[] = [
     /api-cdn[^/]*\.rule34\.(xxx|us)/i,
+    /thumb-cdn\d*\.xvideos-cdn\.com/i,
+    /thumbs-gcore\.xvideos-cdn\.com/i,
+    /mp4-cdn\d*\.xvideos-cdn\.com/i,
   ];
 
   /** Ham URL TLS-kırılgan bir CDN'e mi işaret ediyor? */
