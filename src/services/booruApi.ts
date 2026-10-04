@@ -1720,55 +1720,66 @@ export class BooruApiService {
     void limit;
 
     const apiSort = nhentaiApiSort(filter?.sortBy, filter?.timeRange);
-    const candidates = buildNHentaiApiCandidates(page, fullQuery, apiSort, filter?.minScore);
+    const apiCandidates = buildNHentaiApiCandidates(page, fullQuery, apiSort, filter?.minScore);
+    const mirrorSort = filter?.sortBy === 'score' ? 'popular' : undefined;
+    const mirrorCandidates = buildNHentaiSearchCandidates(
+      'https://nhentai.xxx',
+      page,
+      rawTokens.filter((t) => !t.startsWith('-')).join(' '),
+      mirrorSort
+    );
+    // Öncelik resmi v2 API'de; 429/timeout/ağ kopmasında ayna güvenlik ağı devreye girer
+    const candidates = [...apiCandidates, ...mirrorCandidates];
 
     const headers = {
       'User-Agent': NHENTAI_UA,
       Referer: 'https://nhentai.net/',
       'Accept-Language': 'en-US,en;q=0.9',
-      Accept: 'application/json,*/*',
-      // Cloudflare varsayılan olarak Brotli (content-encoding: br) sıkıştırması döner.
-      // React Native iOS ağ katmanı Brotli'yi çözemediği için response.text() soketi
-      // takılı kalıyor ve 8000ms timeout hatası üretiyordu (canlı logla doğrulandı).
-      // gzip/identity isteyerek iOS'un yerel çözebileceği yanıt alınır.
+      Accept: 'application/json,text/html,*/*',
       'Accept-Encoding': 'gzip, deflate, identity',
     };
 
     let lastError: any = null;
     let saw404 = false;
     for (const url of candidates) {
+      const isApi = url.startsWith(NHENTAI_API_BASE);
+      const tag = isApi ? 'api/v2' : 'mirror';
       try {
-        const timeoutMs = 8000;
+        // v2 API sorguları (özellikle popular-month 650K galeri sunucu sıralaması)
+        // mobilde 4-8s sürebilir; 15s zaman aşımı yeterli alan tanır.
+        const timeoutMs = isApi ? 15000 : 10000;
         const response = await proxyService.fetchWithFallback(url, { headers }, timeoutMs);
         if (response.status === 404) {
           saw404 = true;
-          console.log(`[BooruAPI] nhentai v2 API 404 (sayfa sonu): ${url}`);
+          console.log(`[BooruAPI] nhentai ${tag} 404 (sayfa sonu): ${url}`);
           continue;
         }
-        if (response.status === 429) {
-          console.warn('[BooruAPI] nhentai v2 API 429 (Rate limit aşıldı, lütfen bir süre bekleyin)');
-          lastError = new Error('nhentai API istek sınırı aşıldı (429 Rate limit). Lütfen biraz bekleyin.');
+        if (response.status === 429 && isApi) {
+          console.warn('[BooruAPI] nhentai v2 API 429 (Rate limit aşıldı, aynaya yönlendiriliyor)');
+          lastError = new Error('nhentai API istek sınırı aşıldı (429 Rate limit).');
           continue;
         }
         if (!response.ok) {
           lastError = new Error(`HTTP ${response.status}`);
-          console.log(`[BooruAPI] nhentai v2 API HTTP ${response.status}: ${url}`);
+          console.log(`[BooruAPI] nhentai ${tag} HTTP ${response.status}: ${url}`);
           continue;
         }
-        const text = await withHardTimeout(response.text(), timeoutMs, 'nhentai body api/v2');
+        const text = await withHardTimeout(response.text(), timeoutMs, `nhentai body ${tag}`);
         if (/just a moment|challenge-platform|cf-challenge|attention required/i.test(text.slice(0, 4000))) {
-          console.warn(`[BooruAPI] nhentai v2 API bot-duvarı sayfası aldı (challenge): ${url}`);
+          console.warn(`[BooruAPI] nhentai ${tag} bot-duvarı sayfası aldı (challenge): ${url}`);
           lastError = new Error('Cloudflare challenge sayfası alındı');
           continue;
         }
-        const posts = parseNHentaiV2Listing(text, source);
-        console.log(`[BooruAPI] nhentai v2 API sonuc=${posts.length} url=${url}`);
+        const posts = isApi
+          ? parseNHentaiV2Listing(text, source)
+          : parseNHentaiListing(text, source);
+        console.log(`[BooruAPI] nhentai ${tag} sonuc=${posts.length} url=${url}`);
         if (posts.length > 0) {
           return await this.filterBlacklistedPosts(posts, includeBlacklisted);
         }
       } catch (err) {
         lastError = err;
-        console.log(`[BooruAPI] nhentai v2 API hata (${err instanceof Error ? err.message : String(err)}): ${url}`);
+        console.log(`[BooruAPI] nhentai ${tag} hata (${err instanceof Error ? err.message : String(err)}): ${url}`);
       }
     }
     if (saw404 && !lastError) {

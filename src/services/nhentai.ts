@@ -22,7 +22,7 @@ export const NHENTAI_API_THUMB_BASE = 'https://t1.nhentai.net';
 export const NHENTAI_API_IMAGE_BASE = 'https://i1.nhentai.net';
 
 export const NHENTAI_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
 
 const EXT_MAP: Record<string, string> = {
   j: 'jpg',
@@ -633,7 +633,7 @@ export async function resolveNHentaiGalleryDetail(
   };
 
   // 1. Resmi v2 API detay: GET /api/v2/galleries/{id}
-  const v2Text = await fetchWithTimeout(`${NHENTAI_API_BASE}/galleries/${rawId}`, 8000);
+  const v2Text = await fetchWithTimeout(`${NHENTAI_API_BASE}/galleries/${rawId}`, 12000);
   if (v2Text) {
     const pages = parseNHentaiGalleryPages(v2Text, rawId);
     const detail = parseNHentaiV2DetailTags(v2Text);
