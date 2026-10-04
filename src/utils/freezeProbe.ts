@@ -1,7 +1,7 @@
 // Yalnız geliştirme: native dosya erişimi yok, medya URL'leri kaydedilmez.
 // FPS veya açık TCP bağlantısı tek başına JS canlılığı kanıtı değildir.
 const state = {
-  build: 'ios-player-lifecycle-v2-windowed',
+  build: 'ios-player-lifecycle-v3-sexcomdiag',
   tick: 0,
   lastTickAt: 0,
   maxDelayMs: 0,

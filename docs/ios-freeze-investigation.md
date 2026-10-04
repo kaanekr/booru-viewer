@@ -71,7 +71,7 @@ planda/kapalı olduğunu belirtti. Bu ölçüm donma kanıtı olarak kullanılma
 ## Cihaz testi
 
 1. Expo Go'yu tamamen kapatıp yeniden aç. Başlangıçta
-   `[FreezeProbe] ios-player-lifecycle-v2-windowed` görülmeli.
+   `[FreezeProbe] ios-player-lifecycle-v3-sexcomdiag` görülmeli.
 2. RedGifs'te birkaç sayfa gez, Viewer'a gir/çık, Ayarlar'a geç, XVideos'a dön.
 3. Ayarlar'da `players=0` beklenir. Sayaç JS tarafında mount olmuş grid video
    bileşenlerini sayar; native belleğin tamamen boşaldığını ölçmez.

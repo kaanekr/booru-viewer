@@ -678,9 +678,11 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
             if (files) {
               // Premium kilitli HLS anonim oynaticida acilmaz: sessizce
               // onizlemeye dusulur (hata kartindan iyidir) ama sebebi
-              // Metro'da gorunur olsun.
+              // Metro'da gorunur olsun. HLS'siz detay da aynidir.
               if (files.premium) {
                 console.warn('[Viewer] sexcom premium video, önizleme oynuyor');
+              } else if (!files.hls) {
+                console.warn('[Viewer] sexcom tam video bulunamadı, önizleme oynuyor');
               }
               setResolvedOriginalUrl(selectSexComPlayable(files));
             } else {
