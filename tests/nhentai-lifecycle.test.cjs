@@ -147,6 +147,19 @@ test('parseNHentaiGalleryPages parses pages from API JSON', () => {
 
 test('parseNHentaiGalleryPages parses pages from nhentaimg and nhentai HTML thumbnails', () => {
   const nh = loadNHentai();
+  // Sitede 50 sayfa varken yalniz 2 thumbnail gelse bile load_pages ile tum 50 sayfa uretilmeli
+  const xxxFullHtml = '<html><body>' +
+    '<span class="text">Pages:</span><span class="tags"><a class="tag_btn"><span class="tag_name pages">50</span></a></span>' +
+    '<input type="hidden" name="load_id" id="load_id" value="zd5ew9kgoa" />' +
+    '<input type="hidden" name="load_pages" id="load_pages" value="50" />' +
+    '<div class="gt_th"><a href="/g/703517/1/"><img data-src="https://i5.nhentaimg.com/018/zd5ew9kgoa/1t.jpg"/></a></div>' +
+    '</body></html>';
+  const fullPages = nh.parseNHentaiGalleryPages(xxxFullHtml, '703517');
+  assert.equal(fullPages.length, 50);
+  assert.equal(fullPages[0], 'https://i5.nhentaimg.com/018/zd5ew9kgoa/1.webp');
+  assert.equal(fullPages[24], 'https://i5.nhentaimg.com/018/zd5ew9kgoa/25.webp');
+  assert.equal(fullPages[49], 'https://i5.nhentaimg.com/018/zd5ew9kgoa/50.webp');
+
   const xxxHtml = '<html><body>' +
     '<div class="gt_th"><a href="/g/703517/1/"><img data-src="https://i5.nhentaimg.com/018/zd5ew9kgoa/1t.jpg"/></a></div>' +
     '<div class="gt_th"><a href="/g/703517/2/"><img data-src="https://i5.nhentaimg.com/018/zd5ew9kgoa/2t.jpg"/></a></div>' +
