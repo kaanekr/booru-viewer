@@ -610,6 +610,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const isMangaZoomedRef = useRef(false);
   const mangaLastTapRef = useRef<number>(0);
   const mangaSingleTapTimerRef = useRef<any>(null);
+  const mangaOffsetYRef = useRef<number>(0);
+  const mangaZoomScaleRef = useRef<number>(1);
   const [isZoomed, setIsZoomed] = useState(false);
   const [hasUpgradedToFull, setHasUpgradedToFull] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -847,6 +849,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     setCurrentMangaPage(1);
     setMangaLoading(false);
     setIsMangaZoomed(false);
+    mangaOffsetYRef.current = 0;
+    mangaZoomScaleRef.current = 1;
     setHasUpgradedToFull(false);
     setSampleLoading(true);
     setSampleLoaded(false);
@@ -1182,10 +1186,12 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
       if (isMangaZoomedRef.current) {
-        // 1x'e geri dön
+        // 1x'e geri dön: o an bulunulan dikey sayfada kal (1. sayfaya sıçrama yapma)
+        const currentScale = mangaZoomScaleRef.current || 1;
+        const targetY = Math.max(0, mangaOffsetYRef.current / currentScale);
         mangaScrollRef.current?.scrollResponderZoomTo({
           x: 0,
-          y: 0,
+          y: targetY,
           width: screenWidth,
           height: screenHeight,
           animated: true,
@@ -1194,13 +1200,19 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         setIsMangaZoomed(false);
         onZoomChange?.(false);
       } else {
-        // Çift dokunulan noktaya 2.2x tümleşik global canvas zoom
+        // Çift dokunulan sayfaya/noktaya 2.2x tümleşik zoom:
+        // pageY ekran üstü mutlak koordinattır. ScrollView'ın anlık kaydırma
+        // ofseti (mangaOffsetYRef.current) eklenerek tam dokunulan sayfaya zoom yapılır.
         const tapZoom = 2.2;
-        const { locationX, locationY } = event.nativeEvent;
+        const pageX = event.nativeEvent.pageX ?? event.nativeEvent.locationX ?? (screenWidth / 2);
+        const pageY = event.nativeEvent.pageY ?? (screenHeight / 2);
+        const viewportY = Math.max(0, pageY - insets.top);
+        const contentY = mangaOffsetYRef.current + viewportY;
+
         const targetWidth = screenWidth / tapZoom;
         const targetHeight = screenHeight / tapZoom;
-        const targetX = Math.max(0, locationX - targetWidth / 2);
-        const targetY = Math.max(0, locationY - targetHeight / 2);
+        const targetX = Math.max(0, pageX - targetWidth / 2);
+        const targetY = Math.max(0, contentY - targetHeight / 2);
 
         mangaScrollRef.current?.scrollResponderZoomTo({
           x: targetX,
@@ -1227,6 +1239,9 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const handleMangaScroll = (e: any) => {
     const scale = e.nativeEvent.zoomScale || 1;
     const zoomed = scale > 1.05;
+    mangaZoomScaleRef.current = scale;
+    mangaOffsetYRef.current = e.nativeEvent.contentOffset.y;
+
     if (zoomed !== isMangaZoomedRef.current) {
       isMangaZoomedRef.current = zoomed;
       setIsMangaZoomed(zoomed);
