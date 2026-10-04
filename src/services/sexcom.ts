@@ -79,7 +79,7 @@ export function parseSexComListing(html: string, source: BooruSource): BooruPost
       c.match(/title="([^"]+)"/);
     const title = titleM ? decodeEntities(titleM[1]).trim() : '';
 
-    const thumbM = c.match(/src="(https:\/\/images\.sxccdn\.com\/videos\/\d+\/\d+\/thumbnail\.[^"]+)"/);
+    const thumbM = c.match(/src="(https:\/\/images\.sxccdn\.com\/videos\/\d+\/\d+\/(?:thumbnail\.[^"]+|poster\.webp))"/);
     const thumb = thumbM ? thumbM[1].trim() : '';
     const pvM = c.match(/<video[^>]*src="([^"]+)"/i);
     const previewVideo = pvM ? decodeEntities(pvM[1]).trim() : undefined;
@@ -141,6 +141,8 @@ export interface SexComFiles {
   hls: string;
   mp4: string;
   thumb: string;
+  /** contentUrl premium kilitli hosttaysa (premium-*) true: anonim oynatıcı açamaz. */
+  premium: boolean;
   title?: string;
   durationSec?: number;
 }
@@ -159,14 +161,22 @@ export function parseSexComISODuration(raw: string | undefined): number | null {
  * sayfadaki video etiketi mp4'u. HLS iOS'ta native oynar.
  */
 export function parseSexComDetail(html: string): SexComFiles {
-  const out: SexComFiles = { hls: '', mp4: '', thumb: '' };
+  const out: SexComFiles = { hls: '', mp4: '', thumb: '', premium: false };
   if (!html) return out;
   const ldM = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
   const scope = ldM ? ldM[1] : html;
 
   const hlsM = scope.match(/"contentUrl"\s*:\s*"([^"]+)"/i);
-  if (hlsM && /\.m3u8$/i.test(hlsM[1].split('?')[0])) {
-    out.hls = hlsM[1].trim();
+  if (hlsM) {
+    const cu = hlsM[1].trim();
+    const base = cu.split('?')[0];
+    if (/\.m3u8$/i.test(base)) {
+      out.hls = cu;
+      const hostM = cu.match(/^https?:\/\/([^/]+)/i);
+      out.premium = !!hostM && /^premium-/i.test(hostM[1]);
+    } else if (/\.mp4$/i.test(base) && !out.mp4) {
+      out.mp4 = cu;
+    }
   }
   const thM = scope.match(/"thumbnailUrl"\s*:\s*"([^"]+)"/i);
   if (thM) out.thumb = thM[1].trim();
@@ -185,8 +195,19 @@ export function parseSexComDetail(html: string): SexComFiles {
   }
 
   const mp4M = html.match(/<video[^>]*src="([^"]+\.mp4[^"]*)"/i);
-  if (mp4M) out.mp4 = decodeEntities(mp4M[1]).trim();
+  if (mp4M && !out.mp4) out.mp4 = decodeEntities(mp4M[1]).trim();
   return out;
+}
+
+/**
+ * Izleyicide calinacak URL secimi (viewer + testler icin tek kaynak):
+ * premium kilitli HLS anonim oynaticida acilmaz; varsa onizleme mp4'u
+ * oynar (hata kartindan iyidir). Normalde HLS, yoksa mp4.
+ */
+export function selectSexComPlayable(files: SexComFiles | null): string | null {
+  if (!files) return null;
+  if (files.premium) return files.mp4 || null;
+  return files.hls || files.mp4 || null;
 }
 
 /**

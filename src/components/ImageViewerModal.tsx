@@ -63,7 +63,7 @@ import {
   resolvePornhubVideoUrls,
   selectPrimaryVideoCandidate,
 } from '../utils/media';
-import { resolveSexComVideoUrls } from '../services/sexcom';
+import { resolveSexComVideoUrls, selectSexComPlayable } from '../services/sexcom';
 import { resolveHentaiHavenEpisodeUrls } from '../services/hentaihavens';
 
 const { width: DEFAULT_SCREEN_WIDTH } = Dimensions.get('window');
@@ -675,7 +675,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         resolveSexComVideoUrls(post, abortCtrl.signal)
           .then((files) => {
             if (alive && files) {
-              setResolvedOriginalUrl(files.hls || files.mp4 || null);
+              setResolvedOriginalUrl(selectSexComPlayable(files));
             }
           })
           .catch(() => {});
