@@ -29,7 +29,9 @@ test('xvideos and rule34 cdn hosts are tls-fragile', () => {
   assert.equal(proxy.isTlsFragileUrl('https://mp4-cdn77.xvideos-cdn.com/79124b6c/6/mp4_sd.mp4?secure=abc,123'), true);
   assert.equal(proxy.isTlsFragileUrl('https://thumbs-gcore.xvideos-cdn.com/d0d64988/6/preview.mp4'), true);
   assert.equal(proxy.isTlsFragileUrl('https://api-cdn-mp4.rule34.xxx/x.mp4'), true);
-  assert.equal(proxy.isTlsFragileUrl('https://videos2.sex.com/1040312/video.m3u8'), false);
+  assert.equal(proxy.isTlsFragileUrl('https://videos2.sex.com/1038553/preview_240p.mp4'), true);
+  assert.equal(proxy.isTlsFragileUrl('https://premium-videos2.sex.com/978584/video.m3u8'), true);
+  assert.equal(proxy.isTlsFragileUrl('https://www.sex.com/en/videos/1038553'), false);
   assert.equal(proxy.isTlsFragileUrl('https://images.sxccdn.com/videos/1/288/thumbnail.1.jpg.webp'), false);
   assert.equal(proxy.isTlsFragileUrl(''), false);
   assert.equal(proxy.isTlsFragileUrl(undefined), false);
