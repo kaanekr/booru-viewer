@@ -102,7 +102,7 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
   {
     id: 'nhentai',
     name: 'nhentai',
-    baseUrl: 'https://nhentai.net',
+    baseUrl: 'https://nhentai.xxx',
     type: 'nhentai',
     description: 'Manga ve doujinshi arşivi (dikey okuyucu)',
     isSafeOnly: false,

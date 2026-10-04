@@ -46,13 +46,13 @@ test('extFromType converts nhentai short types to file extensions', () => {
 
 test('buildNHentaiSearchCandidates builds feed and search URLs with paging', () => {
   const nh = loadNHentai();
-  const feed = nh.buildNHentaiSearchCandidates('https://nhentai.net', 1, '');
-  assert.equal(feed[0], 'https://nhentai.net/api/galleries/all?page=1');
-  assert.equal(feed[1], 'https://nhentai.net/?page=1');
+  const feed = nh.buildNHentaiSearchCandidates('https://nhentai.xxx', 1, '');
+  assert.equal(feed[0], 'https://nhentai.xxx/');
+  assert.equal(feed[1], 'https://nhentai.xxx/api/galleries/all?page=1');
 
-  const search = nh.buildNHentaiSearchCandidates('https://nhentai.net/', 2, 'genshin impact');
-  assert.equal(search[0], 'https://nhentai.net/api/galleries/search?query=genshin%20impact&page=2');
-  assert.equal(search[1], 'https://nhentai.net/search/?q=genshin%20impact&page=2');
+  const search = nh.buildNHentaiSearchCandidates('https://nhentai.xxx/', 2, 'genshin impact');
+  assert.equal(search[0], 'https://nhentai.xxx/search/?q=genshin%20impact&page=2');
+  assert.equal(search[1], 'https://nhentai.xxx/api/galleries/search?query=genshin%20impact&page=2');
 });
 
 const JSON_LISTING = JSON.stringify({
@@ -111,9 +111,9 @@ test('parseNHentaiJsonListing extracts manga metadata, tags, covers, pageCount',
 });
 
 const HTML_LISTING = '<html><body>' +
-  '<div class="gallery" data-tags="1 2 3">' +
-  '<a href="/g/334455/" class="cover">' +
-  '<img src="https://t.nhentai.net/galleries/1899112/thumb.jpg" width="250" height="350"/>' +
+  '<div class="gallery_item" data-tags="1 2 3">' +
+  '<a href="/g/334455/" title="HTML Scraped Doujinshi">' +
+  '<img data-src="https://i5.nhentaimg.com/018/zd5ew9kgoa/thumb.jpg" width="250" height="350"/>' +
   '<div class="caption">HTML Scraped Doujinshi</div>' +
   '</a></div>' +
   '</body></html>';
@@ -124,11 +124,10 @@ test('parseNHentaiHtmlListing extracts gallery cards as fallback', () => {
   assert.equal(posts.length, 1);
   const p = posts[0];
   assert.equal(p.id, 'nh_334455');
-  assert.equal(p.mediaId, '1899112');
+  assert.equal(p.mediaId, 'zd5ew9kgoa');
   assert.equal(p.title, 'HTML Scraped Doujinshi');
-  assert.equal(p.previewUrl, 'https://t.nhentai.net/galleries/1899112/thumb.jpg');
-  assert.equal(p.sampleUrl, 'https://t.nhentai.net/galleries/1899112/cover.jpg');
-  assert.equal(p.originalUrl, 'https://i.nhentai.net/galleries/1899112/1.jpg');
+  assert.equal(p.previewUrl, 'https://i5.nhentaimg.com/018/zd5ew9kgoa/thumb.jpg');
+  assert.equal(p.sampleUrl, 'https://i5.nhentaimg.com/018/zd5ew9kgoa/cover.jpg');
 });
 
 test('parseNHentaiGalleryPages parses pages from API JSON', () => {
@@ -146,18 +145,25 @@ test('parseNHentaiGalleryPages parses pages from API JSON', () => {
   assert.equal(pages[2], 'https://i.nhentai.net/galleries/1556093/3.webp');
 });
 
-test('parseNHentaiGalleryPages parses pages from HTML thumbnails', () => {
+test('parseNHentaiGalleryPages parses pages from nhentaimg and nhentai HTML thumbnails', () => {
   const nh = loadNHentai();
-  const html = '<html><body><div id="thumbnail-container">' +
+  const xxxHtml = '<html><body>' +
+    '<div class="gt_th"><a href="/g/703517/1/"><img data-src="https://i5.nhentaimg.com/018/zd5ew9kgoa/1t.jpg"/></a></div>' +
+    '<div class="gt_th"><a href="/g/703517/2/"><img data-src="https://i5.nhentaimg.com/018/zd5ew9kgoa/2t.jpg"/></a></div>' +
+    '</body></html>';
+  const xxxPages = nh.parseNHentaiGalleryPages(xxxHtml, '703517');
+  assert.equal(xxxPages.length, 2);
+  assert.equal(xxxPages[0], 'https://i5.nhentaimg.com/018/zd5ew9kgoa/1.webp');
+  assert.equal(xxxPages[1], 'https://i5.nhentaimg.com/018/zd5ew9kgoa/2.webp');
+
+  const netHtml = '<html><body><div id="thumbnail-container">' +
     '<div class="thumb-container"><a href="/g/123/1/"><img src="https://t2.nhentai.net/galleries/999/1t.jpg"/></a></div>' +
     '<div class="thumb-container"><a href="/g/123/2/"><img src="https://t.nhentai.net/galleries/999/2t.png"/></a></div>' +
-    '<div class="thumb-container"><a href="/g/123/3/"><img src="https://t.nhentai.net/galleries/999/3t.jpg"/></a></div>' +
     '</div></body></html>';
-  const pages = nh.parseNHentaiGalleryPages(html, '123');
-  assert.equal(pages.length, 3);
-  assert.equal(pages[0], 'https://i.nhentai.net/galleries/999/1.jpg');
-  assert.equal(pages[1], 'https://i.nhentai.net/galleries/999/2.png');
-  assert.equal(pages[2], 'https://i.nhentai.net/galleries/999/3.jpg');
+  const netPages = nh.parseNHentaiGalleryPages(netHtml, '123');
+  assert.equal(netPages.length, 2);
+  assert.equal(netPages[0], 'https://i.nhentai.net/galleries/999/1.jpg');
+  assert.equal(netPages[1], 'https://i.nhentai.net/galleries/999/2.png');
 });
 
 test('resolveNHentaiPages resolves pages end-to-end with synthetic fallback', async () => {
