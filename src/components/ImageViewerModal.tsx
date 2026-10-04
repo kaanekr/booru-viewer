@@ -65,7 +65,7 @@ import {
 } from '../utils/media';
 import { resolveSexComVideoUrls, selectSexComPlayable } from '../services/sexcom';
 import { resolveHentaiHavenEpisodeUrls, listHentaiHavenEpisodes, resolveHentaiHavenEpisodeUrl, HentaiHavenEpisode } from '../services/hentaihavens';
-import { resolveNHentaiPages, resolveNHentaiGalleryDetail } from '../services/nhentai';
+import { resolveNHentaiPages, resolveNHentaiGalleryDetail, rotateNhentaiImageHost } from '../services/nhentai';
 
 const { width: DEFAULT_SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -551,6 +551,63 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     </Modal>
   );
 };
+
+/**
+ * Manga tek sayfa görseli: hata verirse sıradaki CDN hostuna geçer
+ * (i2->i3->i4->i1; bazı ağlar tekil hostları engeller). Yüklenmeyen sayfa
+ * boş siyah kare yerine minik yükleniyor göstergesi + sayfa numarası gösterir.
+ */
+const MangaPageImage: React.FC<{
+  uri: string;
+  pageLabel: string;
+  width: number;
+  height: number;
+}> = React.memo(({ uri, pageLabel, width, height }) => {
+  const [src, setSrc] = React.useState(uri);
+  const [failed, setFailed] = React.useState(false);
+  React.useEffect(() => {
+    setSrc(uri);
+    setFailed(false);
+  }, [uri]);
+  return (
+    <View
+      style={{
+        width,
+        height,
+        backgroundColor: '#000000',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      {!failed ? (
+        <Image
+          source={{
+            uri: src,
+            headers: getMediaHeaders(src),
+            cacheKey: `${src}:manga-page`,
+          }}
+          style={{ width, height }}
+          contentFit="contain"
+          contentPosition="center"
+          cachePolicy="memory-disk"
+          transition={150}
+          onError={() => {
+            const next = rotateNhentaiImageHost(src);
+            if (next) {
+              setSrc(next);
+            } else {
+              setFailed(true);
+            }
+          }}
+        />
+      ) : (
+        <Text style={{ color: '#666666', fontSize: 13 }}>
+          {`Sayfa ${pageLabel} yüklenemedi`}
+        </Text>
+      )}
+    </View>
+  );
+});
 
 interface PostPageItemProps {
   post: BooruPost;
@@ -1313,32 +1370,38 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         >
           <TouchableWithoutFeedback onPress={handleMangaDoubleTap}>
             <View style={{ width: screenWidth, alignItems: 'center', backgroundColor: '#000000' }}>
-              {pages.map((item, index) => (
-                <View
-                  key={`${item}-${index}`}
-                  style={{
-                    width: screenWidth,
-                    height: pageHeight,
-                    backgroundColor: '#000000',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Image
-                    source={{
-                      uri: item,
-                      headers: getMediaHeaders(item),
-                      cacheKey: `${item}:manga-page`,
+              {pages.map((item, index) => {
+                // Pencereleme: yalnız görünen sayfa ±5 monte edilir. 50+ sayfanın
+                // hepsini aynı anda indirmek mobil hattı tıkayıp okuyucuyu
+                // kilitliyordu; uzak sayfalar yer tutucu olarak bekler.
+                const activeIdx = currentMangaPage - 1;
+                const nearActive = Math.abs(index - activeIdx) <= 5;
+                return (
+                  <View
+                    key={`${item}-${index}`}
+                    style={{
+                      width: screenWidth,
+                      height: pageHeight,
+                      backgroundColor: '#000000',
+                      alignItems: 'center',
+                      justifyContent: 'center',
                     }}
-                    style={{ width: screenWidth, height: pageHeight }}
-                    contentFit="contain"
-                    contentPosition="center"
-                    priority={index <= 2 ? 'high' : 'normal'}
-                    cachePolicy="memory-disk"
-                    transition={150}
-                  />
-                </View>
-              ))}
+                  >
+                    {nearActive ? (
+                      <MangaPageImage
+                        uri={item}
+                        pageLabel={String(index + 1)}
+                        width={screenWidth}
+                        height={pageHeight}
+                      />
+                    ) : (
+                      <Text style={{ color: '#333333', fontSize: 13 }}>
+                        {`${index + 1}`}
+                      </Text>
+                    )}
+                  </View>
+                );
+              })}
             </View>
           </TouchableWithoutFeedback>
         </ScrollView>

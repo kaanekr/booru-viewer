@@ -589,3 +589,26 @@ export async function searchNHentaiTags(
 
   return results.slice(0, limit);
 }
+
+/**
+ * Tam sayfa CDN host rotasyonu. Bazı ağlar tekil hostları engeller/çözemez
+ * (cihazda doğrulandı: i1 ölü, i2/i3 yaşıyor). Sayfa hatasında sıradaki host
+ * denenir; liste biterse null (vazgeç).
+ */
+export const NHENTAI_API_IMAGE_HOSTS = [
+  'https://i2.nhentai.net',
+  'https://i3.nhentai.net',
+  'https://i4.nhentai.net',
+  'https://i1.nhentai.net',
+];
+
+export function rotateNhentaiImageHost(url: string | undefined): string | null {
+  if (!url || typeof url !== 'string') return null;
+  const m = url.match(/^(https?:\/\/i\d\.nhentai\.net)(\/.*)$/i);
+  if (!m) return null;
+  const idx = NHENTAI_API_IMAGE_HOSTS.findIndex(
+    (h) => h.toLowerCase() === m[1].toLowerCase()
+  );
+  if (idx < 0 || idx + 1 >= NHENTAI_API_IMAGE_HOSTS.length) return null;
+  return `${NHENTAI_API_IMAGE_HOSTS[idx + 1]}${m[2]}`;
+}
