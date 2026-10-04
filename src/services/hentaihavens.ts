@@ -219,7 +219,7 @@ export async function resolveHentaiHavenEpisodeUrls(
     'Accept-Language': 'en-US,en;q=0.9',
     Accept: 'text/html,application/xhtml+xml',
   };
-  const fetchHtml = async (url: string, ms: number): Promise<string | null> => {
+  const fetchHtml = async (url: string, ms: number, label: string): Promise<string | null> => {
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), ms);
     const onAbort = () => ctrl.abort();
@@ -228,23 +228,33 @@ export async function resolveHentaiHavenEpisodeUrls(
       // Dogrudan koparsa kayitli worker varsa tek seferlik oradan denenir.
       const res = await proxyService.fetchWithFallback(url, { headers, signal: ctrl.signal }, ms);
       clearTimeout(timeout);
-      if (!res.ok) return null;
+      if (!res.ok) {
+        console.warn('[HentaiHaven] HTTP ' + res.status + ' (' + label + ')');
+        return null;
+      }
       return await res.text();
-    } catch {
+    } catch (e: any) {
       clearTimeout(timeout);
+      console.warn('[HentaiHaven] ağ hatası (' + label + '): ' + (e?.message || e));
       return null;
     }
   };
 
-  const seriesHtml = await fetchHtml(post.sourceLink, 10000);
+  const seriesHtml = await fetchHtml(post.sourceLink, 10000, 'seri');
   if (!seriesHtml) return null;
   const episodes = parseHentaiHavenEpisodes(seriesHtml, post.sourceLink);
-  if (episodes.length === 0) return null;
+  if (episodes.length === 0) {
+    console.warn('[HentaiHaven] bölüm bulunamadı');
+    return null;
+  }
   const baseM = post.sourceLink.match(/^https?:\/\/[^/]+/i);
   const epUrl = (baseM ? baseM[0] : HENTAIHAVEN_BASE) + episodes[0].url;
-  const epHtml = await fetchHtml(epUrl, 10000);
+  const epHtml = await fetchHtml(epUrl, 10000, 'bölüm');
   if (!epHtml) return null;
   const files = parseHentaiHavenEpisodeDetail(epHtml);
-  if (!files.hls) return null;
+  if (!files.hls) {
+    console.warn('[HentaiHaven] HLS bulunamadı');
+    return null;
+  }
   return files;
 }
