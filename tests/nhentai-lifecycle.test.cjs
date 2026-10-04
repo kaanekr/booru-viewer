@@ -55,6 +55,17 @@ test('nhentaiApiSort maps sort option + time range to v2 sort values', () => {
   assert.equal(nh.nhentaiApiSort(undefined, undefined), 'date');
 });
 
+test('nhentaiApiHeaders mimics Safari (no Referer, no encoding override)', () => {
+  const nh = loadNHentai();
+  const h = nh.nhentaiApiHeaders();
+  assert.ok(h['User-Agent'].includes('Safari/'), 'tam Safari formu');
+  assert.ok(!('Referer' in h), 'doğrudan gezinme gibi Referer yok');
+  assert.ok(!('Accept-Encoding' in h), 'RN varsayılan sıkıştırma akışı kullanılır');
+  assert.equal(h['Accept'], 'application/json,*/*');
+  const withExtra = nh.nhentaiApiHeaders({ 'Content-Type': 'application/json' });
+  assert.equal(withExtra['Content-Type'], 'application/json');
+});
+
 test('buildNHentaiApiCandidates builds v2 feed, popular and search urls according to docs', () => {
   const nh = loadNHentai();
   assert.equal(nh.NHENTAI_API_BASE, 'https://nhentai.net/api/v2');
