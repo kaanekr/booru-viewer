@@ -64,7 +64,7 @@ import {
   selectPrimaryVideoCandidate,
 } from '../utils/media';
 import { resolveSexComVideoUrls, selectSexComPlayable } from '../services/sexcom';
-import { resolveHentaiHavenEpisodeUrls } from '../services/hentaihavens';
+import { resolveHentaiHavenEpisodeUrls, listHentaiHavenEpisodes, resolveHentaiHavenEpisodeUrl, HentaiHavenEpisode } from '../services/hentaihavens';
 
 const { width: DEFAULT_SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -588,6 +588,10 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const [pornhubWebviewOn, setPornhubWebviewOn] = useState(false);
   const [videoResolveFailed, setVideoResolveFailed] = useState(false);
   const [realDims, setRealDims] = useState<{ w: number; h: number } | null>(null);
+  // HentaiHaven: seri karti -> bolum listesi + secili bolum (EP secici).
+  const [hhEpisodes, setHhEpisodes] = useState<HentaiHavenEpisode[]>([]);
+  const [hhActiveEp, setHhActiveEp] = useState<number | null>(null);
+  const [hhEpLoading, setHhEpLoading] = useState(false);
   const [isZoomed, setIsZoomed] = useState(false);
   const [hasUpgradedToFull, setHasUpgradedToFull] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -735,6 +739,50 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     };
   }, [isActive, suspended, resolveNonce, post.id, post.sourceId, post.sourceLink, post.originalUrl, post.sampleUrl]);
 
+  // HentaiHaven: seri kartindaki tum bolumler (EP secici icin, tek seferlik).
+  // Ilk acilista zaten en yeni bolum cozulur; liste gelince secim ona sabitlenir.
+  useEffect(() => {
+    if (post.sourceId !== 'hentaihaven' || !isActive || suspended || !post.sourceLink) return;
+    let alive = true;
+    const ctrl = new AbortController();
+    listHentaiHavenEpisodes(post, ctrl.signal)
+      .then((eps) => {
+        if (!alive || eps.length === 0) return;
+        setHhEpisodes(eps);
+        setHhActiveEp((cur) => (cur === null ? eps[0].ep : cur));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      ctrl.abort();
+    };
+  }, [isActive, suspended, post.id, post.sourceId, post.sourceLink]);
+
+  const handleSelectHhEpisode = useCallback(
+    (ep: HentaiHavenEpisode) => {
+      if (hhEpLoading || ep.ep === hhActiveEp) return;
+      const baseM = post.sourceLink?.match(/^https?:\/\/[^/]+/i);
+      const base = baseM ? baseM[0] : 'https://hentaihaven.xxx';
+      const url = base + ep.url;
+      setHhActiveEp(ep.ep);
+      setHhEpLoading(true);
+      setResolvedOriginalUrl(null);
+      resolveHentaiHavenEpisodeUrl(url)
+        .then((files) => {
+          const playable = files?.hls || files?.mp4;
+          if (playable) {
+            console.log('[Viewer] hentaihaven bölüm çözüldü, oynatılıyor (EP ' + ep.ep + ')');
+            setResolvedOriginalUrl(playable);
+          } else {
+            console.warn('[Viewer] hentaihaven bölüm çözülemedi, kapak kalıyor (EP ' + ep.ep + ')');
+          }
+        })
+        .catch(() => {})
+        .finally(() => setHhEpLoading(false));
+    },
+    [hhEpLoading, hhActiveEp, post.sourceLink]
+  );
+
   // Sigorta: fetch + WebView toplamı 30 sn'yi geçerse spinner'ı öldürüp
   // Tekrar Dene kartını göster. (Asılı bağlantıda hiçbir dal sonlanmayabiliyordu.)
   useEffect(() => {
@@ -753,6 +801,9 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     setPornhubWebviewOn(false);
     setVideoResolveFailed(false);
     setResolveNonce(0);
+    setHhEpisodes([]);
+    setHhActiveEp(null);
+    setHhEpLoading(false);
     setHasUpgradedToFull(false);
     setSampleLoading(true);
     setSampleLoaded(false);
@@ -1269,6 +1320,39 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                       </TouchableOpacity>
                     </View>
                   </View>
+                </View>
+              ) : null}
+              {/* HentaiHaven EP secici: serideki tum bolumler, alta yatay serit */}
+              {post.sourceId === 'hentaihaven' &&
+              isActive &&
+              !suspended &&
+              hhEpisodes.length > 1 ? (
+                <View style={styles.hhEpisodeBar} pointerEvents="box-none">
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.hhEpisodeRow}
+                  >
+                    {hhEpisodes.map((ep) => {
+                      const selected = ep.ep === (hhActiveEp ?? hhEpisodes[0].ep);
+                      return (
+                        <TouchableOpacity
+                          key={ep.url}
+                          style={[styles.hhEpisodeChip, selected && styles.hhEpisodeChipSelected]}
+                          activeOpacity={0.7}
+                          disabled={hhEpLoading}
+                          onPress={() => handleSelectHhEpisode(ep)}
+                        >
+                          <Text style={[styles.hhEpisodeText, selected && styles.hhEpisodeTextSelected]}>
+                            EP {ep.ep}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                    {hhEpLoading ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" style={{ marginLeft: 6 }} />
+                    ) : null}
+                  </ScrollView>
                 </View>
               ) : null}
             </>
@@ -2230,5 +2314,39 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.65)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  // HentaiHaven EP secici: video kontrollerinin ustunde yuzer yatay serit.
+  hhEpisodeBar: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 96,
+    zIndex: 20,
+  },
+  hhEpisodeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  hhEpisodeChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 16,
+    backgroundColor: 'rgba(20, 22, 30, 0.85)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.18)',
+    marginRight: 8,
+  },
+  hhEpisodeChipSelected: {
+    backgroundColor: Colors.dark.primary,
+    borderColor: Colors.dark.primary,
+  },
+  hhEpisodeText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  hhEpisodeTextSelected: {
+    color: '#FFFFFF',
   },
 });

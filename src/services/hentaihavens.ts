@@ -264,40 +264,69 @@ export function parseHentaiHavenEpisodeDetail(html: string): HentaiHavenFiles {
  * Akis URL'leri sureli olabilir; BILINCLI olarak cache'lenmez -
  * her viewer acilisinda taze cozulur.
  */
-export async function resolveHentaiHavenEpisodeUrls(
-  post: { sourceLink?: string },
+async function fetchHentaiHtml(
+  url: string,
+  ms: number,
+  label: string,
   signal?: AbortSignal
-): Promise<HentaiHavenFiles | null> {
-  if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
-
+): Promise<string | null> {
   const headers = {
     'User-Agent': HENTAIHAVEN_UA,
     Referer: HENTAIHAVEN_BASE + '/',
     'Accept-Language': 'en-US,en;q=0.9',
     Accept: 'text/html,application/xhtml+xml',
   };
-  const fetchHtml = async (url: string, ms: number, label: string): Promise<string | null> => {
-    const ctrl = new AbortController();
-    const timeout = setTimeout(() => ctrl.abort(), ms);
-    const onAbort = () => ctrl.abort();
-    if (signal) signal.addEventListener('abort', onAbort, { once: true });
-    try {
-      // Dogrudan koparsa kayitli worker varsa tek seferlik oradan denenir.
-      const res = await proxyService.fetchWithFallback(url, { headers, signal: ctrl.signal }, ms);
-      clearTimeout(timeout);
-      if (!res.ok) {
-        console.warn('[HentaiHaven] HTTP ' + res.status + ' (' + label + ')');
-        return null;
-      }
-      return await res.text();
-    } catch (e: any) {
-      clearTimeout(timeout);
-      console.warn('[HentaiHaven] ağ hatası (' + label + '): ' + (e?.message || e));
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), ms);
+  const onAbort = () => ctrl.abort();
+  if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  try {
+    // Dogrudan koparsa kayitli worker varsa tek seferlik oradan denenir.
+    const res = await proxyService.fetchWithFallback(url, { headers, signal: ctrl.signal }, ms);
+    clearTimeout(timeout);
+    if (!res.ok) {
+      console.warn('[HentaiHaven] HTTP ' + res.status + ' (' + label + ')');
       return null;
     }
-  };
+    return await res.text();
+  } catch (e: any) {
+    clearTimeout(timeout);
+    console.warn('[HentaiHaven] ağ hatası (' + label + '): ' + (e?.message || e));
+    return null;
+  }
+}
 
-  const seriesHtml = await fetchHtml(post.sourceLink, 10000, 'seri');
+/** Seri sayfasindaki bolum listesi (en yeni ilk). Izleyicideki EP secici icin. */
+export async function listHentaiHavenEpisodes(
+  post: { sourceLink?: string },
+  signal?: AbortSignal
+): Promise<HentaiHavenEpisode[]> {
+  if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return [];
+  const html = await fetchHentaiHtml(post.sourceLink, 10000, 'seri', signal);
+  if (!html || isChallengeHtml(html)) return [];
+  return parseHentaiHavenEpisodes(html, post.sourceLink);
+}
+
+/** Tek bolum sayfasindan oynatilabilir dosya (EP secici degisiminde). */
+export async function resolveHentaiHavenEpisodeUrl(
+  episodeUrl: string,
+  signal?: AbortSignal
+): Promise<HentaiHavenFiles | null> {
+  if (!episodeUrl || !/^https?:\/\//i.test(episodeUrl)) return null;
+  const html = await fetchHentaiHtml(episodeUrl, 10000, 'bölüm', signal);
+  if (!html || isChallengeHtml(html)) return null;
+  const files = parseHentaiHavenEpisodeDetail(html);
+  if (!files.hls && !files.mp4) return null;
+  return files;
+}
+
+export async function resolveHentaiHavenEpisodeUrls(
+  post: { sourceLink?: string },
+  signal?: AbortSignal
+): Promise<HentaiHavenFiles | null> {
+  if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
+
+  const seriesHtml = await fetchHentaiHtml(post.sourceLink, 10000, 'seri', signal);
   if (!seriesHtml) return null;
   if (isChallengeHtml(seriesHtml)) {
     console.warn('[HentaiHaven] doğrulama duvarı (seri)');
@@ -310,7 +339,7 @@ export async function resolveHentaiHavenEpisodeUrls(
   }
   const baseM = post.sourceLink.match(/^https?:\/\/[^/]+/i);
   const epUrl = (baseM ? baseM[0] : HENTAIHAVEN_BASE) + episodes[0].url;
-  const epHtml = await fetchHtml(epUrl, 10000, 'bölüm');
+  const epHtml = await fetchHentaiHtml(epUrl, 10000, 'bölüm', signal);
   if (!epHtml) return null;
   if (isChallengeHtml(epHtml)) {
     console.warn('[HentaiHaven] doğrulama duvarı (bölüm)');

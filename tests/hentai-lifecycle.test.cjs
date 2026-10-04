@@ -149,6 +149,13 @@ test('finds VideoObject when earlier json-ld blocks lack contentUrl (real page s
   assert.equal(files.durationSec, 940);
 });
 
+test('episode helpers are exported for the viewer EP selector', () => {
+  const hh = loadHentai();
+  assert.equal(typeof hh.listHentaiHavenEpisodes, 'function');
+  assert.equal(typeof hh.resolveHentaiHavenEpisodeUrl, 'function');
+  assert.equal(typeof hh.resolveHentaiHavenEpisodeUrls, 'function');
+});
+
 test('falls back to player source tag and detects challenge pages', () => {
   const hh = loadHentai();
   const sourceOnly = '<html><body><video preload="none"><source src="https://octopusmanifest.org/abc/playlist.m3u8" type="application/vnd.apple.mpegurl"/></video></body></html>';
