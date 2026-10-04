@@ -82,6 +82,14 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     description: 'Popüler video platformu araması (resmi Webmasters API)',
     isSafeOnly: false,
   },
+  {
+    id: 'sexcom',
+    name: 'Sex.com',
+    baseUrl: 'https://www.sex.com',
+    type: 'sexcom',
+    description: 'Popüler video platformu araması (önizlemeli klipler)',
+    isSafeOnly: false,
+  },
 ];
 
 export const DEFAULT_SOURCE: BooruSource = AVAILABLE_SOURCES[0];

@@ -346,6 +346,8 @@ export function getMediaHeaders(url: string | undefined): Record<string, string>
     headers['Referer'] = 'https://xhamster.com/';
   } else if (target.includes('pornhub.com') || target.includes('phncdn.com')) {
     headers['Referer'] = 'https://www.pornhub.com/';
+  } else if (target.includes('sex.com') || target.includes('sxccdn.com')) {
+    headers['Referer'] = 'https://www.sex.com/';
   } else if (target.includes('redgifs.com')) {
     // RedGifs CDN (media.redgifs.com) Referer olmadan 403 dönebiliyor
     headers['Referer'] = 'https://www.redgifs.com/';
@@ -577,6 +579,27 @@ export function getVideoCandidates(
   };
 
   return videoUrls.sort((a, b) => getPriority(b) - getPriority(a));
+}
+
+/**
+ * Birincil oynatılabilir aday seçimi (viewer + testler için tek kaynak).
+ * Çözülmüş orijinal URL önceliklidir ANCAK iOS'ta açılamayan bir formatsa
+ * (örn. WebM) atlanır — yoksa guard listedeki oynatılabilir bir adayı görüp
+ * geçerken oynatıcıya desteklenmeyen URL gider (AVFoundation -11828).
+ * Hepsi desteklenmiyorsa webm döner; çağıran taraftaki webm-guard + mp4
+ * yükseltme akışı devreye girer.
+ */
+export function selectPrimaryVideoCandidate(
+  resolvedOriginalUrl: string | null | undefined,
+  videoCandidates: string[],
+  fallbackUrl: string
+): string {
+  const usable =
+    resolvedOriginalUrl &&
+    !(Platform.OS === 'ios' && isUnsupportedOnIOS(resolvedOriginalUrl))
+      ? resolvedOriginalUrl
+      : '';
+  return usable || (videoCandidates.length > 0 ? videoCandidates[0] : fallbackUrl);
 }
 
 /**

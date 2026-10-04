@@ -33,6 +33,7 @@ import {
   DEFAULT_FILTER_CONFIG,
 } from '../types/booru';
 import { booruApi } from '../services/booruApi';
+import { dayDateOptions, weekDateOptions, monthDateOptions, describeAnchor } from '../utils/leaderboardPeriods';
 import { AVAILABLE_SOURCES } from '../services/sources';
 import { useSource } from '../context/SourceContext';
 import { TagChip } from './TagChip';
@@ -81,6 +82,10 @@ const PORNHUB_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[]
   { label: 'Oy Oranı', value: 'rating', desc: 'En Beğenilenler' },
 ];
 
+const SEXCOM_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
+  { label: '---', value: 'default', desc: 'Varsayılan (Öne Çıkanlar)' },
+];
+
 const CUMST_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
   { label: 'Score (Popülerlik)', value: 'score', desc: 'En Çok Kaydedilenler / Liderlik' },
   { label: 'Id (En Yeniler)', value: 'id', desc: 'Son Eklenen Gönderiler' },
@@ -123,38 +128,6 @@ const MIN_SCORE_OPTIONS: { label: string; value: number | undefined }[] = [
   { label: '100+ Puan', value: 100 },
   { label: '500+ Puan', value: 500 },
 ];
-
-function getHistoricalDateOptions(): { label: string; value: string | undefined }[] {
-  const now = new Date();
-  const pad = (n: number) => (n < 10 ? `0${n}` : `${n}`);
-  const formatDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-
-  const subDays = (days: number) => {
-    const d = new Date(now);
-    d.setDate(d.getDate() - days);
-    return formatDate(d);
-  };
-
-  const subMonths = (months: number) => {
-    const d = new Date(now);
-    d.setMonth(d.getMonth() - months);
-    return formatDate(d);
-  };
-
-  return [
-    { label: 'Bugün / En Güncel', value: undefined },
-    { label: `Dün (${subDays(1)})`, value: subDays(1) },
-    { label: `2 Gün Önce (${subDays(2)})`, value: subDays(2) },
-    { label: `3 Gün Önce (${subDays(3)})`, value: subDays(3) },
-    { label: `1 Hafta Önce (${subDays(7)})`, value: subDays(7) },
-    { label: `2 Hafta Önce (${subDays(14)})`, value: subDays(14) },
-    { label: `1 Ay Önce (${subMonths(1)})`, value: subMonths(1) },
-    { label: `2 Ay Önce (${subMonths(2)})`, value: subMonths(2) },
-    { label: `3 Ay Önce (${subMonths(3)})`, value: subMonths(3) },
-    { label: `6 Ay Önce (${subMonths(6)})`, value: subMonths(6) },
-    { label: `1 Yıl Önce (${subMonths(12)})`, value: subMonths(12) },
-  ];
-}
 
 interface SearchFilterModalProps {
   visible: boolean;
@@ -338,6 +311,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
       const opt = PORNHUB_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
       return opt ? opt.label : '---';
     }
+    if (activeSource.type === 'sexcom') {
+      const opt = SEXCOM_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
+      return opt ? opt.label : '---';
+    }
     if (activeSource.type === 'cumst') {
       const opt = CUMST_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
       return opt ? opt.label : '---';
@@ -371,10 +348,22 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
     return opt ? opt.label : 'Hepsi';
   };
 
-  const getDateLabel = () => {
-    if (!draft.leaderboardDate) return 'Bugün / En Güncel';
-    return draft.leaderboardDate;
-  };
+  const getDateLabel = () => describeAnchor(draft.leaderboardDate, draft.timeRange);
+
+  // Tarih seçici, aktif zaman dilimine göre periyoda uygun slot sunar:
+  // haftalık modda haftalar, aylık modda aylar, diğerlerinde günler.
+  const dateSlots =
+    draft.timeRange === '1w'
+      ? weekDateOptions()
+      : draft.timeRange === '1m'
+        ? monthDateOptions()
+        : dayDateOptions();
+  const datePickerTitle =
+    draft.timeRange === '1w'
+      ? 'Hafta Seçimi'
+      : draft.timeRange === '1m'
+        ? 'Ay Seçimi'
+        : 'Geçmiş Tarih Seçimi';
 
   return (
     <Modal
@@ -690,7 +679,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                     </View>
                   </TouchableOpacity>
                 </>
-              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' ? null : (
+              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' ? null : (
                 <>
                   <View style={styles.rowDivider} />
 
@@ -784,6 +773,8 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                       ? XHAMSTER_SORT_OPTIONS
                       : activeSource.type === 'pornhub'
                       ? PORNHUB_SORT_OPTIONS
+                      : activeSource.type === 'sexcom'
+                      ? SEXCOM_SORT_OPTIONS
                       : activeSource.type === 'cumst'
                       ? CUMST_SORT_OPTIONS
                       : SORT_OPTIONS
@@ -1096,10 +1087,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
             <View style={styles.modalOverlay}>
               <TouchableWithoutFeedback>
                 <View style={[styles.popoverCard, { maxHeight: '80%' }]}>
-                  <Text style={styles.popoverTitle}>Geçmiş Tarih Seçimi</Text>
+                  <Text style={styles.popoverTitle}>{datePickerTitle}</Text>
                   <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={true}>
                     <View style={styles.popoverList}>
-                      {getHistoricalDateOptions().map((opt, idx) => {
+                      {dateSlots.map((opt, idx) => {
                         const isSelected = draft.leaderboardDate === opt.value;
                         return (
                           <TouchableOpacity
@@ -1111,6 +1102,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                                 ...prev,
                                 leaderboardDate: opt.value,
                                 sortBy: opt.value ? 'score' : prev.sortBy,
+                                // Tarih seçimi periyodun zamanını da seçer:
+                                // haftalık slot haftalık liderliği, aylık slot
+                                // aylık liderliği açar. Temizlemede aynen kalır.
+                                timeRange: opt.value ? opt.range : prev.timeRange,
                               }));
                               setShowDateAnchorPicker(false);
                             }}
