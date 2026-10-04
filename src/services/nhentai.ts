@@ -66,13 +66,9 @@ export interface NHentaiGalleryDetail {
 }
 
 /**
- * Arama ve Keşfet URL adayları (önce nhentai.xxx aynası, sonra net).
- * sort: 'popular' -> en çok favorilenenler (mirror'un desteklediği tek sıralama).
- *
- * Not: mirror ana sayfada (?page=N) sort parametresini yok sayar (canlı doğrulandı:
- * `/?page=1&sort=popular` ile `/?page=1` bayt-bayt aynı). Bu yüzden etiketsiz
- * popüler istek search endpoint'ine (`/search/?key=%20&sort=popular`) yönlenir;
- * etiketsiz latest ise ana sayfa pagination'ını kullanır (`/` + `/?page=N`).
+ * Arama ve Keşfet URL adayları (nhentai.xxx aynası).
+ * Not: Eski v1 API endpoint'leri (/api/galleries/all) 404/403 döndürdüğü için
+ * kaldırıldı; sadece çalışan ayna HTML sayfaları kullanılır (hızlı ve takılmasız).
  */
 export function buildNHentaiSearchCandidates(
   baseUrl: string,
@@ -86,24 +82,15 @@ export function buildNHentaiSearchCandidates(
   const wantPopular = sort === 'popular';
   if (!q) {
     if (wantPopular) {
-      return [
-        `${base}/search/?key=%20&page=${p}&sort=popular`,
-        `${base}/api/galleries/all?page=${p}`,
-        `https://nhentai.net/api/galleries/all?page=${p}`,
-      ];
+      return [`${base}/search/?key=%20&page=${p}&sort=popular`];
     }
-    return [
-      p <= 1 ? `${base}/` : `${base}/?page=${p}`,
-      `${base}/api/galleries/all?page=${p}`,
-      `https://nhentai.net/api/galleries/all?page=${p}`,
-    ];
+    return [p <= 1 ? `${base}/` : `${base}/?page=${p}`];
   }
   const encoded = encodeURIComponent(q);
   const sortSuffix = wantPopular ? '&sort=popular' : '';
   return [
     `${base}/search/?key=${encoded}&page=${p}${sortSuffix}`,
     `${base}/search/?q=${encoded}&page=${p}${sortSuffix}`,
-    `https://nhentai.net/api/galleries/search?query=${encoded}&page=${p}`,
   ];
 }
 
@@ -123,32 +110,37 @@ export function nhentaiApiSort(sortBy?: string, timeRange?: string): string {
 }
 
 /**
- * v2 API aday URL'leri. Skor (favori sayısı) ve zaman aralıklı popülerlik
- * yalnız burada var; mirror HTML'inde yoktur.
- * Not: `/galleries/popular` sayfalı değildir (page parametresi yok sayılıyor,
- * canlı doğrulandı) — bu yüzden popüler akışta yalnız 1. sayfa API'den gelir.
+ * v2 API aday URL'leri (resmi dokümantasyona göre: https://nhentai.net/api/v2/docs).
+ * - En yeniler (filtresiz): GET /api/v2/galleries?page={p}&per_page=25
+ * - Popüler akış (kelimesiz): GET /api/v2/search?query=*&sort={sort}&page={p}
+ *   (dokümana göre query=* tüm arşivi döner; 650.000+ galeri sayfalanabilir).
+ * - Arama: GET /api/v2/search?query={q}&sort={sort}&page={p}
+ *   (doküman: keywords, "exact phrase", -negation, artist:x, tag:x, favorites:>=X).
  */
 export function buildNHentaiApiCandidates(
   page: number,
   keyword: string,
-  sort: string = 'date'
+  sort: string = 'date',
+  minScore?: number
 ): string[] {
   const p = Math.max(1, page);
-  const q = (keyword || '').trim();
+  let q = (keyword || '').trim();
+
+  // Sunucu tarafı favori (skor) filtresi: API dokümantasyonu `favorites:>=100` destekler
+  if (minScore && minScore > 0 && !q.includes('favorites:')) {
+    q = q ? `${q} favorites:>=${minScore}` : `favorites:>=${minScore}`;
+  }
+
   if (!q) {
     if (sort !== 'date') {
-      return p <= 1 ? [`${NHENTAI_API_BASE}/galleries/popular`] : [];
+      // Kelimesiz popüler akış: query=* ile tüm arşiv popülerliğe göre sayfalanır (25/sayfa)
+      return [`${NHENTAI_API_BASE}/search?query=*&sort=${sort}&page=${p}`];
     }
-    return [`${NHENTAI_API_BASE}/galleries?page=${p}`];
+    return [`${NHENTAI_API_BASE}/galleries?page=${p}&per_page=25`];
   }
-  // v2 dışlama destekliyor (-etiket), meta operatörlerini (< > :) atıyoruz
-  const tokens = q
-    .split(/\s+/)
-    .map((t) => t.trim())
-    .filter((t) => t && !/[<>:{}[\]()|\\^$*]/.test(t));
-  if (tokens.length === 0) return [];
+
   return [
-    `${NHENTAI_API_BASE}/search?query=${encodeURIComponent(tokens.join(' '))}&sort=${sort}&page=${p}`,
+    `${NHENTAI_API_BASE}/search?query=${encodeURIComponent(q)}&sort=${sort}&page=${p}`,
   ];
 }
 
@@ -825,50 +817,54 @@ function nhentaiTagCategory(type: string): TagCategory {
   }
 }
 
-/** v2 etiket araması (gerçek gönderi sayılarıyla). */
+/**
+ * v2 etiket araması (resmi POST /api/v2/tags/search endpoint'i).
+ * Tek çağrıda tüm türleri (parody, character, artist, group, tag) gerçek gönderi
+ * sayılarıyla döner.
+ */
 export async function searchNHentaiApiTags(
   query: string,
-  types: string[] = ['tag', 'artist', 'character', 'parody'],
   limit: number = 12
 ): Promise<BooruTagSuggestion[]> {
   const q = (query || '').trim();
   if (!q) return [];
-  const out: BooruTagSuggestion[] = [];
-  const seen = new Set<string>();
-  await Promise.all(
-    types.map(async (type) => {
-      try {
-        const url = `${NHENTAI_API_BASE}/tags/${encodeURIComponent(type)}?search=${encodeURIComponent(q)}&sort=popular&per_page=${Math.min(
-          25,
-          Math.max(5, limit)
-        )}`;
-        const res = await proxyService.fetchWithFallback(
-          url,
-          { headers: { 'User-Agent': NHENTAI_UA, Accept: 'application/json' } },
-          4000
-        );
-        if (!res.ok) return;
-        const data = await res.json();
-        const list = Array.isArray(data?.result) ? data.result : [];
-        for (const t of list) {
-          const name = decodeEntities(String(t?.name || '')).trim();
-          if (!name || seen.has(name.toLowerCase())) continue;
-          seen.add(name.toLowerCase());
-          out.push({
-            name,
-            category: nhentaiTagCategory(String(t?.type || type)),
-            postCount: Number(t?.count) || 0,
-          });
-        }
-      } catch {}
-    })
-  );
-  return out.slice(0, limit);
+  try {
+    const url = `${NHENTAI_API_BASE}/tags/search`;
+    const res = await proxyService.fetchWithFallback(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'User-Agent': NHENTAI_UA,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify({ query: q, limit: Math.min(50, Math.max(5, limit)) }),
+      },
+      5000
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    if (!Array.isArray(data)) return [];
+    return data
+      .map((t: any) => {
+        const name = decodeEntities(String(t?.name || '')).trim();
+        if (!name) return null;
+        return {
+          name,
+          category: nhentaiTagCategory(String(t?.type || 'tag')),
+          postCount: Number(t?.count) || 0,
+        };
+      })
+      .filter(Boolean) as BooruTagSuggestion[];
+  } catch {
+    return [];
+  }
 }
 
 /**
  * nhentai etiket araması / otomatik tamamlama.
- * Sıra: yerel havuz (anında) -> v2 API (gerçek sayılar) -> mirror /tags/ scrape.
+ * Sıra: yerel havuz (anında) -> resmi v2 POST /api/v2/tags/search -> ayna /tags/ scrape.
  */
 export async function searchNHentaiTags(
   query: string,
@@ -889,9 +885,9 @@ export async function searchNHentaiTags(
     }
   }
 
-  // 2. v2 API etiket araması (gerçek gönderi sayıları, kategori tipleri)
+  // 2. Resmi v2 API etiket araması (POST /api/v2/tags/search)
   if (results.length < limit) {
-    const apiResults = await searchNHentaiApiTags(q, ['tag', 'artist', 'character', 'parody'], limit);
+    const apiResults = await searchNHentaiApiTags(q, limit);
     for (const r of apiResults) {
       if (seen.has(r.name.toLowerCase())) continue;
       seen.add(r.name.toLowerCase());

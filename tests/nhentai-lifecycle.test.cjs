@@ -48,7 +48,6 @@ test('buildNHentaiSearchCandidates builds feed and search URLs with paging', () 
   const nh = loadNHentai();
   const feed = nh.buildNHentaiSearchCandidates('https://nhentai.xxx', 1, '');
   assert.equal(feed[0], 'https://nhentai.xxx/');
-  assert.equal(feed[1], 'https://nhentai.xxx/api/galleries/all?page=1');
 
   const feed2 = nh.buildNHentaiSearchCandidates('https://nhentai.xxx', 2, '');
   assert.equal(feed2[0], 'https://nhentai.xxx/?page=2');
@@ -85,24 +84,26 @@ test('nhentaiApiSort maps sort option + time range to v2 sort values', () => {
   assert.equal(nh.nhentaiApiSort(undefined, undefined), 'date');
 });
 
-test('buildNHentaiApiCandidates builds v2 feed, popular and search urls', () => {
+test('buildNHentaiApiCandidates builds v2 feed, popular and search urls according to docs', () => {
   const nh = loadNHentai();
   assert.equal(nh.NHENTAI_API_BASE, 'https://nhentai.net/api/v2');
 
   const feed = nh.buildNHentaiApiCandidates(2, '', 'date');
-  assert.equal(feed.join('|'), 'https://nhentai.net/api/v2/galleries?page=2');
+  assert.equal(feed[0], 'https://nhentai.net/api/v2/galleries?page=2&per_page=25');
 
+  // Dokümana göre query=* tüm arşivi döner ve her sort türü için sayfalanabilir (25/sayfa)
   const popular = nh.buildNHentaiApiCandidates(1, '', 'popular');
-  assert.equal(popular.join('|'), 'https://nhentai.net/api/v2/galleries/popular');
-  // popular endpoint sayfalı değil -> derin sayfalar API'ye gitmez
-  assert.equal(nh.buildNHentaiApiCandidates(2, '', 'popular').length, 0);
+  assert.equal(popular[0], 'https://nhentai.net/api/v2/search?query=*&sort=popular&page=1');
+
+  const popularPage3 = nh.buildNHentaiApiCandidates(3, '', 'popular-week');
+  assert.equal(popularPage3[0], 'https://nhentai.net/api/v2/search?query=*&sort=popular-week&page=3');
 
   const search = nh.buildNHentaiApiCandidates(3, 'big breasts', 'popular-week');
   assert.equal(search[0], 'https://nhentai.net/api/v2/search?query=big%20breasts&sort=popular-week&page=3');
 
-  // meta operatörleri temizlenir, normal kelimeler korunur
-  const cleaned = nh.buildNHentaiApiCandidates(1, 'score:>50 naruto <3', 'date');
-  assert.equal(cleaned[0], 'https://nhentai.net/api/v2/search?query=naruto&sort=date&page=1');
+  // Doküman: favorites:>=N yerel desteklenir, query sonuna otomatik eklenir
+  const withMinScore = nh.buildNHentaiApiCandidates(1, 'naruto', 'popular', 1000);
+  assert.equal(withMinScore[0], 'https://nhentai.net/api/v2/search?query=naruto%20favorites%3A%3E%3D1000&sort=popular&page=1');
 });
 
 test('parseNHentaiV2Listing maps num_favorites to score and favCount', () => {
@@ -481,6 +482,42 @@ test('searchNHentaiTags returns instant autocomplete suggestions with categories
 
   const empty = await nh.searchNHentaiTags('');
   assert.equal(empty.length, 0);
+});
+
+test('searchNHentaiApiTags uses official POST /api/v2/tags/search', async () => {
+  let requestedUrl = '';
+  let requestMethod = '';
+  let requestBody = '';
+  const customFetch = async (url, opts) => {
+    requestedUrl = url;
+    requestMethod = opts?.method;
+    requestBody = opts?.body;
+    return {
+      ok: true,
+      json: async () => [
+        { id: 2197, type: 'parody', name: 'naruto', slug: 'naruto', count: 2197 },
+        { id: 1089, type: 'character', name: 'naruto uzumaki', slug: 'naruto-uzumaki', count: 1089 },
+        { id: 15, type: 'artist', name: 'naruto artist', slug: 'naruto-artist', count: 12 },
+      ],
+    };
+  };
+
+  const nh = loadNHentai(customFetch);
+  const tags = await nh.searchNHentaiApiTags('naruto', 10);
+  assert.equal(requestedUrl, 'https://nhentai.net/api/v2/tags/search');
+  assert.equal(requestMethod, 'POST');
+  assert.deepEqual(JSON.parse(requestBody), { query: 'naruto', limit: 10 });
+
+  assert.equal(tags.length, 3);
+  assert.equal(tags[0].name, 'naruto');
+  assert.equal(tags[0].category, 'copyright');
+  assert.equal(tags[0].postCount, 2197);
+
+  assert.equal(tags[1].name, 'naruto uzumaki');
+  assert.equal(tags[1].category, 'character');
+
+  assert.equal(tags[2].name, 'naruto artist');
+  assert.equal(tags[2].category, 'artist');
 });
 
 test('resolveNHentaiGalleryDetail resolves pages and categorized tags together', async () => {
