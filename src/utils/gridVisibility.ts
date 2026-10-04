@@ -100,3 +100,140 @@ export function useMountedIds(overscan: number = 1500) {
 
   return [mountedIds, updateMounted] as const;
 }
+
+/**
+ * Ekrandaki kartlar arasından ekran merkezine en yakın `maxActive` (varsayılan 4)
+ * kartın id setini döner. 2 sütunlu ızgarada hem sol hem sağ sütundaki
+ * aktif kartlar canlı önizleme videosunu akıcı şekilde oynatır.
+ */
+export function computeFocusedCardIds(
+  layouts: Map<string, CardLayout>,
+  offsetY: number,
+  viewportH: number,
+  playableIds?: Set<string>,
+  maxActive: number = 4
+): Set<string> {
+  const centerY = offsetY + viewportH / 2;
+  const candidates: { id: string; dist: number }[] = [];
+
+  layouts.forEach((layout, id) => {
+    if (playableIds && !playableIds.has(id)) return;
+    // Kart ekran sınırları içinde olmalı
+    if (layout.y + layout.h >= offsetY && layout.y <= offsetY + viewportH) {
+      const cardCenterY = layout.y + layout.h / 2;
+      const dist = Math.abs(cardCenterY - centerY);
+      candidates.push({ id, dist });
+    }
+  });
+
+  candidates.sort((a, b) => a.dist - b.dist);
+  const activeIds = new Set<string>();
+  const count = Math.min(candidates.length, maxActive);
+  for (let i = 0; i < count; i++) {
+    activeIds.add(candidates[i].id);
+  }
+  return activeIds;
+}
+
+/**
+ * Tek odaklı kart hesabı:
+ * Ekranın dikey merkezine en yakın olan tek bir kartın id'sini döner.
+ */
+export function computeFocusedCardId(
+  layouts: Map<string, CardLayout>,
+  offsetY: number,
+  viewportH: number,
+  playableIds?: Set<string>
+): string | null {
+  const ids = computeFocusedCardIds(layouts, offsetY, viewportH, playableIds, 1);
+  return ids.values().next().value ?? null;
+}
+
+/**
+ * Odaklı kart kümesi kancası (2-4 aktif oyuncu bütçeli akış modeli):
+ * Ekrandaki kartlar arasından merkeze en yakın `maxActive` kartı seçer.
+ * Kaydırma sırasında debounce (80ms) uygular; böylece hızlı kaydırma
+ * esnasında gereksiz video oyuncu açılıp kapanmaz.
+ */
+export function useFocusedCardIds(debounceMs: number = 80, maxActive: number = 4) {
+  const [focusedIds, setFocusedIds] = useState<Set<string>>(new Set());
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const keyRef = useRef('');
+
+  const updateFocused = useCallback(
+    (
+      layouts: Map<string, CardLayout>,
+      offsetY: number,
+      viewportH: number,
+      playableIds?: Set<string>,
+      immediate?: boolean
+    ) => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+
+      const compute = () => {
+        const next = computeFocusedCardIds(layouts, offsetY, viewportH, playableIds, maxActive);
+        let key = '';
+        next.forEach((id) => {
+          key += id + ',';
+        });
+        if (key !== keyRef.current) {
+          keyRef.current = key;
+          setFocusedIds(next);
+        }
+      };
+
+      if (immediate) {
+        compute();
+      } else {
+        timerRef.current = setTimeout(compute, debounceMs);
+      }
+    },
+    [debounceMs, maxActive]
+  );
+
+  return [focusedIds, updateFocused] as const;
+}
+
+/**
+ * Tek odaklı kart takibi kancası (Instagram / Twitter tek oyuncu akış modeli):
+ * Ekrandaki kartlar arasından merkeze en yakın TEK kartı seçer.
+ * Kaydırma sırasında debounce (120ms) uygular; böylece hızlı kaydırma
+ * esnasında gereksiz video oyuncu açılıp kapanmaz (sıfır fırtına).
+ */
+export function useFocusedCardId(debounceMs: number = 120) {
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const updateFocused = useCallback(
+    (
+      layouts: Map<string, CardLayout>,
+      offsetY: number,
+      viewportH: number,
+      playableIds?: Set<string>,
+      immediate?: boolean
+    ) => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+
+      const compute = () => {
+        const next = computeFocusedCardId(layouts, offsetY, viewportH, playableIds);
+        setFocusedId(next);
+      };
+
+      if (immediate) {
+        compute();
+      } else {
+        timerRef.current = setTimeout(compute, debounceMs);
+      }
+    },
+    [debounceMs]
+  );
+
+  return [focusedId, updateFocused] as const;
+}
+

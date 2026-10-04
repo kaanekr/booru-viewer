@@ -25,8 +25,10 @@ interface PostCardProps {
   favoriteIds?: Set<string>;
   /** ScrollView iki sütunda adil yükleme için: kapı sol/sağ sırayla slot dağıtır */
   column?: GridColumn;
-  /** Görünürlük kancasından: true ise video kapak oynar, false ise durur */
+  /** Yalnız odaklı/aktif kart video açar; diğer kartlar slayt/kapak modunda kalır */
   videoActive?: boolean;
+  /** Kart ekranda mı? (Slayt/kare döngüsü için) */
+  onScreen?: boolean;
   /** Sekme/stack odağı kaybolunca dokunma önizlemesi dahil tüm medya durur. */
   screenActive?: boolean;
 }
@@ -59,6 +61,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   favoriteIds,
   column,
   videoActive = false,
+  onScreen,
   screenActive = true,
 }) => {
   // Kapı açılmadan resim mount olmaz: iki sütun bağlantı slotlarını adil paylaşır
@@ -121,8 +124,9 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   const secondaryThumb = post.previewThumbUrl;
 
   const hasPreview = Boolean(playablePreviewUrl || (previewThumbs && previewThumbs.length > 0) || secondaryThumb);
-  // Kart ekrandaysa (videoActive) veya kullanıcı karta dokunuyorsa önizleme aktif
-  const isPreviewActive = previewsEnabled && screenActive && ((videoActive && hasPreview) || touchPreviewActive);
+  // Kart ekrandaysa hafif slayt/kare döngüsü (sıfır native oyuncu); sadece odaklı kart video açar
+  const isCardVisible = onScreen ?? videoActive ?? false;
+  const isPreviewActive = previewsEnabled && screenActive && ((isCardVisible && hasPreview) || touchPreviewActive);
 
   const touchTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const activePreviewTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -197,7 +201,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
 
   React.useEffect(() => {
     // Video yolu aktifken slayt zamanlayıcısı çalışmaz: hem gereksiz
-    // re-render (500ms'de bir) hem de kapak altında görünmez kare değişimi olurdu.
+    // re-render (1200ms'de bir) hem de kapak altında görünmez kare değişimi olurdu.
     if (showVideo) {
       setActiveThumbIndex(0);
       return;
@@ -208,7 +212,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     }
     const timer = setInterval(() => {
       setActiveThumbIndex((prev) => (prev + 1) % previewThumbs.length);
-    }, 500);
+    }, 1200);
     return () => clearInterval(timer);
   }, [isPreviewActive, previewThumbs, showVideo]);
 
@@ -313,7 +317,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
           }}
           style={StyleSheet.absoluteFill}
           contentFit="cover"
-          transition={100}
+          transition={250}
         />
       ) : isPreviewActive && secondaryThumb ? (
         <Image
@@ -401,6 +405,20 @@ const CardVideoPreview: React.FC<{
     p.play();
   });
 
+  // Zorunlu native imha: kart ekrandan çıktığında veya unmount olduğunda
+  // AVPlayer'ı ve com.apple.avplayer.systemMuteObserver thread'lerini anında serbest bırak.
+  // Hermes GC'nin keyfini beklemek 400+ oyuncu birikmesine ve 0x8BADF00D kilitlenmesine yol açıyordu.
+  React.useEffect(() => {
+    return () => {
+      try {
+        player.pause();
+        (player as { release?: () => void }).release?.();
+      } catch (e) {
+        // Zaten serbest bırakılmışsa sessizce geç
+      }
+    };
+  }, [player]);
+
   // TLS düşüşünde tek seferlik seçici proxy fallback'i (sadece bu önizleme).
   const proxyTriedRef = React.useRef(false);
   const mountedRef = React.useRef(true);
@@ -450,6 +468,7 @@ export const PostCard = React.memo<PostCardProps>(
     if (prevProps.onPress !== nextProps.onPress) return false;
     if (prevProps.column !== nextProps.column) return false;
     if ((prevProps.videoActive ?? false) !== (nextProps.videoActive ?? false)) return false;
+    if ((prevProps.onScreen ?? false) !== (nextProps.onScreen ?? false)) return false;
     if ((prevProps.screenActive ?? true) !== (nextProps.screenActive ?? true)) return false;
 
     const prevFav =

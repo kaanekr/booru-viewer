@@ -1324,6 +1324,17 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     p.timeUpdateEventInterval = 0.25;
   });
 
+  useEffect(() => {
+    return () => {
+      try {
+        player.pause();
+        (player as { release?: () => void }).release?.();
+      } catch (e) {
+        // Zaten serbest bırakılmışsa sessizce geç
+      }
+    };
+  }, [player]);
+
   useEventListener(player, 'statusChange', (payload) => {
     if (payload.status === 'error' && proxyFallbackDoneRef.current) {
       setLoadFailed(true);
