@@ -830,6 +830,9 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                   setHhActiveEp(effectiveEp);
                   StorageService.setLastWatchedEpisode(post.id, effectiveEp).catch(() => {});
                 }
+                if (files?.tags) {
+                  onTagsResolved?.(files.tags, files.allTags || [], files.views);
+                }
                 const playable = files?.hls || files?.mp4;
                 if (playable) {
                   console.log('[Viewer] hentaihaven bölüm çözüldü, oynatılıyor');
@@ -895,7 +898,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       if (hhEpLoading || ep.ep === hhActiveEp) return;
       const baseM = post.sourceLink?.match(/^https?:\/\/[^/]+/i);
       const base = baseM ? baseM[0] : 'https://hentaihaven.xxx';
-      const url = base + ep.url;
+      const targetUrl = ep.streamUrl || ep.url;
+      const url = /^https?:\/\//i.test(targetUrl) ? targetUrl : base + targetUrl;
       setHhActiveEp(ep.ep);
       setHhEpLoading(true);
       setResolvedOriginalUrl(null);
