@@ -232,6 +232,30 @@ test('parseNHentaiTagsFromHtml extracts categorized artist, character, parody, g
   assert.equal(allTags.length, 6);
 });
 
+test('parseNHentaiTagsFromHtml handles real xxx detail markup (single quotes)', () => {
+  const nh = loadNHentai();
+  const realHtml = '<html><body>' +
+    "<a class='tag_btn ' href='/artist/tachi-iyashi/'>" +
+    "<span class='tag_name'>tachi iyashi</span><span class='tag_count '>33</span></a>" +
+    "<a class='tag_btn ' href='/group/nunpokojin/'>" +
+    "<span class='tag_name'>nunpokojin</span><span class='tag_count '>11</span></a>" +
+    "<a class='tag_btn ' href='/tag/sole-female/'>" +
+    "<span class='tag_name'>sole female</span><span class='tag_count '>216K</span></a>" +
+    "<a class='tag_btn ' href='/language/english/'>" +
+    "<span class='tag_name'>english</span><span class='tag_count '>143K</span></a>" +
+    "<a class='tag_btn ' href='/category/doujinshi/'>" +
+    "<span class='tag_name'>doujinshi</span><span class='tag_count '>539K</span></a>" +
+    '</body></html>';
+
+  const { tags, allTags } = nh.parseNHentaiTagsFromHtml(realHtml);
+  assert.equal(tags.artist[0], 'tachi iyashi');
+  assert.ok(tags.artist.includes('nunpokojin'));
+  assert.ok(tags.general.includes('sole female'));
+  assert.ok(tags.meta.includes('english'));
+  assert.ok(tags.meta.includes('doujinshi'));
+  assert.equal(allTags.length, 5);
+});
+
 test('searchNHentaiTags returns instant autocomplete suggestions with categories', async () => {
   const nh = loadNHentai();
   const soleSuggestions = await nh.searchNHentaiTags('sole');

@@ -380,17 +380,19 @@ export function parseNHentaiTagsFromHtml(html: string): { tags: BooruTagGroups; 
   const allTags: string[] = [];
   if (!html) return { tags: tagGroups, allTags };
 
-  const re = /<a[^>]+href="\/(tag|artist|character|parody|group|language|category)\/([^"\/]+)\/?"[^>]*>([\s\S]*?)<\/a>/gi;
+  // Not: nhentai.xxx detay sayfası tek tırnak kullanır (href='/tag/...'),
+  // /tags/ listesi çift tırnak kullanır — ikisi de desteklenir.
+  const re = /<a[^>]+href=(["'])\/(tag|artist|character|parody|group|language|category)\/([^"'\/]+)\/?\1[^>]*>([\s\S]*?)<\/a>/gi;
   let m: RegExpExecArray | null;
   const seen = new Set<string>();
 
   while ((m = re.exec(html)) !== null) {
-    const type = m[1].toLowerCase();
-    const inner = m[3];
+    const type = m[2].toLowerCase();
+    const inner = m[4];
     const nameM =
       inner.match(/<span[^>]*class=['"]tag_name(?:\s+[^'"]*)?['"][^>]*>([^<]+)<\/span>/i) ||
       inner.match(/<span[^>]*class=['"]name['"][^>]*>([^<]+)<\/span>/i);
-    let name = nameM ? decodeEntities(nameM[1]).trim() : decodeEntities(m[2]).replace(/-/g, ' ').trim();
+    let name = nameM ? decodeEntities(nameM[1]).trim() : decodeEntities(m[3]).replace(/-/g, ' ').trim();
     if (!name || seen.has(name.toLowerCase())) continue;
     seen.add(name.toLowerCase());
     allTags.push(name);
@@ -628,13 +630,13 @@ export async function searchNHentaiTags(
       );
       if (res.ok) {
         const html = await res.text();
-        const re = /<a[^>]+href="\/tag\/([^"]+)\/"[^>]*>([\s\S]*?)<\/a>/gi;
+        const re = /<a[^>]+href=(["'])\/tag\/([^"']+)\/\1[^>]*>([\s\S]*?)<\/a>/gi;
         let m: RegExpExecArray | null;
         while ((m = re.exec(html)) !== null) {
-          const slug = m[1];
-          const inner = m[2];
-          const nameM = inner.match(/<span[^>]*class=['"]tag_name['"][^>]*>([^<]+)<\/span>/i);
-          const countM = inner.match(/<span[^>]*class=['"]tag_count['"][^>]*>([^<]+)<\/span>/i);
+          const slug = m[2];
+          const inner = m[3];
+          const nameM = inner.match(/<span[^>]*class=['"]tag_name(?:\s+[^'"]*)?['"][^>]*>([^<]+)<\/span>/i);
+          const countM = inner.match(/<span[^>]*class=['"]tag_count(?:\s+[^'"]*)?['"][^>]*>([^<]+)<\/span>/i);
           const name = nameM ? decodeEntities(nameM[1]).trim() : slug.replace(/-/g, ' ');
           if (!name || seen.has(name.toLowerCase())) continue;
           seen.add(name.toLowerCase());
