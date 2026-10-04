@@ -47,12 +47,24 @@ test('extFromType converts nhentai short types to file extensions', () => {
 test('buildNHentaiSearchCandidates builds feed and search URLs with paging', () => {
   const nh = loadNHentai();
   const feed = nh.buildNHentaiSearchCandidates('https://nhentai.xxx', 1, '');
-  assert.equal(feed[0], 'https://nhentai.xxx/');
+  assert.equal(feed[0], 'https://nhentai.xxx/?page=1');
   assert.equal(feed[1], 'https://nhentai.xxx/api/galleries/all?page=1');
 
   const search = nh.buildNHentaiSearchCandidates('https://nhentai.xxx/', 2, 'genshin impact');
   assert.equal(search[0], 'https://nhentai.xxx/search/?key=genshin%20impact&page=2');
   assert.equal(search[1], 'https://nhentai.xxx/search/?q=genshin%20impact&page=2');
+});
+
+test('buildNHentaiSearchCandidates appends sort=popular for popular sort', () => {
+  const nh = loadNHentai();
+  const feed = nh.buildNHentaiSearchCandidates('https://nhentai.xxx', 1, '', 'popular');
+  assert.equal(feed[0], 'https://nhentai.xxx/?page=1&sort=popular');
+
+  const search = nh.buildNHentaiSearchCandidates('https://nhentai.xxx/', 2, 'naruto', 'popular');
+  assert.equal(search[0], 'https://nhentai.xxx/search/?key=naruto&page=2&sort=popular');
+
+  const plain = nh.buildNHentaiSearchCandidates('https://nhentai.xxx', 1, '', undefined);
+  assert.equal(plain[0], 'https://nhentai.xxx/?page=1');
 });
 
 const JSON_LISTING = JSON.stringify({

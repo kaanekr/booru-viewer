@@ -487,7 +487,7 @@ export class BooruApiService {
       } else if (source.type === 'hentaihaven') {
         return await this.fetchHentaiHavenPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'nhentai') {
-        return await this.fetchNHentaiPosts(source, page, limit, tags, includeBlacklisted);
+        return await this.fetchNHentaiPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else {
         return await this.fetchDanbooruPosts(source, page, limit, tags, includeBlacklisted);
       }
@@ -1703,7 +1703,8 @@ export class BooruApiService {
     page: number,
     limit: number,
     tags: string,
-    includeBlacklisted: boolean = false
+    includeBlacklisted: boolean = false,
+    filter?: SearchFilterConfig
   ): Promise<BooruPost[]> {
     const k = tags
       .split(/\s+/)
@@ -1713,7 +1714,10 @@ export class BooruApiService {
       .join(' ');
     void limit;
 
-    const candidates = buildNHentaiSearchCandidates(source.baseUrl || NHENTAI_BASE, page, k);
+    // Mirror'un desteklediği tek sıralama: popüler (score -> sort=popular).
+    // Zaman aralıkları (1d/1w/1m) mirror'da yok sayılır, sessizce latest'e düşer.
+    const sort = filter?.sortBy === 'score' ? 'popular' : undefined;
+    const candidates = buildNHentaiSearchCandidates(source.baseUrl || NHENTAI_BASE, page, k, sort);
     let lastError: any = null;
 
     for (const url of candidates) {
