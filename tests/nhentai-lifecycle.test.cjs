@@ -51,8 +51,8 @@ test('buildNHentaiSearchCandidates builds feed and search URLs with paging', () 
   assert.equal(feed[1], 'https://nhentai.xxx/api/galleries/all?page=1');
 
   const search = nh.buildNHentaiSearchCandidates('https://nhentai.xxx/', 2, 'genshin impact');
-  assert.equal(search[0], 'https://nhentai.xxx/search/?q=genshin%20impact&page=2');
-  assert.equal(search[1], 'https://nhentai.xxx/api/galleries/search?query=genshin%20impact&page=2');
+  assert.equal(search[0], 'https://nhentai.xxx/search/?key=genshin%20impact&page=2');
+  assert.equal(search[1], 'https://nhentai.xxx/search/?q=genshin%20impact&page=2');
 });
 
 const JSON_LISTING = JSON.stringify({
@@ -208,4 +208,69 @@ test('resolveNHentaiPages resolves pages end-to-end with synthetic fallback', as
   assert.equal(fallback.length, 3);
   assert.equal(fallback[0], 'https://i.nhentai.net/galleries/888/1.jpg');
   assert.equal(fallback[2], 'https://i.nhentai.net/galleries/888/3.jpg');
+});
+
+test('parseNHentaiTagsFromHtml extracts categorized artist, character, parody, general tags', () => {
+  const nh = loadNHentai();
+  const sampleDetailHtml = '<html><body>' +
+    '<div class="tag_container">' +
+    '<a class="tag_btn" href="/artist/shindol/"><span class="tag_name">shindol</span><span class="tag_count">120</span></a>' +
+    '<a class="tag_btn" href="/character/asuka-langley-soryu/"><span class="tag_name">asuka langley soryu</span><span class="tag_count">1.4K</span></a>' +
+    '<a class="tag_btn" href="/parody/neon-genesis-evangelion/"><span class="tag_name">neon genesis evangelion</span><span class="tag_count">3K</span></a>' +
+    '<a class="tag_btn" href="/tag/sole-female/"><span class="tag_name">sole female</span><span class="tag_count">115K</span></a>' +
+    '<a class="tag_btn" href="/tag/big-breasts/"><span class="tag_name">big breasts</span><span class="tag_count">145K</span></a>' +
+    '<a class="tag_btn" href="/language/english/"><span class="tag_name">english</span><span class="tag_count">108K</span></a>' +
+    '</div></body></html>';
+
+  const { tags, allTags } = nh.parseNHentaiTagsFromHtml(sampleDetailHtml);
+  assert.equal(tags.artist[0], 'shindol');
+  assert.equal(tags.character[0], 'asuka langley soryu');
+  assert.equal(tags.copyright[0], 'neon genesis evangelion');
+  assert.ok(tags.general.includes('sole female'));
+  assert.ok(tags.general.includes('big breasts'));
+  assert.ok(tags.meta.includes('english'));
+  assert.equal(allTags.length, 6);
+});
+
+test('searchNHentaiTags returns instant autocomplete suggestions with categories', async () => {
+  const nh = loadNHentai();
+  const soleSuggestions = await nh.searchNHentaiTags('sole');
+  assert.ok(soleSuggestions.length >= 2);
+  assert.equal(soleSuggestions[0].name, 'sole female');
+  assert.equal(soleSuggestions[0].category, 'general');
+
+  const genshinSuggestions = await nh.searchNHentaiTags('genshin');
+  assert.ok(genshinSuggestions.length >= 1);
+  assert.equal(genshinSuggestions[0].name, 'genshin impact');
+  assert.equal(genshinSuggestions[0].category, 'copyright');
+
+  const empty = await nh.searchNHentaiTags('');
+  assert.equal(empty.length, 0);
+});
+
+test('resolveNHentaiGalleryDetail resolves pages and categorized tags together', async () => {
+  const customFetch = async (url) => {
+    if (url.includes('/g/703517/')) {
+      return {
+        ok: true,
+        text: async () => '<html><body>' +
+          '<span class="text">Pages:</span><span class="tags"><a class="tag_btn"><span class="tag_name pages">20</span></a></span>' +
+          '<input type="hidden" name="load_id" id="load_id" value="testfolder" />' +
+          '<div class="gt_th"><a href="/g/703517/1/"><img data-src="https://i5.nhentaimg.com/018/testfolder/1t.jpg"/></a></div>' +
+          '<a class="tag_btn" href="/artist/cool-artist/"><span class="tag_name">cool artist</span></a>' +
+          '<a class="tag_btn" href="/tag/milf/"><span class="tag_name">milf</span></a>' +
+          '</body></html>',
+      };
+    }
+    return { ok: false, status: 404 };
+  };
+
+  const nh = loadNHentai(customFetch);
+  const detail = await nh.resolveNHentaiGalleryDetail({ id: 'nh_703517' });
+  assert.equal(detail.pages.length, 20);
+  assert.equal(detail.pages[0], 'https://i5.nhentaimg.com/018/testfolder/1.webp');
+  assert.equal(detail.tags.artist[0], 'cool artist');
+  assert.equal(detail.tags.general[0], 'milf');
+  assert.ok(detail.allTags.includes('cool artist'));
+  assert.ok(detail.allTags.includes('milf'));
 });
