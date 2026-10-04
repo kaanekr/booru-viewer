@@ -293,6 +293,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         parse: (html) => parseHentaiHavenListing(html, stubSource('hentaihaven', HENTAIHAVEN_BASE)).length,
       },
       {
+        name: 'SXmp4',
+        url: 'https://videos2.sex.com/1038553/preview_240p.mp4',
+        headers: { 'User-Agent': SEXCOM_UA, Referer: `${SEXCOM_BASE}/` },
+      },
+      {
         name: 'RG',
         url: 'https://api.redgifs.com/v2/gifs/search?type=g&order=trending&count=1&page=1',
         headers: { 'User-Agent': PORNHUB_UA, Origin: 'https://www.redgifs.com', Referer: 'https://www.redgifs.com/', Accept: 'application/json' },
