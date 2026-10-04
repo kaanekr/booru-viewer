@@ -323,7 +323,8 @@ export async function resolveHentaiHavenEpisodeUrl(
 
 export async function resolveHentaiHavenEpisodeUrls(
   post: { sourceLink?: string },
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  preferredEp?: number | null
 ): Promise<HentaiHavenFiles | null> {
   if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
 
@@ -338,8 +339,13 @@ export async function resolveHentaiHavenEpisodeUrls(
     console.warn('[HentaiHaven] bölüm bulunamadı');
     return null;
   }
+  // Son izlenen / tercih edilen bolum varsa o, yoksa en yeni bolum (episodes[0]).
+  const targetEp =
+    preferredEp != null
+      ? episodes.find((e) => e.ep === preferredEp) || episodes[0]
+      : episodes[0];
   const baseM = post.sourceLink.match(/^https?:\/\/[^/]+/i);
-  const epUrl = (baseM ? baseM[0] : HENTAIHAVEN_BASE) + episodes[0].url;
+  const epUrl = (baseM ? baseM[0] : HENTAIHAVEN_BASE) + targetEp.url;
   const epHtml = await fetchHentaiHtml(epUrl, 10000, 'bölüm', signal);
   if (!epHtml) return null;
   if (isChallengeHtml(epHtml)) {

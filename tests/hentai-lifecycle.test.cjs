@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 
 // Gercek hentaihavens.ts yuklenir; tip importu derlemede silinir, modul bagimsizdir.
-function loadHentai() {
+function loadHentai(customProxyFetch) {
   const filename = path.resolve(__dirname, '../src/services/hentaihavens.ts');
   const js = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -15,9 +15,19 @@ function loadHentai() {
   vm.runInNewContext(js, {
     module, exports: module.exports,
     require: (id) => {
-      if (id === './proxyService') return {};
+      if (id === './proxyService') {
+        return {
+          proxyService: {
+            fetchWithFallback: (url, opts, ms) => {
+              if (customProxyFetch) return customProxyFetch(url, opts, ms);
+              return Promise.resolve({ ok: true, text: async () => '' });
+            },
+          },
+        };
+      }
       throw new Error('hentaihavens must be UI-dependency-free, got: ' + id);
     },
+    setTimeout, clearTimeout, AbortController,
   }, { filename });
   return module.exports;
 }
@@ -154,6 +164,54 @@ test('episode helpers are exported for the viewer EP selector', () => {
   assert.equal(typeof hh.listHentaiHavenEpisodes, 'function');
   assert.equal(typeof hh.resolveHentaiHavenEpisodeUrl, 'function');
   assert.equal(typeof hh.resolveHentaiHavenEpisodeUrls, 'function');
+});
+
+test('resolveHentaiHavenEpisodeUrls respects preferredEp and returns full episode list', async () => {
+  const customFetch = async (url) => {
+    if (url.includes('/watch/sample-series-alpha/episode-1/')) {
+      return {
+        ok: true,
+        text: async () =>
+          '<html><head><script type="application/ld+json">' +
+          '{"@context":"https://schema.org","@type":"VideoObject","contentUrl":"https://cdn.example.com/ep1/playlist.m3u8"}' +
+          '</script></head><body></body></html>',
+      };
+    }
+    if (url.includes('/watch/sample-series-alpha/episode-2/')) {
+      return {
+        ok: true,
+        text: async () =>
+          '<html><head><script type="application/ld+json">' +
+          '{"@context":"https://schema.org","@type":"VideoObject","contentUrl":"https://cdn.example.com/ep2/playlist.m3u8"}' +
+          '</script></head><body></body></html>',
+      };
+    }
+    return {
+      ok: true,
+      text: async () => SERIES,
+    };
+  };
+
+  const hh = loadHentai(customFetch);
+
+  // Tercihli bolum yoksa en yeni bolum (EP 2)
+  const latest = await hh.resolveHentaiHavenEpisodeUrls({
+    sourceLink: 'https://hentaihaven.xxx/watch/sample-series-alpha/',
+  });
+  assert.ok(latest);
+  assert.equal(latest.hls, 'https://cdn.example.com/ep2/playlist.m3u8');
+  assert.equal(latest.episodes.length, 2);
+  assert.equal(latest.episodes[0].ep, 2);
+
+  // Tercihli bolum verildiginde (son izlenen: EP 1) EP 1 cozulur
+  const preferred = await hh.resolveHentaiHavenEpisodeUrls(
+    { sourceLink: 'https://hentaihaven.xxx/watch/sample-series-alpha/' },
+    undefined,
+    1
+  );
+  assert.ok(preferred);
+  assert.equal(preferred.hls, 'https://cdn.example.com/ep1/playlist.m3u8');
+  assert.equal(preferred.episodes.length, 2);
 });
 
 test('falls back to player source tag and detects challenge pages', () => {

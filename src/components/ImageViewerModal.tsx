@@ -705,22 +705,31 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           })
           .catch(() => {});
       } else if (post.sourceId === 'hentaihaven') {
-        resolveHentaiHavenEpisodeUrls(post, abortCtrl.signal)
-          .then((files) => {
+        StorageService.getLastWatchedEpisode(post.id)
+          .then((savedEp) => {
             if (!alive) return;
-            const eps = files?.episodes;
-            if (eps && eps.length > 0) {
-              setHhEpisodes(eps);
-              setHhActiveEp((cur) => cur ?? eps[0].ep);
-            }
-            const playable = files?.hls || files?.mp4;
-            if (playable) {
-              console.log('[Viewer] hentaihaven bölüm çözüldü, oynatılıyor');
-              setResolvedOriginalUrl(playable);
-            } else {
-              // Seri/bölüm çekilemedi ya da HLS yok: kapak fotoğrafta kalır.
-              console.warn('[Viewer] hentaihaven bölüm çözülemedi, kapak kalıyor');
-            }
+            return resolveHentaiHavenEpisodeUrls(post, abortCtrl.signal, savedEp)
+              .then((files) => {
+                if (!alive) return;
+                const eps = files?.episodes;
+                if (eps && eps.length > 0) {
+                  setHhEpisodes(eps);
+                  const effectiveEp =
+                    savedEp != null && eps.some((e) => e.ep === savedEp)
+                      ? savedEp
+                      : eps[0].ep;
+                  setHhActiveEp(effectiveEp);
+                  StorageService.setLastWatchedEpisode(post.id, effectiveEp).catch(() => {});
+                }
+                const playable = files?.hls || files?.mp4;
+                if (playable) {
+                  console.log('[Viewer] hentaihaven bölüm çözüldü, oynatılıyor');
+                  setResolvedOriginalUrl(playable);
+                } else {
+                  // Seri/bölüm çekilemedi ya da HLS yok: kapak fotoğrafta kalır.
+                  console.warn('[Viewer] hentaihaven bölüm çözülemedi, kapak kalıyor');
+                }
+              });
           })
           .catch(() => {});
       } else if (post.sourceId === 'pornhub') {
@@ -752,10 +761,11 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     };
   }, [isActive, suspended, resolveNonce, post.id, post.sourceId, post.sourceLink, post.originalUrl, post.sampleUrl]);
 
-  // HentaiHaven: seri kartindaki tum bolumler (EP secici icin, tek seferlik).
-  // Ilk acilista zaten en yeni bolum cozulur; liste gelince secim ona sabitlenir.
+  // HentaiHaven: seri kartindaki tum bolumler (EP secici icin yedek).
+  // Ana resolve sirasinda zaten gelir; gelmediyse tek seferlik buradan denenir.
   useEffect(() => {
     if (post.sourceId !== 'hentaihaven' || !isActive || suspended || !post.sourceLink) return;
+    if (hhEpisodes.length > 0) return;
     let alive = true;
     const ctrl = new AbortController();
     listHentaiHavenEpisodes(post, ctrl.signal)
@@ -769,7 +779,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       alive = false;
       ctrl.abort();
     };
-  }, [isActive, suspended, post.id, post.sourceId, post.sourceLink]);
+  }, [isActive, suspended, post.id, post.sourceId, post.sourceLink, hhEpisodes.length]);
 
   const handleSelectHhEpisode = useCallback(
     (ep: HentaiHavenEpisode) => {
@@ -780,6 +790,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       setHhActiveEp(ep.ep);
       setHhEpLoading(true);
       setResolvedOriginalUrl(null);
+      // Son izlenen / seçilen bölümü cihaz hafızasına kaydet (favoriden açıldığında da buradan başlar).
+      StorageService.setLastWatchedEpisode(post.id, ep.ep).catch(() => {});
       resolveHentaiHavenEpisodeUrl(url)
         .then((files) => {
           const playable = files?.hls || files?.mp4;
@@ -793,7 +805,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         .catch(() => {})
         .finally(() => setHhEpLoading(false));
     },
-    [hhEpLoading, hhActiveEp, post.sourceLink]
+    [hhEpLoading, hhActiveEp, post.id, post.sourceLink]
   );
 
   // Sigorta: fetch + WebView toplamı 30 sn'yi geçerse spinner'ı öldürüp
