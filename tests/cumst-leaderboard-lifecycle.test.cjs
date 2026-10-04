@@ -101,3 +101,66 @@ test('non-cumst engines keep raw anchor (danbooru date semantics untouched)', ()
   const q = api.buildQueryTags(scoreFilter({ timeRange: '1w', leaderboardDate: '2026-10-02' }), DANBOORU);
   assert.ok(q.includes('date:2026-10-02'));
 });
+
+function loadPeriods() {
+  const filename = path.resolve(__dirname, '../src/utils/leaderboardPeriods.ts');
+  const js = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  const module = { exports: {} };
+  vm.runInNewContext(js, {
+    module, exports: module.exports,
+    require: () => {
+      throw new Error('leaderboardPeriods must be dependency-free');
+    },
+  }, { filename });
+  return module.exports;
+}
+
+// 4 Ekim 2026 Pazar gununden bakiliyor.
+const FIXED_NOW = new Date(2026, 9, 4, 12, 0, 0);
+
+test('week picker offers Monday anchors, current week clears', () => {
+  const { weekDateOptions } = loadPeriods();
+  const slots = weekDateOptions(FIXED_NOW);
+  assert.equal(slots.length, 8);
+  assert.equal(slots[0].value, undefined);
+  assert.ok(slots[0].label.includes('Bu Hafta'));
+  assert.ok(slots[0].label.includes('28 Eyl'));
+  assert.equal(slots[1].value, '2026-09-21');
+  assert.ok(slots[1].label.includes('Geçen Hafta'));
+  assert.equal(slots[2].value, '2026-09-14');
+  assert.ok(slots.every((s) => s.range === '1w'));
+});
+
+test('month picker offers first-of-month anchors, current month clears', () => {
+  const { monthDateOptions } = loadPeriods();
+  const slots = monthDateOptions(FIXED_NOW);
+  assert.equal(slots.length, 12);
+  assert.equal(slots[0].value, undefined);
+  assert.ok(slots[0].label.includes('Bu Ay'));
+  assert.equal(slots[1].value, '2026-09-01');
+  assert.ok(slots[1].label.includes('Geçen Ay'));
+  assert.equal(slots[11].value, '2025-11-01');
+  assert.ok(slots.every((s) => s.range === '1m'));
+});
+
+test('day picker keeps previous day-offset content with daily range', () => {
+  const { dayDateOptions } = loadPeriods();
+  const slots = dayDateOptions(FIXED_NOW);
+  assert.equal(slots.length, 11);
+  assert.equal(slots[0].value, undefined);
+  assert.equal(slots[1].value, '2026-10-03');
+  assert.equal(slots[2].value, '2026-10-02');
+  assert.ok(slots.every((s) => s.range === '1d'));
+});
+
+test('row label shows effective week range and month name', () => {
+  const { describeAnchor } = loadPeriods();
+  assert.equal(describeAnchor(undefined, '1w'), 'Bugün / En Güncel');
+  assert.equal(describeAnchor('2026-10-02', '1w'), '28 Eyl - 4 Eki');
+  assert.equal(describeAnchor('2026-09-21', '1w'), '21-27 Eyl');
+  assert.equal(describeAnchor('2026-09-15', '1m'), 'Eylül 2026');
+  assert.equal(describeAnchor('2026-10-02', '1d'), '2026-10-02');
+  assert.equal(describeAnchor('garbage', '1w'), 'garbage');
+});
