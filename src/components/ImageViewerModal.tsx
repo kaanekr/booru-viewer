@@ -64,6 +64,7 @@ import {
   selectPrimaryVideoCandidate,
 } from '../utils/media';
 import { resolveSexComVideoUrls } from '../services/sexcom';
+import { resolveHentaiHavenEpisodeUrls } from '../services/hentaihavens';
 
 const { width: DEFAULT_SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -641,8 +642,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     }
 
     // Eğer post zaten sample'dan farklı gerçek bir originalUrl'e sahipse fetch etme
-    // Not: XHamster, XVideos ve Sex.com süreli token/geçici preview taşıdığı için her zaman detaydan taze çözülür
-    const needsFreshVideoResolution = post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom';
+    // Not: XHamster, XVideos, Sex.com ve HentaiHaven süreli token/geçici preview taşıdığı için her zaman detaydan taze çözülür
+    const needsFreshVideoResolution = post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom' || post.sourceId === 'hentaihaven';
     if (post.originalUrl && post.originalUrl !== post.sampleUrl && !needsFreshVideoResolution) {
       setResolvedOriginalUrl(post.originalUrl);
       return () => {
@@ -675,6 +676,14 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           .then((files) => {
             if (alive && files) {
               setResolvedOriginalUrl(files.hls || files.mp4 || null);
+            }
+          })
+          .catch(() => {});
+      } else if (post.sourceId === 'hentaihaven') {
+        resolveHentaiHavenEpisodeUrls(post, abortCtrl.signal)
+          .then((files) => {
+            if (alive && files) {
+              setResolvedOriginalUrl(files.hls || null);
             }
           })
           .catch(() => {});
@@ -742,7 +751,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     // Video sitelerinde (PH/XV/XH) izleme sayfasında boyut bilgisi yok;
     // ölçü listeden gelir (PH 640x360). Bu fetch, video açılışındaki
     // çift sayfa indirmenin yarısıydı — atlanınca kasma azalır.
-    if (post.sourceId === 'pornhub' || post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom') {
+    if (post.sourceId === 'pornhub' || post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom' || post.sourceId === 'hentaihaven') {
       return;
     }
     let alive = true;

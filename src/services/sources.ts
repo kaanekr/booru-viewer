@@ -90,6 +90,14 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     description: 'Popüler video platformu araması (önizlemeli klipler)',
     isSafeOnly: false,
   },
+  {
+    id: 'hentaihaven',
+    name: 'HentaiHaven',
+    baseUrl: 'https://hentaihaven.xxx',
+    type: 'hentaihaven',
+    description: 'Hentai serileri (trend akış + etiket araması)',
+    isSafeOnly: false,
+  },
 ];
 
 export const DEFAULT_SOURCE: BooruSource = AVAILABLE_SOURCES[0];

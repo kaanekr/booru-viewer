@@ -43,6 +43,7 @@ import { setGridPreviewsEnabled } from '../utils/gridPreviews';
 import { proxyService } from '../services/proxyService';
 import { PORNHUB_UA, PORNHUB_BASE, parsePornhubHtmlListing } from '../services/pornhub';
 import { SEXCOM_UA, SEXCOM_BASE, parseSexComListing } from '../services/sexcom';
+import { HENTAIHAVEN_UA, HENTAIHAVEN_BASE, parseHentaiHavenListing } from '../services/hentaihavens';
 import { XVIDEOS_UA, XVIDEOS_BASE, parseXVideosListing } from '../services/xvideos';
 import { XHAMSTER_UA, XHAMSTER_BASE, parseXhamsterListing } from '../services/xhamster';
 import { BackupService } from '../services/backupService';
@@ -284,6 +285,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
         url: `${SEXCOM_BASE}/en/videos`,
         headers: { 'User-Agent': SEXCOM_UA, Referer: `${SEXCOM_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
         parse: (html) => parseSexComListing(html, stubSource('sexcom', SEXCOM_BASE)).length,
+      },
+      {
+        name: 'HH',
+        url: `${HENTAIHAVEN_BASE}/browse/trending/`,
+        headers: { 'User-Agent': HENTAIHAVEN_UA, Referer: `${HENTAIHAVEN_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
+        parse: (html) => parseHentaiHavenListing(html, stubSource('hentaihaven', HENTAIHAVEN_BASE)).length,
       },
       {
         name: 'RG',
