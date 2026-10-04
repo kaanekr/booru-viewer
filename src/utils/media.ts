@@ -354,6 +354,11 @@ export function getMediaHeaders(url: string | undefined): Record<string, string>
     // RedGifs CDN (media.redgifs.com) Referer olmadan 403 dönebiliyor
     headers['Referer'] = 'https://www.redgifs.com/';
     headers['Origin'] = 'https://www.redgifs.com';
+  } else if (target.includes('nhentai.net')) {
+    // v2 API + t1/i1 CDN: aynı site Referer'ı (Safari doğrudan gezinmede
+    // göndermez ama API dışı kapak isteklerinde zararsız ve bazı CF
+    // kurallarını yumuşatır)
+    headers['Referer'] = 'https://nhentai.net/';
   }
 
   return headers;

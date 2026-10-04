@@ -23,12 +23,28 @@ export const NHENTAI_API_BASE = 'https://nhentai.net/api/v2';
 export const NHENTAI_API_THUMB_BASE = 'https://t1.nhentai.net';
 export const NHENTAI_API_IMAGE_BASE = 'https://i1.nhentai.net';
 
-export const NHENTAI_UA =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
-
-/** Resmi v2 API (nhentai.net/api/v2) JSON çağrıları için iOS UA (CF parmak izi uyumu). */
+/**
+ * v2 API istekleri Safari'yi birebir taklit eder (cihazda doğrulandı: aynı URL
+ * Safari'de açılırken uygulamada takılıyordu — bot koruması istek parmak izini
+ * bayraklayıp gövdeyi akıtmıyordu).
+ * - Tam Safari formu (`Version/18.x ... Safari/604.1` token'larıyla): tokensiz
+ *   WKWebView-kokulu formdan ayırt edilir.
+ * - Referer YOK (doğrudan gezinme gibi).
+ * - Accept-Encoding müdahalesi YOK (RN/NSURLSession varsayılanı + şeffaf çözüm;
+ *   elle header gövde akışını bozabiliyordu).
+ */
 export const NHENTAI_API_UA =
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Mobile/15E148 Safari/604.1';
+
+/** Tüm v2 API JSON çağrılarında kullanılan tek header seti. */
+export function nhentaiApiHeaders(extra?: Record<string, string>): Record<string, string> {
+  return {
+    'User-Agent': NHENTAI_API_UA,
+    Accept: 'application/json,*/*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    ...(extra || {}),
+  };
+}
 
 const EXT_MAP: Record<string, string> = {
   j: 'jpg',
@@ -290,13 +306,7 @@ export async function resolveNHentaiGalleryDetail(
   const rawId = (post.id || '').replace(/^nh_/, '');
   if (!rawId) return empty;
 
-  const headers = {
-    'User-Agent': NHENTAI_API_UA,
-    Referer: `${NHENTAI_BASE}/`,
-    'Accept-Language': 'en-US,en;q=0.9',
-    Accept: 'application/json,*/*',
-    'Accept-Encoding': 'gzip, deflate, identity',
-  };
+  const headers = nhentaiApiHeaders();
 
   const fetchWithTimeout = async (url: string, ms = 9000): Promise<string | null> => {
     const ctrl = new AbortController();
@@ -455,12 +465,7 @@ export async function searchNHentaiApiTags(
       url,
       {
         method: 'POST',
-        headers: {
-          'User-Agent': NHENTAI_API_UA,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          'Accept-Encoding': 'gzip, deflate, identity',
-        },
+        headers: nhentaiApiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ query: q, limit: Math.min(50, Math.max(5, limit)) }),
       },
       5000

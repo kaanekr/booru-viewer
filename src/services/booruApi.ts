@@ -46,6 +46,7 @@ import {
 } from './hentaihavens';
 import {
   buildNHentaiApiCandidates,
+  nhentaiApiHeaders,
   nhentaiApiSort,
   parseNHentaiV2Listing,
   searchNHentaiTags,
@@ -1720,13 +1721,9 @@ export class BooruApiService {
     const apiSort = nhentaiApiSort(filter?.sortBy, filter?.timeRange);
     const candidates = buildNHentaiApiCandidates(page, fullQuery, apiSort, filter?.minScore);
 
-    const headers = {
-      'User-Agent': NHENTAI_API_UA,
-      Referer: 'https://nhentai.net/',
-      'Accept-Language': 'en-US,en;q=0.9',
-      Accept: 'application/json,*/*',
-      'Accept-Encoding': 'gzip, deflate, identity',
-    };
+    // Safari-mimikri (cihazda doğrulandı): bot koruması istek parmak izini
+    // bayraklayıp gövdeyi akıtmıyordu; tam Safari formu + Referer yok + AE yok.
+    const headers = nhentaiApiHeaders();
 
     let lastError: any = null;
     let saw404 = false;
