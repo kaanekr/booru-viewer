@@ -1727,6 +1727,11 @@ export class BooruApiService {
       Referer: 'https://nhentai.net/',
       'Accept-Language': 'en-US,en;q=0.9',
       Accept: 'application/json,*/*',
+      // Cloudflare varsayılan olarak Brotli (content-encoding: br) sıkıştırması döner.
+      // React Native iOS ağ katmanı Brotli'yi çözemediği için response.text() soketi
+      // takılı kalıyor ve 8000ms timeout hatası üretiyordu (canlı logla doğrulandı).
+      // gzip/identity isteyerek iOS'un yerel çözebileceği yanıt alınır.
+      'Accept-Encoding': 'gzip, deflate, identity',
     };
 
     let lastError: any = null;
