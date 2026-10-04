@@ -490,14 +490,14 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({
           </Text>
 
           <View style={styles.card}>
-            {AVAILABLE_SOURCES.map((source, index) => {
+            {AVAILABLE_SOURCES.filter((s) => !s.hidden).map((source, index, list) => {
               const isSelected = activeSource.id === source.id;
               return (
                 <TouchableOpacity
                   key={source.id}
                   style={[
                     styles.sourceRow,
-                    index !== AVAILABLE_SOURCES.length - 1 && styles.borderBottom,
+                    index !== list.length - 1 && styles.borderBottom,
                     isSelected && styles.sourceRowSelected,
                   ]}
                   onPress={() => handleSourceChange(source)}

@@ -695,8 +695,13 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       } else if (post.sourceId === 'hentaihaven') {
         resolveHentaiHavenEpisodeUrls(post, abortCtrl.signal)
           .then((files) => {
-            if (alive && files) {
-              setResolvedOriginalUrl(files.hls || null);
+            if (!alive) return;
+            if (files?.hls) {
+              console.log('[Viewer] hentaihaven bölüm çözüldü, oynatılıyor');
+              setResolvedOriginalUrl(files.hls);
+            } else {
+              // Seri/bölüm çekilemedi ya da HLS yok: kapak fotoğrafta kalır.
+              console.warn('[Viewer] hentaihaven bölüm çözülemedi, kapak kalıyor');
             }
           })
           .catch(() => {});

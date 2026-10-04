@@ -10,6 +10,8 @@ export interface BooruSource {
   authParams?: string;
   /** JSON API farklı host'ta ise burada tutulur */
   apiBaseUrl?: string;
+  /** true ise kaynak seçicide listelenmez (kayıtlı tercihler çalışmaya devam eder) */
+  hidden?: boolean;
 }
 
 export interface BooruTagGroups {
