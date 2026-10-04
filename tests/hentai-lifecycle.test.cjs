@@ -428,7 +428,8 @@ test('resolveHentaiHavenEpisodeUrls resolves episodes and direct HLS stream from
   assert.equal(resolved.episodes.length, 2);
   assert.equal(resolved.episodes[0].ep, 2);
   assert.equal(resolved.episodes[1].ep, 1);
-  assert.ok(resolved.tags.general.includes('Hentai School'));
+  assert.ok(resolved.tags.general.includes('School'));
+  assert.ok(!resolved.tags.general.includes('eHentai'));
   assert.ok(resolved.tags.artist.includes('Studio A'));
 
   // Tercihli bölüm (EP 1) seçildiğinde
@@ -473,4 +474,59 @@ test('searchHentaiHavenTags suggests genres from API', async () => {
   assert.equal(tags[0].name, 'Anal');
   assert.equal(tags[0].postCount, 331);
   assert.equal(tags[0].category, 'general');
+});
+
+test('cleanHentaiHavenTags filters out SEO spam tags and normalizes redundant suffixes', () => {
+  const hh = loadHentai();
+
+  const dirtyTags = [
+    'e Hentai', 'xAnimePorn', 'eHentai', 'Hentai Stream',
+    'Hanime TV', 'Anime Hentai', 'Hentai TV', 'Hanime',
+    'mp4Hentai', 'HentaiDude', 'Watch Hentai', 'Anime Porn',
+    'Sexy', 'Hentai Videos', 'Free Hentai', 'Hentai Anime',
+    'Hentai', 'ge Hentai', 'Hentai Porn', 'Hentai Foundry',
+    'Hentai Haven', 'HD', 'nHentai', 'Hentai Video',
+    'Rule 34', 'Hentai Chan', 'Hentai Manga', 'Hentai Vid',
+    'Gelbooru', 'Pornhub', 'xvideos', 'xhamster', 'hentaiporn',
+    // Gerçek anlamlı etiketler
+    'School', 'Hentai School', 'School Girl',
+    'Anal', 'Anal Hentai', 'Hentai Anal',
+    'Yuri', 'Yuri Hentai', 'Yuri Porn',
+    'Paizuri', 'Paizuri Hentai',
+    'Big Boobs', 'Blow Job', 'Creampie', 'Facial',
+    '3D Hentai',
+  ];
+
+  const cleaned = hh.cleanHentaiHavenTags(dirtyTags);
+
+  // Spam etiketlerin hiçbiri kalmamalı
+  assert.ok(!cleaned.includes('e Hentai'));
+  assert.ok(!cleaned.includes('eHentai'));
+  assert.ok(!cleaned.includes('Hentai'));
+  assert.ok(!cleaned.includes('Hentai Porn'));
+  assert.ok(!cleaned.includes('hentaiporn'));
+  assert.ok(!cleaned.includes('Gelbooru'));
+  assert.ok(!cleaned.includes('Pornhub'));
+  assert.ok(!cleaned.includes('xvideos'));
+  assert.ok(!cleaned.includes('Hanime'));
+  assert.ok(!cleaned.includes('HD'));
+  assert.ok(!cleaned.includes('Sexy'));
+  assert.ok(!cleaned.includes('Rule 34'));
+
+  // Gerçek etiketler korunmalı ve sadeleşmeli
+  assert.ok(cleaned.includes('School'));
+  assert.ok(cleaned.includes('School Girl'));
+  assert.ok(cleaned.includes('Anal'));
+  assert.ok(cleaned.includes('Yuri'));
+  assert.ok(cleaned.includes('Paizuri'));
+  assert.ok(cleaned.includes('Big Boobs'));
+  assert.ok(cleaned.includes('Blow Job'));
+  assert.ok(cleaned.includes('Creampie'));
+  assert.ok(cleaned.includes('Facial'));
+  assert.ok(cleaned.includes('3D Hentai'));
+
+  // Tekrarlar elenmeli ('Anal', 'Anal Hentai', 'Hentai Anal' tek 'Anal' olmalı)
+  assert.equal(cleaned.filter((t) => t.toLowerCase() === 'anal').length, 1);
+  assert.equal(cleaned.filter((t) => t.toLowerCase() === 'yuri').length, 1);
+  assert.equal(cleaned.filter((t) => t.toLowerCase() === 'paizuri').length, 1);
 });

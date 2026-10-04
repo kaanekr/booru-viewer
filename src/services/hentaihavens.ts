@@ -558,6 +558,132 @@ async function fetchHentaiHtml(
 }
 
 /**
+ * HentaiHaven SEO/Spam ve toplayıcı marka etiketleri havuzu.
+ * Sitenin veritabanında arama motoru sıralaması için eklenmiş 40+ gereksiz etiket elenir.
+ */
+export const HENTAIHAVEN_SPAM_TAGS = new Set([
+  // Toplayıcı ve rakip marka adları
+  'e hentai',
+  'ehentai',
+  'ge hentai',
+  'gehentai',
+  'xanimeporn',
+  'anime porn',
+  'animeporn',
+  'hanime tv',
+  'hanimetv',
+  'hanime',
+  'hentai stream',
+  'hentaistream',
+  'mp4hentai',
+  'hentaidude',
+  'watch hentai',
+  'watchhentai',
+  'hentai foundry',
+  'hentaifoundry',
+  'hentai haven',
+  'hentaihaven',
+  'nhentai',
+  'hentai chan',
+  'hentaichan',
+  'hentaicity',
+  'hentai city',
+  'gelbooru',
+  'danbooru',
+  'xhentai',
+  'ohentai',
+  'miohentai',
+  'hentaicore',
+  'hentaifreak',
+  'kisshentai',
+  'hentaiworld',
+  'rule 34',
+  'rule34',
+  'pornhub',
+  'xvideos',
+  'xhamster',
+  'spankbang',
+  'redgifs',
+  // Saf gürültü / ayırt edici olmayan jenerik kelimeler
+  'hentai',
+  'hentai porn',
+  'hentaiporn',
+  'hentai anime',
+  'anime hentai',
+  'hentai videos',
+  'hentai video',
+  'hentaivideos',
+  'hentaivideo',
+  'free hentai',
+  'freehentai',
+  'hentai manga',
+  'hentai vid',
+  'hentaivid',
+  'hentai tv',
+  'hentaitv',
+  'hd',
+  'sexy',
+]);
+
+/**
+ * Bir etiketin HentaiHaven spam/çöp etiketi olup olmadığını doğrular.
+ */
+export function isHentaiHavenSpamTag(tag: string | undefined): boolean {
+  const norm = (tag || '').toLowerCase().trim().replace(/[-_]+/g, ' ').replace(/\s+/g, ' ');
+  if (!norm || norm.length < 2) return true;
+  if (HENTAIHAVEN_SPAM_TAGS.has(norm)) return true;
+
+  // Jenerik kalıp kontrolleri
+  if (/^(watch|free|best|top|download)\s+hentai$/i.test(norm)) return true;
+  if (/^hentai\s+(stream|tube|city|hub|world|haven|freak|core|chan|foundry|dude|video|videos|porn)$/i.test(norm)) return true;
+  if (/^(kiss|mio|mp4|e|ge|x|o|n)\s*hentai/i.test(norm)) return true;
+
+  return false;
+}
+
+/**
+ * HentaiHaven etiket listesini SEO çöplerinden arındırır ve gereksiz tekrarları normalize eder.
+ * Örn:
+ * - 'eHentai', 'Gelbooru', 'Pornhub', 'Hentai' vb. tamamen atılır.
+ * - 'Anal Hentai' -> 'Anal', 'Yuri Porn' -> 'Yuri', 'Teacher Hentai' -> 'Teacher'.
+ * - Büyük/küçük harf duyarsız tekilleştirme yapılır.
+ */
+export function cleanHentaiHavenTags(rawTags: string[]): string[] {
+  const seen = new Set<string>();
+  const cleaned: string[] = [];
+
+  for (const raw of rawTags) {
+    if (!raw || typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (isHentaiHavenSpamTag(trimmed)) continue;
+
+    let norm = trimmed;
+    // '3D Hentai' dışındaki gereksiz ' Hentai' / 'Hentai ' eklerini sadeleştir
+    if (/\bhentai\b/i.test(norm) && norm.toLowerCase() !== '3d hentai') {
+      const stripped = norm.replace(/\bhentai\b/gi, '').trim().replace(/\s+/g, ' ');
+      if (stripped.length >= 3) {
+        norm = stripped;
+      }
+    }
+    // ' Porn' eklerini sadeleştir (örn. 'Yuri Porn' -> 'Yuri')
+    if (/\bporn\b/i.test(norm)) {
+      const stripped = norm.replace(/\bporn\b/gi, '').trim().replace(/\s+/g, ' ');
+      if (stripped.length >= 3) {
+        norm = stripped;
+      }
+    }
+
+    const key = norm.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      cleaned.push(norm);
+    }
+  }
+
+  return cleaned;
+}
+
+/**
  * Bir içeriğin ID veya slug'ından detay ve bölümlerini API ile çözer.
  */
 export async function resolveHentaiHavenGalleryDetail(
@@ -632,21 +758,23 @@ export async function resolveHentaiHavenGalleryDetail(
     // En yeni bölüm ilk sırada olsun
     episodes.sort((a, b) => b.ep - a.ep);
 
-    const generalTags: string[] = [];
+    const rawGeneral: string[] = [];
     if (Array.isArray(data.post_genres)) {
       data.post_genres.forEach((g: any) => {
-        if (g.name) generalTags.push(g.name);
+        if (g.name) rawGeneral.push(g.name);
       });
     }
     if (Array.isArray(data.post_tags)) {
       data.post_tags.forEach((t: any) => {
-        if (t.name) generalTags.push(t.name);
+        if (t.name) rawGeneral.push(t.name);
       });
     }
+    const generalTags = cleanHentaiHavenTags(rawGeneral);
+
     const artistTags: string[] = [];
     if (Array.isArray(data.post_authors)) {
       data.post_authors.forEach((a: any) => {
-        if (a.name) artistTags.push(a.name);
+        if (a.name && !isHentaiHavenSpamTag(a.name)) artistTags.push(a.name.trim());
       });
     }
 
