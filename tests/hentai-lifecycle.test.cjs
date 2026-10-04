@@ -133,3 +133,32 @@ test('parses episode json-ld into hls, thumb and duration', () => {
   const empty = hh.parseHentaiHavenEpisodeDetail('');
   assert.equal(empty.hls, '');
 });
+
+test('finds VideoObject when earlier json-ld blocks lack contentUrl (real page shape)', () => {
+  const hh = loadHentai();
+  const html = '<html><head>' +
+    '<script type="application/ld+json">{"@context":"https://schema.org","@type":"WebSite","name":"HentaiHaven"}</script>' +
+    '<script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebPage","url":"https://hentaihaven.xxx/watch/s/episode-2/"}]}</script>' +
+    '<script type="application/ld+json">{"@context":"https://schema.org","@type":"VideoObject","name":"Ep 2",' +
+    '"thumbnailUrl":["https://coverlanyvd.org/storage/2026/09/23/s-2/thumbnail.webp"],' +
+    '"duration":"PT15M40S",' +
+    '"contentUrl":"https://octopusmanifest.org/1d9a468b-622c-472e-8a37-2adb5dbdfba1/playlist.m3u8"}</script>' +
+    '</head><body></body></html>';
+  const files = hh.parseHentaiHavenEpisodeDetail(html);
+  assert.equal(files.hls, 'https://octopusmanifest.org/1d9a468b-622c-472e-8a37-2adb5dbdfba1/playlist.m3u8');
+  assert.equal(files.durationSec, 940);
+});
+
+test('falls back to player source tag and detects challenge pages', () => {
+  const hh = loadHentai();
+  const sourceOnly = '<html><body><video preload="none"><source src="https://octopusmanifest.org/abc/playlist.m3u8" type="application/vnd.apple.mpegurl"/></video></body></html>';
+  assert.equal(hh.parseHentaiHavenEpisodeDetail(sourceOnly).hls, 'https://octopusmanifest.org/abc/playlist.m3u8');
+  const mp4Only = '<html><body><video src="https://cdn.example.com/v/ep2.mp4"></video></body></html>';
+  const mp4 = hh.parseHentaiHavenEpisodeDetail(mp4Only);
+  assert.equal(mp4.hls, '');
+  assert.equal(mp4.mp4, 'https://cdn.example.com/v/ep2.mp4');
+  assert.equal(hh.isChallengeHtml('<div>Enable JavaScript and cookies to continue</div>'), true);
+  assert.equal(hh.isChallengeHtml('<div>window._cf_chl_opt</div>'), true);
+  assert.equal(hh.isChallengeHtml(DETAIL), false);
+  assert.equal(hh.isChallengeHtml(''), false);
+});

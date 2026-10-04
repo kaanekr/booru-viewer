@@ -170,32 +170,89 @@ export function parseHentaiHavenEpisodes(html: string, seriesUrl: string): Henta
 
 export interface HentaiHavenFiles {
   hls: string;
+  mp4: string;
   thumb: string;
   durationSec?: number;
 }
 
 /**
- * Bolum detay HTML'inden oynatilabilir dosyayi ayiklar:
- * JSON-LD VideoObject contentUrl (HLS m3u8) + thumbnailUrl + sure.
+ * Cloudflare yönetilen doğrulama sayfası: HTTP 200 dönüp içerik vermez
+ * ("Enable JavaScript and cookies to continue"). Metin iceriginden taninir;
+ * yoksa bos parse -> sessiz kapak kalma olur.
+ */
+export function isChallengeHtml(html: string | null | undefined): boolean {
+  if (!html) return false;
+  return (
+    html.includes('_cf_chl_opt') ||
+    html.includes('challenge-error-text') ||
+    html.includes('Enable JavaScript and cookies to continue')
+  );
+}
+
+/** Kaçışlı gömülü URL'leri normalize eder (\/, \u0026). */
+function unescapeUrl(u: string): string {
+  return u
+    .replace(/\\\//g, '/')
+    .replace(/\\u0026/gi, '&')
+    .replace(/&amp;/g, '&')
+    .trim();
+}
+
+/**
+ * Bolum detay HTML'inden oynatilabilir dosyayi ayiklar.
+ * Sayfada birden fazla JSON-LD blogu var (WebSite, WebPage, VideoObject):
+ * ILK blogu degil VideoObject icereni aramak gerekir - ilk sürümdeki
+ * "HLS bulunamadı" hatasının kök sebebi buydu.
+ * Sirasiyla: VideoObject contentUrl (m3u8) -> sayfadaki ilk m3u8 ->
+ * <source>/<video>/file mp4 yedegi + thumbnailUrl + sure.
  */
 export function parseHentaiHavenEpisodeDetail(html: string): HentaiHavenFiles {
-  const out: HentaiHavenFiles = { hls: '', thumb: '' };
+  const out: HentaiHavenFiles = { hls: '', mp4: '', thumb: '' };
   if (!html) return out;
-  const ldM = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/i);
-  const scope = ldM ? ldM[1] : html;
 
-  const hlsM = scope.match(/"contentUrl"\s*:\s*"([^"]+)"/i);
-  if (hlsM && /\.m3u8/i.test(hlsM[1].split('?')[0])) {
-    out.hls = hlsM[1].trim();
+  // 1) Tum JSON-LD bloklarini tara, VideoObject contentUrl (m3u8) oncelikli.
+  const ldBlocks: string[] = [];
+  const ldRe = /<script type="application\/ld\+json">([\s\S]*?)<\/script>/gi;
+  let lm: RegExpExecArray | null;
+  while ((lm = ldRe.exec(html)) !== null) ldBlocks.push(lm[1]);
+  const scopes = ldBlocks.length > 0 ? ldBlocks : [html];
+  for (const scope of scopes) {
+    const hlsM = scope.match(/"contentUrl"\s*:\s*"([^"]+)"/i);
+    if (hlsM) {
+      const url = unescapeUrl(hlsM[1]);
+      if (/\.m3u8/i.test(url.split('?')[0])) {
+        out.hls = url;
+        break;
+      }
+      // m3u8 degilse bile mp4 yedegi olarak sakla (asla bosa gitmesin).
+      if (!out.mp4 && /\.mp4/i.test(url.split('?')[0])) out.mp4 = url;
+    }
   }
-  const thM = scope.match(/"thumbnailUrl"\s*:\s*"([^"]+)"/i);
+
+  // 2) JSON-LD'de yoksa sayfadaki ilk m3u8 (player <source> + flight data).
+  if (!out.hls) {
+    const anyM = html.match(/https?:[^"'\s\\]*?\.m3u8[^"'\s\\]*/i);
+    if (anyM) out.hls = unescapeUrl(anyM[0]);
+  }
+
+  // 3) HLS hic yoksa mp4 yedegi: <source>/<video>/file:"...".
+  if (!out.hls && !out.mp4) {
+    const srcM =
+      html.match(/<source[^>]+src="([^"]+\.mp4[^"]*)"/i) ||
+      html.match(/<video[^>]+src="([^"]+\.mp4[^"]*)"/i) ||
+      html.match(/file\s*:\s*"([^"]+\.mp4[^"]*)"/i);
+    if (srcM) out.mp4 = unescapeUrl(decodeEntities(srcM[1]));
+  }
+
+  const scope0 = scopes.join('\n');
+  const thM = scope0.match(/"thumbnailUrl"\s*:\s*"([^"]+)"/i);
   if (!thM) {
-    const thArrM = scope.match(/"thumbnailUrl"\s*:\s*\[\s*"([^"]+)"/i);
+    const thArrM = scope0.match(/"thumbnailUrl"\s*:\s*\[\s*"([^"]+)"/i);
     if (thArrM) out.thumb = thArrM[1].trim();
   } else {
     out.thumb = thM[1].trim();
   }
-  const durM = scope.match(/"duration"\s*:\s*"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i);
+  const durM = scope0.match(/"duration"\s*:\s*"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?"/i);
   if (durM && (durM[1] || durM[2] || durM[3])) {
     out.durationSec = (Number(durM[1]) || 0) * 3600 + (Number(durM[2]) || 0) * 60 + (Number(durM[3]) || 0);
   }
@@ -242,6 +299,10 @@ export async function resolveHentaiHavenEpisodeUrls(
 
   const seriesHtml = await fetchHtml(post.sourceLink, 10000, 'seri');
   if (!seriesHtml) return null;
+  if (isChallengeHtml(seriesHtml)) {
+    console.warn('[HentaiHaven] doğrulama duvarı (seri)');
+    return null;
+  }
   const episodes = parseHentaiHavenEpisodes(seriesHtml, post.sourceLink);
   if (episodes.length === 0) {
     console.warn('[HentaiHaven] bölüm bulunamadı');
@@ -251,8 +312,12 @@ export async function resolveHentaiHavenEpisodeUrls(
   const epUrl = (baseM ? baseM[0] : HENTAIHAVEN_BASE) + episodes[0].url;
   const epHtml = await fetchHtml(epUrl, 10000, 'bölüm');
   if (!epHtml) return null;
+  if (isChallengeHtml(epHtml)) {
+    console.warn('[HentaiHaven] doğrulama duvarı (bölüm)');
+    return null;
+  }
   const files = parseHentaiHavenEpisodeDetail(epHtml);
-  if (!files.hls) {
+  if (!files.hls && !files.mp4) {
     console.warn('[HentaiHaven] HLS bulunamadı');
     return null;
   }
