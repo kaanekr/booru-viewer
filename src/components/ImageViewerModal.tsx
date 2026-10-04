@@ -408,6 +408,10 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
                 isActive={index === currentIndex}
                 suspended={suspended}
                 forceFull={previewOriginalId === item.id}
+                onTagsResolved={(tags, allTags) => {
+                  item.tags = tags;
+                  item.allTags = allTags;
+                }}
                 showControls={showControls}
                 screenWidth={windowWidth}
                 screenHeight={windowHeight}
@@ -552,6 +556,7 @@ interface PostPageItemProps {
   showControls?: boolean;
   screenWidth: number;
   screenHeight: number;
+  onTagsResolved?: (tags: BooruPost['tags'], allTags: string[]) => void;
   onToggleControls: () => void;
   onOpenDetails: () => void;
   onClose: () => void;
@@ -568,6 +573,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   showControls = true,
   screenWidth,
   screenHeight,
+  onTagsResolved,
   onToggleControls,
   onOpenDetails,
   onClose,
@@ -895,10 +901,9 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         if (detail.pages && detail.pages.length > 0) {
           setMangaPages(detail.pages);
         }
-        // Detaydan gelen kategorize etiketleri post'a aktar (Info paneli için)
+        // Detaydan gelen kategorize etiketleri Info paneline aktar
         if (detail.allTags && detail.allTags.length > 0) {
-          post.tags = detail.tags;
-          post.allTags = detail.allTags;
+          onTagsResolved?.(detail.tags, detail.allTags);
         }
       })
       .catch(() => {})
