@@ -1,4 +1,4 @@
-export type BooruType = 'danbooru' | 'gelbooru' | 'moebooru' | 'realbooru' | 'cumst' | 'redgifs' | 'xvideos' | 'xhamster' | 'pornhub' | 'sexcom' | 'hentaihaven';
+export type BooruType = 'danbooru' | 'gelbooru' | 'moebooru' | 'realbooru' | 'cumst' | 'redgifs' | 'xvideos' | 'xhamster' | 'pornhub' | 'sexcom' | 'hentaihaven' | 'nhentai';
 
 export interface BooruSource {
   id: string;
@@ -52,6 +52,9 @@ export interface BooruPost {
   niches?: string[];
   /** Premium kilitli içerik (örn. sex.com): listelerde elenir, izleyicide önizleme oynar */
   isPremium?: boolean;
+  /** Manga / doujinshi sayfa sayısı ve medya id'si (nhentai vb.) */
+  pageCount?: number;
+  mediaId?: string;
 }
 
 export interface BooruTagSuggestion {

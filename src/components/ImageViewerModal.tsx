@@ -65,6 +65,7 @@ import {
 } from '../utils/media';
 import { resolveSexComVideoUrls, selectSexComPlayable } from '../services/sexcom';
 import { resolveHentaiHavenEpisodeUrls, listHentaiHavenEpisodes, resolveHentaiHavenEpisodeUrl, HentaiHavenEpisode } from '../services/hentaihavens';
+import { resolveNHentaiPages } from '../services/nhentai';
 
 const { width: DEFAULT_SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -600,6 +601,19 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     () => [...hhEpisodes].sort((a, b) => a.ep - b.ep),
     [hhEpisodes]
   );
+  // nhentai: manga dikey okuyucu sayfaları ve aktif sayfa göstergesi
+  const [mangaPages, setMangaPages] = useState<string[]>([]);
+  const [mangaLoading, setMangaLoading] = useState(false);
+  const [currentMangaPage, setCurrentMangaPage] = useState(1);
+  const onMangaViewableChanged = useRef(({ viewableItems }: any) => {
+    if (viewableItems && viewableItems.length > 0) {
+      const first = viewableItems[0];
+      if (typeof first.index === 'number') {
+        setCurrentMangaPage(first.index + 1);
+      }
+    }
+  }).current;
+  const mangaViewabilityConfig = useRef({ itemVisiblePercentThreshold: 40 }).current;
   const [isZoomed, setIsZoomed] = useState(false);
   const [hasUpgradedToFull, setHasUpgradedToFull] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
@@ -829,6 +843,9 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     setHhEpisodes([]);
     setHhActiveEp(null);
     setHhEpLoading(false);
+    setMangaPages([]);
+    setCurrentMangaPage(1);
+    setMangaLoading(false);
     setHasUpgradedToFull(false);
     setSampleLoading(true);
     setSampleLoaded(false);
@@ -846,7 +863,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     // Video sitelerinde (PH/XV/XH) izleme sayfasında boyut bilgisi yok;
     // ölçü listeden gelir (PH 640x360). Bu fetch, video açılışındaki
     // çift sayfa indirmenin yarısıydı — atlanınca kasma azalır.
-    if (post.sourceId === 'pornhub' || post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom' || post.sourceId === 'hentaihaven') {
+    if (post.sourceId === 'pornhub' || post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom' || post.sourceId === 'hentaihaven' || post.sourceId === 'nhentai') {
       return;
     }
     let alive = true;
@@ -860,6 +877,29 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       alive = false;
     };
   }, [isActive, suspended, post.id, post.sourceLink, post.originalUrl, post.sampleUrl]);
+
+  // nhentai: manga albümünün tüm sayfalarını çözer (dikey okuyucu için)
+  useEffect(() => {
+    if (post.sourceId !== 'nhentai' || !isActive || suspended) return;
+    let alive = true;
+    const ctrl = new AbortController();
+    setMangaLoading(true);
+    resolveNHentaiPages(post, ctrl.signal)
+      .then((pages) => {
+        if (!alive) return;
+        if (pages && pages.length > 0) {
+          setMangaPages(pages);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (alive) setMangaLoading(false);
+      });
+    return () => {
+      alive = false;
+      ctrl.abort();
+    };
+  }, [isActive, suspended, post.id, post.sourceId, post.sourceLink, post.mediaId, post.pageCount]);
 
   /**
    * Çözünürlüğe göre net zoom tavanı: contain-fit'te 1:1 piksele denk gelen
@@ -1022,6 +1062,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     }
 
     if (!zoomed) {
+      if (post.sourceId === 'nhentai') return;
       const offsetY = e.nativeEvent.contentOffset.y;
       if (offsetY < -80 && !dismissingRef.current) {
         dismissingRef.current = true;
@@ -1035,6 +1076,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   };
 
   const handleScrollEndDrag = (e: any) => {
+    if (post.sourceId === 'nhentai') return;
     const zoomScale = e.nativeEvent.zoomScale || 1;
     if (zoomScale <= 1.05) {
       const offsetY = e.nativeEvent.contentOffset.y;
@@ -1113,6 +1155,74 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       }, DOUBLE_TAP_DELAY);
     }
   };
+
+  // nhentai: manga okuyucu (dikey akis / kesintisiz sayfalar)
+  if (post.sourceId === 'nhentai') {
+    const pages = mangaPages.length > 0 ? mangaPages : [post.sampleUrl || post.previewUrl];
+    return (
+      <View style={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000' }}>
+        {mangaLoading && mangaPages.length === 0 ? (
+          <View style={styles.loaderCenter} pointerEvents="none">
+            <ActivityIndicator size="large" color={Colors.dark.primary} />
+          </View>
+        ) : null}
+
+        <FlatList
+          data={pages}
+          keyExtractor={(item, index) => `${item}-${index}`}
+          horizontal={false}
+          showsVerticalScrollIndicator={true}
+          initialNumToRender={3}
+          maxToRenderPerBatch={4}
+          windowSize={5}
+          removeClippedSubviews={Platform.OS === 'android'}
+          contentContainerStyle={{ paddingBottom: Math.max(insets.bottom + 40, 60) }}
+          onViewableItemsChanged={onMangaViewableChanged}
+          viewabilityConfig={mangaViewabilityConfig}
+          renderItem={({ item, index }) => (
+            <TouchableWithoutFeedback onPress={onToggleControls}>
+              <View
+                style={{
+                  width: screenWidth,
+                  minHeight: Math.round(screenWidth * 1.42),
+                  backgroundColor: '#000000',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <Image
+                  source={{
+                    uri: item,
+                    headers: getMediaHeaders(item),
+                    cacheKey: `${item}:manga-page`,
+                  }}
+                  style={{ width: screenWidth, height: Math.round(screenWidth * 1.42) }}
+                  contentFit="contain"
+                  contentPosition="center"
+                  priority={index <= 2 ? 'high' : 'normal'}
+                  cachePolicy="memory-disk"
+                  transition={150}
+                />
+              </View>
+            </TouchableWithoutFeedback>
+          )}
+        />
+
+        {/* Floating Page Indicator Pill: Sayfa X / Y */}
+        <View
+          style={[
+            styles.mangaPagePill,
+            { bottom: Math.max(insets.bottom + 20, 28) },
+          ]}
+          pointerEvents="none"
+        >
+          <Text style={styles.mangaPagePillText}>
+            {currentMangaPage} / {mangaPages.length || post.pageCount || 1}
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000' }}>
@@ -2388,5 +2498,24 @@ const styles = StyleSheet.create({
   },
   hhEpisodeTextSelected: {
     color: '#FFFFFF',
+  },
+  // nhentai: dikey okuyucu sayfa gosterge hapi (Sayfa X / Y)
+  mangaPagePill: {
+    position: 'absolute',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.78)',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.22)',
+    zIndex: 25,
+    elevation: 8,
+  },
+  mangaPagePillText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
 });

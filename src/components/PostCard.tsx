@@ -4,7 +4,7 @@ import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEventListener } from 'expo';
 import * as Haptics from 'expo-haptics';
-import { Heart, Play, Volume2 } from 'lucide-react-native';
+import { BookOpen, Heart, Play, Volume2 } from 'lucide-react-native';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isUnsupportedOnIOS } from '../utils/media';
@@ -368,8 +368,15 @@ const PostCardComponent: React.FC<PostCardProps> = ({
         )}
       </View>
 
-      {/* File type badge if webm/gif/mp4/zip */}
-      {isWebm ? (
+      {/* File type badge if manga/webm/gif/mp4/zip */}
+      {post.sourceId === 'nhentai' || (post.pageCount && post.pageCount > 0) ? (
+        <View style={styles.mangaBadge}>
+          <BookOpen size={10} color="#FFFFFF" style={{ marginRight: 3 }} />
+          <Text style={styles.mediaBadgeText}>
+            {post.pageCount ? `${post.pageCount}P` : 'MANGA'}
+          </Text>
+        </View>
+      ) : isWebm ? (
         <View style={[styles.mediaBadge, Platform.OS === 'ios' ? styles.mediaBadgeUnsupported : styles.mediaBadgeWebm]}>
           <Text style={styles.mediaBadgeText}>WEBM</Text>
         </View>
@@ -558,6 +565,17 @@ const styles = StyleSheet.create({
     color: '#FFD700',
     fontSize: 10,
     fontWeight: '700',
+  },
+  mangaBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(237, 37, 83, 0.85)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
   },
   mediaBadge: {
     position: 'absolute',

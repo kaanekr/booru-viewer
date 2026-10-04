@@ -99,6 +99,14 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     description: 'Hentai serileri (trend akış + etiket araması)',
     isSafeOnly: false,
   },
+  {
+    id: 'nhentai',
+    name: 'nhentai',
+    baseUrl: 'https://nhentai.net',
+    type: 'nhentai',
+    description: 'Manga ve doujinshi arşivi (dikey okuyucu)',
+    isSafeOnly: false,
+  },
 ];
 
 export const DEFAULT_SOURCE: BooruSource = AVAILABLE_SOURCES[0];
