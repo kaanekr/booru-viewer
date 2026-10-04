@@ -25,6 +25,7 @@ function loadApi() {
       if (id === './xhamster') return {};
       if (id === './pornhub') return {};
       if (id === '../utils/guards') return {};
+      if (id === './sexcom') return {};
       throw new Error('Unexpected dependency: ' + id);
     },
     console: { warn() {} },

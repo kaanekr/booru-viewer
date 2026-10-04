@@ -346,6 +346,8 @@ export function getMediaHeaders(url: string | undefined): Record<string, string>
     headers['Referer'] = 'https://xhamster.com/';
   } else if (target.includes('pornhub.com') || target.includes('phncdn.com')) {
     headers['Referer'] = 'https://www.pornhub.com/';
+  } else if (target.includes('sex.com') || target.includes('sxccdn.com')) {
+    headers['Referer'] = 'https://www.sex.com/';
   } else if (target.includes('redgifs.com')) {
     // RedGifs CDN (media.redgifs.com) Referer olmadan 403 dönebiliyor
     headers['Referer'] = 'https://www.redgifs.com/';
