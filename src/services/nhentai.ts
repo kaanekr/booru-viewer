@@ -12,6 +12,16 @@ export const NHENTAI_BASE = 'https://nhentai.xxx';
 export const NHENTAI_IMAGE_BASE = 'https://i.nhentai.net';
 export const NHENTAI_THUMB_BASE = 'https://t.nhentai.net';
 
+/**
+ * Resmi v2 API (Cloudflare duvarı arkasında ama JSON API erişilebilir —
+ * v1 "/api/..." artık 403 "Use new API" döndürüyor, canlı doğrulandı).
+ * Mirror (nhentai.xxx) HTML'inde favori sayısı YOK; v2'de `num_favorites` gelir.
+ * Bu yüzden puan/skor, favori sayısına birebir eşlenir.
+ */
+export const NHENTAI_API_BASE = 'https://nhentai.net/api/v2';
+export const NHENTAI_API_THUMB_BASE = 'https://t1.nhentai.net';
+export const NHENTAI_API_IMAGE_BASE = 'https://i1.nhentai.net';
+
 export const NHENTAI_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36';
 
@@ -95,6 +105,110 @@ export function buildNHentaiSearchCandidates(
     `${base}/search/?q=${encoded}&page=${p}${sortSuffix}`,
     `https://nhentai.net/api/galleries/search?query=${encoded}&page=${p}`,
   ];
+}
+
+/**
+ * Filtre sıralaması -> v2 API `sort` değeri.
+ * v2 zaman aralıklı popülerliği de destekler (canlı doğrulandı):
+ * popular / popular-today / popular-week / popular-month / date
+ */
+export function nhentaiApiSort(sortBy?: string, timeRange?: string): string {
+  if (sortBy === 'score') {
+    if (timeRange === '1d') return 'popular-today';
+    if (timeRange === '1w') return 'popular-week';
+    if (timeRange === '1m') return 'popular-month';
+    return 'popular';
+  }
+  return 'date';
+}
+
+/**
+ * v2 API aday URL'leri. Skor (favori sayısı) ve zaman aralıklı popülerlik
+ * yalnız burada var; mirror HTML'inde yoktur.
+ * Not: `/galleries/popular` sayfalı değildir (page parametresi yok sayılıyor,
+ * canlı doğrulandı) — bu yüzden popüler akışta yalnız 1. sayfa API'den gelir.
+ */
+export function buildNHentaiApiCandidates(
+  page: number,
+  keyword: string,
+  sort: string = 'date'
+): string[] {
+  const p = Math.max(1, page);
+  const q = (keyword || '').trim();
+  if (!q) {
+    if (sort !== 'date') {
+      return p <= 1 ? [`${NHENTAI_API_BASE}/galleries/popular`] : [];
+    }
+    return [`${NHENTAI_API_BASE}/galleries?page=${p}`];
+  }
+  // v2 dışlama destekliyor (-etiket), meta operatörlerini (< > :) atıyoruz
+  const tokens = q
+    .split(/\s+/)
+    .map((t) => t.trim())
+    .filter((t) => t && !/[<>:{}[\]()|\\^$*]/.test(t));
+  if (tokens.length === 0) return [];
+  return [
+    `${NHENTAI_API_BASE}/search?query=${encodeURIComponent(tokens.join(' '))}&sort=${sort}&page=${p}`,
+  ];
+}
+
+/**
+ * v2 liste ayrıştırıcı. `num_favorites` -> score/favCount (puan = favori sayısı).
+ * Görseller t1/i1 CDN'inden gelir; liste yalnız tag_id verir (adlar detayda çözülür).
+ */
+export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): BooruPost[] {
+  const posts: BooruPost[] = [];
+  if (!jsonText) return posts;
+  try {
+    const data = JSON.parse(jsonText);
+    const items = Array.isArray(data) ? data : Array.isArray(data?.result) ? data.result : [];
+    const base = (source.baseUrl || NHENTAI_BASE).replace(/\/$/, '');
+    for (const item of items) {
+      if (!item || !item.id || !item.media_id) continue;
+      if (item.blacklisted) continue;
+      const id = String(item.id);
+      const mediaId = String(item.media_id);
+      const title = decodeEntities(
+        String(item.english_title || item.japanese_title || ('Gallery #' + id))
+      ).trim();
+      const thumbPath = String(item.thumbnail || '');
+      const thumb = thumbPath.startsWith('http')
+        ? thumbPath
+        : `${NHENTAI_API_THUMB_BASE}/${thumbPath.replace(/^\//, '')}`;
+      const cover = thumb.replace(/\/thumb\./i, '/cover.');
+      const width = Number(item.thumbnail_width) || 250;
+      const height = Number(item.thumbnail_height) || 350;
+      const aspectRatio = width > 0 && height > 0 ? width / height : 250 / 350;
+      const favorites = Number(item.num_favorites) || 0;
+      const pageCount = Number(item.num_pages) || 0;
+
+      posts.push({
+        id: 'nh_' + id,
+        sourceId: source.id,
+        sourceName: source.name,
+        title: title || undefined,
+        previewUrl: thumb,
+        sampleUrl: cover,
+        originalUrl: `${NHENTAI_API_IMAGE_BASE}/galleries/${mediaId}/1.webp`,
+        width,
+        height,
+        aspectRatio,
+        rating: 'e',
+        score: favorites,
+        favCount: favorites,
+        tags: { artist: [], character: [], copyright: [], general: [], meta: ['manga'] },
+        allTags: [],
+        sourceLink: `${base}/g/${id}/`,
+        fileExt: 'webp',
+        createdAt: new Date().toISOString(),
+        pageCount: pageCount > 0 ? pageCount : undefined,
+        mediaId,
+      });
+    }
+  } catch (e) {
+    console.warn('[nhentai] v2 JSON parse hatası:', e);
+  }
+  return posts;
 }
 
 /**
@@ -290,10 +404,28 @@ export function parseNHentaiGalleryPages(
   if (!raw) return [];
   const trimmed = raw.trim();
 
-  // 1) JSON yanıtı: /api/gallery/{id}
+  // 1) JSON yanıtı: v1 (/api/gallery/{id}) ve v2 (/api/v2/galleries/{id})
   if (trimmed.startsWith('{')) {
     try {
       const data = JSON.parse(trimmed);
+      // v2: pages: [{number, path, width, height}]
+      if (Array.isArray(data?.pages)) {
+        const v2Pages = data.pages
+          .map((p: any) => {
+            const path = typeof p === 'string' ? p : p?.path;
+            if (!path) return '';
+            const n = typeof p === 'object' && p?.number ? p.number : 0;
+            const abs = String(path).startsWith('http')
+              ? String(path)
+              : `${NHENTAI_API_IMAGE_BASE}/${String(path).replace(/^\//, '')}`;
+            return n ? `${n}|${abs}` : '';
+          })
+          .filter(Boolean)
+          .sort((a: string, b: string) => Number(a.split('|')[0]) - Number(b.split('|')[0]))
+          .map((s: string) => s.slice(s.indexOf('|') + 1));
+        if (v2Pages.length > 0) return v2Pages;
+      }
+      // v1
       const mediaId = data?.media_id;
       const pages = data?.images?.pages;
       if (mediaId && Array.isArray(pages)) {
@@ -428,6 +560,35 @@ export interface NHentaiResolvedGallery {
   tags: BooruTagGroups;
   allTags: string[];
   pageCount: number;
+  /** v2 detaydan gelen favori sayısı (skor); yoksa undefined */
+  numFavorites?: number;
+}
+
+/** v2 detay JSON'undan etiket gruplarını ayıklar (adlar + tipler gelir). */
+export function parseNHentaiV2DetailTags(jsonText: string): { tags: BooruTagGroups; allTags: string[]; numFavorites: number } {
+  const tags: BooruTagGroups = { artist: [], character: [], copyright: [], general: [], meta: ['manga'] };
+  const allTags: string[] = [];
+  let numFavorites = 0;
+  if (!jsonText) return { tags, allTags, numFavorites };
+  try {
+    const data = JSON.parse(jsonText);
+    numFavorites = Number(data?.num_favorites) || 0;
+    const list = Array.isArray(data?.tags) ? data.tags : [];
+    const seen = new Set<string>();
+    for (const t of list) {
+      const name = decodeEntities(String(t?.name || '')).trim();
+      if (!name || seen.has(name.toLowerCase())) continue;
+      seen.add(name.toLowerCase());
+      allTags.push(name);
+      const type = String(t?.type || '').toLowerCase();
+      if (type === 'artist' || type === 'group') tags.artist.push(name);
+      else if (type === 'character') tags.character.push(name);
+      else if (type === 'parody') tags.copyright.push(name);
+      else if (type === 'tag') tags.general.push(name);
+      else tags.meta.push(name);
+    }
+  } catch {}
+  return { tags, allTags, numFavorites };
 }
 
 /**
@@ -488,28 +649,28 @@ export async function resolveNHentaiGalleryDetail(
     }
   }
 
-  // 2. JSON API dene: /api/gallery/{id}
-  const jsonUrl = `https://nhentai.net/api/gallery/${rawId}`;
-  const jsonText = await fetchWithTimeout(jsonUrl, 8000);
-  if (jsonText) {
-    const pages = parseNHentaiGalleryPages(jsonText, rawId);
-    try {
-      const data = JSON.parse(jsonText);
-      const posts = parseNHentaiJsonListing(jsonText, { id: 'nhentai', name: 'nhentai', baseUrl: base, type: 'nhentai', description: '', isSafeOnly: false });
-      if (posts.length > 0 && pages.length > 0) {
-        return {
-          pages,
-          tags: posts[0].tags,
-          allTags: posts[0].allTags,
-          pageCount: pages.length,
-        };
-      }
-    } catch {}
+  // 2. v2 API detay: sayfalar + adlı etiketler + favori sayısı
+  const v2Url = `${NHENTAI_API_BASE}/galleries/${rawId}`;
+  const v2Text = await fetchWithTimeout(v2Url, 8000);
+  if (v2Text) {
+    const pages = parseNHentaiGalleryPages(v2Text, rawId);
+    const detail = parseNHentaiV2DetailTags(v2Text);
+    if (pages.length > 0 && detail.allTags.length > 0) {
+      return {
+        pages,
+        tags: detail.tags,
+        allTags: detail.allTags,
+        pageCount: pages.length,
+        numFavorites: detail.numFavorites || undefined,
+      };
+    }
     if (pages.length > 0) {
       return {
-        ...empty,
         pages,
+        tags: detail.tags,
+        allTags: detail.allTags,
         pageCount: pages.length,
+        numFavorites: detail.numFavorites || undefined,
       };
     }
   }
@@ -607,9 +768,68 @@ const COMMON_NHENTAI_TAGS: Array<{ name: string; category: TagCategory; postCoun
   { name: 'color', category: 'meta', postCount: 16000 },
 ];
 
+/** v2 etiket tipi -> uygulama kategorisi */
+function nhentaiTagCategory(type: string): TagCategory {
+  switch (type.toLowerCase()) {
+    case 'artist':
+    case 'group':
+      return 'artist';
+    case 'character':
+      return 'character';
+    case 'parody':
+      return 'copyright';
+    case 'language':
+    case 'category':
+      return 'meta';
+    default:
+      return 'general';
+  }
+}
+
+/** v2 etiket araması (gerçek gönderi sayılarıyla). */
+export async function searchNHentaiApiTags(
+  query: string,
+  types: string[] = ['tag', 'artist', 'character', 'parody'],
+  limit: number = 12
+): Promise<BooruTagSuggestion[]> {
+  const q = (query || '').trim();
+  if (!q) return [];
+  const out: BooruTagSuggestion[] = [];
+  const seen = new Set<string>();
+  await Promise.all(
+    types.map(async (type) => {
+      try {
+        const url = `${NHENTAI_API_BASE}/tags/${encodeURIComponent(type)}?search=${encodeURIComponent(q)}&sort=popular&per_page=${Math.min(
+          25,
+          Math.max(5, limit)
+        )}`;
+        const res = await proxyService.fetchWithFallback(
+          url,
+          { headers: { 'User-Agent': NHENTAI_UA, Accept: 'application/json' } },
+          4000
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        const list = Array.isArray(data?.result) ? data.result : [];
+        for (const t of list) {
+          const name = decodeEntities(String(t?.name || '')).trim();
+          if (!name || seen.has(name.toLowerCase())) continue;
+          seen.add(name.toLowerCase());
+          out.push({
+            name,
+            category: nhentaiTagCategory(String(t?.type || type)),
+            postCount: Number(t?.count) || 0,
+          });
+        }
+      } catch {}
+    })
+  );
+  return out.slice(0, limit);
+}
+
 /**
  * nhentai etiket araması / otomatik tamamlama.
- * Hem yerel popüler etiket havuzunu hem de /tags/ aramasını sorgular.
+ * Sıra: yerel havuz (anında) -> v2 API (gerçek sayılar) -> mirror /tags/ scrape.
  */
 export async function searchNHentaiTags(
   query: string,
@@ -630,7 +850,18 @@ export async function searchNHentaiTags(
     }
   }
 
-  // 2. Yeterli sonuç yoksa nhentai.xxx/tags/?key= sorgusu dene
+  // 2. v2 API etiket araması (gerçek gönderi sayıları, kategori tipleri)
+  if (results.length < limit) {
+    const apiResults = await searchNHentaiApiTags(q, ['tag', 'artist', 'character', 'parody'], limit);
+    for (const r of apiResults) {
+      if (seen.has(r.name.toLowerCase())) continue;
+      seen.add(r.name.toLowerCase());
+      results.push(r);
+      if (results.length >= limit) break;
+    }
+  }
+
+  // 3. Yeterli sonuç yoksa nhentai.xxx/tags/?key= sorgusu dene
   if (results.length < limit) {
     try {
       const url = `${NHENTAI_BASE}/tags/?key=${encodeURIComponent(q)}`;
