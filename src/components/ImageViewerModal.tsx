@@ -583,12 +583,15 @@ const MangaPageImage: React.FC<{
       setFailed(true);
     }
   }, []);
-  // Stall-guard: ne onLoad ne onError ateşlenirse host değiştir
+  // Stall-guard: ne onLoad ne onError ateşlenirse host değiştir. Süre KISA
+  // tutulur (4sn): ölü hostta beklemek yerine sıradaki host hemen denenir;
+  // hata verirse zaten anında geçilir (onError). Yavaş ama çalışan hostta
+  // 4sn dolmadan onLoad geleceği için erken geçiş olmaz.
   React.useEffect(() => {
     if (failed) return;
     const t = setTimeout(() => {
       if (!loadedRef.current) advance();
-    }, 15000);
+    }, 4000);
     return () => clearTimeout(t);
   }, [src, failed, advance]);
   return (
