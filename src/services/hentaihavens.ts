@@ -1,4 +1,5 @@
 ﻿import type { BooruPost, BooruSource } from '../types/booru';
+import { proxyService } from './proxyService';
 
 /**
  * HentaiHaven (https://hentaihaven.xxx) entegrasyonu - saf yardimcilar.
@@ -224,7 +225,8 @@ export async function resolveHentaiHavenEpisodeUrls(
     const onAbort = () => ctrl.abort();
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
     try {
-      const res = await fetch(url, { headers, signal: ctrl.signal });
+      // Dogrudan koparsa kayitli worker varsa tek seferlik oradan denenir.
+      const res = await proxyService.fetchWithFallback(url, { headers, signal: ctrl.signal }, ms);
       clearTimeout(timeout);
       if (!res.ok) return null;
       return await res.text();

@@ -1,4 +1,5 @@
 ﻿import type { BooruPost, BooruSource } from '../types/booru';
+import { proxyService } from './proxyService';
 
 /**
  * Sex.com (https://www.sex.com) entegrasyonu - saf yardimcilar.
@@ -228,15 +229,21 @@ export async function resolveSexComVideoUrls(
   }
 
   try {
-    const response = await fetch(post.sourceLink, {
-      headers: {
-        'User-Agent': SEXCOM_UA,
-        Referer: SEXCOM_BASE + '/',
-        'Accept-Language': 'en-US,en;q=0.9',
-        Accept: 'text/html,application/xhtml+xml',
+    // Dogrudan koparsa (TLS -1200 / bot duvari) kayitli worker varsa tek
+    // seferlik oradan denenir; workersiz direktten oteye gidilemez.
+    const response = await proxyService.fetchWithFallback(
+      post.sourceLink,
+      {
+        headers: {
+          'User-Agent': SEXCOM_UA,
+          Referer: SEXCOM_BASE + '/',
+          'Accept-Language': 'en-US,en;q=0.9',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+        signal: ctrl.signal,
       },
-      signal: ctrl.signal,
-    });
+      10000
+    );
     clearTimeout(timeout);
     if (!response.ok) return null;
     const html = await response.text();

@@ -14,7 +14,10 @@ function loadSexCom() {
   const module = { exports: {} };
   vm.runInNewContext(js, {
     module, exports: module.exports,
-    require: (id) => { throw new Error('sexcom must be dependency-free, got: ' + id); },
+    require: (id) => {
+      if (id === './proxyService') return {};
+      throw new Error('sexcom must be UI-dependency-free, got: ' + id);
+    },
   }, { filename });
   return module.exports;
 }
