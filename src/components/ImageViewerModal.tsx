@@ -554,8 +554,9 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 
 /**
  * Manga tek sayfa görseli: hata verirse sıradaki CDN hostuna geçer
- * (i2->i3->i4->i1; bazı ağlar tekil hostları engeller). Yüklenmeyen sayfa
- * boş siyah kare yerine minik yükleniyor göstergesi + sayfa numarası gösterir.
+ * (i3->i2->i4->i1; bazı ağlar tekil hostları engeller). expo-image takılan
+ * bağlantıda onError vermeden asılı kalır; 15sn stall-guard aynı rotasyonu
+ * tetikler. Yüklenmeyen sayfa boş siyah kare yerine bilgi metni gösterir.
  */
 const MangaPageImage: React.FC<{
   uri: string;
@@ -565,10 +566,31 @@ const MangaPageImage: React.FC<{
 }> = React.memo(({ uri, pageLabel, width, height }) => {
   const [src, setSrc] = React.useState(uri);
   const [failed, setFailed] = React.useState(false);
+  const srcRef = React.useRef(src);
+  srcRef.current = src;
+  const loadedRef = React.useRef(false);
   React.useEffect(() => {
     setSrc(uri);
     setFailed(false);
+    loadedRef.current = false;
   }, [uri]);
+  const advance = React.useCallback(() => {
+    const next = rotateNhentaiImageHost(srcRef.current);
+    if (next) {
+      loadedRef.current = false;
+      setSrc(next);
+    } else {
+      setFailed(true);
+    }
+  }, []);
+  // Stall-guard: ne onLoad ne onError ateşlenirse host değiştir
+  React.useEffect(() => {
+    if (failed) return;
+    const t = setTimeout(() => {
+      if (!loadedRef.current) advance();
+    }, 15000);
+    return () => clearTimeout(t);
+  }, [src, failed, advance]);
   return (
     <View
       style={{
@@ -591,14 +613,10 @@ const MangaPageImage: React.FC<{
           contentPosition="center"
           cachePolicy="memory-disk"
           transition={150}
-          onError={() => {
-            const next = rotateNhentaiImageHost(src);
-            if (next) {
-              setSrc(next);
-            } else {
-              setFailed(true);
-            }
+          onLoad={() => {
+            loadedRef.current = true;
           }}
+          onError={advance}
         />
       ) : (
         <Text style={{ color: '#666666', fontSize: 13 }}>
