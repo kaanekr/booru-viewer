@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const ts = require('typescript');
 
 // Gercek hentaihavens.ts yuklenir; tip importu derlemede silinir, modul bagimsizdir.
-function loadHentai(customProxyFetch) {
+function loadHentai(customProxyFetch, customGlobalFetch) {
   const filename = path.resolve(__dirname, '../src/services/hentaihavens.ts');
   const js = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -28,6 +28,8 @@ function loadHentai(customProxyFetch) {
       throw new Error('hentaihavens must be UI-dependency-free, got: ' + id);
     },
     setTimeout, clearTimeout, AbortController,
+    fetch: customGlobalFetch || fetch,
+    URLSearchParams, encodeURIComponent, decodeURIComponent, console,
   }, { filename });
   return module.exports;
 }
@@ -226,4 +228,249 @@ test('falls back to player source tag and detects challenge pages', () => {
   assert.equal(hh.isChallengeHtml('<div>window._cf_chl_opt</div>'), true);
   assert.equal(hh.isChallengeHtml(DETAIL), false);
   assert.equal(hh.isChallengeHtml(''), false);
+});
+
+test('official API warden token generation, caching, and single-flight mutex', async () => {
+  let callCount = 0;
+  const mockFetch = async (url) => {
+    if (url.includes('/warden')) {
+      callCount++;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, data: { token: 'mock-warden-jwt-token-xyz' } }),
+      };
+    }
+    return { ok: true, status: 200, json: async () => ({ success: true, data: {} }) };
+  };
+
+  const hh = loadHentai(null, mockFetch);
+  const [t1, t2] = await Promise.all([
+    hh.getHentaiHavenToken(),
+    hh.getHentaiHavenToken(),
+  ]);
+
+  assert.equal(t1, 'mock-warden-jwt-token-xyz');
+  assert.equal(t2, 'mock-warden-jwt-token-xyz');
+  // Single flight: aynı anda çağrıldığında sadece 1 kez /warden çağrılır
+  assert.equal(callCount, 1);
+
+  // Önbellekten okuma
+  const t3 = await hh.getHentaiHavenToken();
+  assert.equal(t3, 'mock-warden-jwt-token-xyz');
+  assert.equal(callCount, 1);
+});
+
+test('fetchHentaiHavenPosts uses API for feed, genre, and text search', async () => {
+  const mockFetch = async (url) => {
+    if (url.includes('/warden')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, data: { token: 'mock-token' } }),
+      };
+    }
+    if (url.includes('genre/all')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: [{ term_id: 102, name: 'Yuri', slug: 'yuri', count: 194 }],
+        }),
+      };
+    }
+    if (url.includes('hentai/all?p=1')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: {
+            hentais: [
+              {
+                post_ID: 7486,
+                post_title: 'Kami Machi Sana-chan',
+                post_name: 'kami-machi-sana-chan',
+                post_thumbnail: 'https://img.hentaihaven.xxx/cover.jpg',
+              },
+            ],
+          },
+        }),
+      };
+    }
+    if (url.includes('genre/102?p=1')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: {
+            hentais: [
+              {
+                post_ID: 9999,
+                post_title: 'Yuri Title',
+                post_name: 'yuri-title',
+                post_thumbnail: 'https://img.hentaihaven.xxx/yuri.jpg',
+              },
+            ],
+          },
+        }),
+      };
+    }
+    if (url.includes('search?q=maid')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: [
+            {
+              post_ID: 8888,
+              post_title: 'Maid Kyouiku',
+              post_name: 'maid-kyouiku',
+              post_thumbnail: 'https://img.hentaihaven.xxx/maid.jpg',
+            },
+          ],
+        }),
+      };
+    }
+    return { ok: false, status: 404 };
+  };
+
+  const hh = loadHentai(null, mockFetch);
+
+  // 1. Boş sorgu -> hentai/all
+  const feed = await hh.fetchHentaiHavenPosts(SOURCE, 1, '');
+  assert.equal(feed.length, 1);
+  assert.equal(feed[0].id, 'hh_7486');
+  assert.equal(feed[0].mediaId, '7486');
+  assert.equal(feed[0].title, 'Kami Machi Sana-chan');
+  assert.equal(feed[0].previewUrl, 'https://img.hentaihaven.xxx/cover.jpg');
+  assert.equal(feed[0].sourceLink, 'https://hentaihaven.xxx/watch/kami-machi-sana-chan/');
+
+  // 2. Tür araması -> genre/102
+  const genrePosts = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'yuri');
+  assert.equal(genrePosts.length, 1);
+  assert.equal(genrePosts[0].id, 'hh_9999');
+  assert.equal(genrePosts[0].title, 'Yuri Title');
+
+  // 3. Serbest metin araması -> search?q=maid
+  const searchPosts = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'maid');
+  assert.equal(searchPosts.length, 1);
+  assert.equal(searchPosts[0].id, 'hh_8888');
+  assert.equal(searchPosts[0].title, 'Maid Kyouiku');
+});
+
+test('resolveHentaiHavenEpisodeUrls resolves episodes and direct HLS stream from API', async () => {
+  const mockFetch = async (url) => {
+    if (url.includes('/warden')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, data: { token: 'mock-token' } }),
+      };
+    }
+    if (url.includes('hentai/7486')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: {
+            post_ID: 7486,
+            post_title: 'Kami Machi Sana-chan',
+            post_name: 'kami-machi-sana-chan',
+            post_content: 'Full description of the series.',
+            post_views: 1801083,
+            post_rating: { rating: '3.7', votes: 978 },
+            post_genres: [{ name: 'Hentai School' }, { name: 'Anal' }],
+            post_tags: [{ name: 'eHentai' }],
+            post_authors: [{ name: 'Studio A' }],
+            post_episodes: [
+              {
+                chapter_id: 4334,
+                chapter_name: 'Episode 1',
+                chapter_slug: 'episode-1',
+                chapter_content: 'https://octopusmanifest.org/6cbe2a19/playlist.m3u8',
+                preview: 'https://coverlanyvd.org/storage/preview.mp4',
+                chapter_thumbnail: 'https://coverlanyvd.org/storage/thumbnail.webp',
+              },
+              {
+                chapter_id: 4335,
+                chapter_name: 'Episode 2',
+                chapter_slug: 'episode-2',
+                chapter_content: 'https://octopusmanifest.org/6cbe2a20/playlist.m3u8',
+                preview: 'https://coverlanyvd.org/storage/preview2.mp4',
+                chapter_thumbnail: 'https://coverlanyvd.org/storage/thumbnail2.webp',
+              },
+            ],
+          },
+        }),
+      };
+    }
+    return { ok: false, status: 404 };
+  };
+
+  const hh = loadHentai(null, mockFetch);
+  const resolved = await hh.resolveHentaiHavenEpisodeUrls({
+    id: 'hh_7486',
+    mediaId: '7486',
+    sourceLink: 'https://hentaihaven.xxx/watch/kami-machi-sana-chan/',
+  });
+
+  assert.ok(resolved);
+  // En yeni bölüm (EP 2) ilk seçilir
+  assert.equal(resolved.hls, 'https://octopusmanifest.org/6cbe2a20/playlist.m3u8');
+  assert.equal(resolved.mp4, 'https://coverlanyvd.org/storage/preview2.mp4');
+  assert.equal(resolved.views, 1801083);
+  assert.equal(resolved.description, 'Full description of the series.');
+  assert.equal(resolved.episodes.length, 2);
+  assert.equal(resolved.episodes[0].ep, 2);
+  assert.equal(resolved.episodes[1].ep, 1);
+  assert.ok(resolved.tags.general.includes('Hentai School'));
+  assert.ok(resolved.tags.artist.includes('Studio A'));
+
+  // Tercihli bölüm (EP 1) seçildiğinde
+  const ep1 = await hh.resolveHentaiHavenEpisodeUrls(
+    { id: 'hh_7486', mediaId: '7486' },
+    undefined,
+    1
+  );
+  assert.ok(ep1);
+  assert.equal(ep1.hls, 'https://octopusmanifest.org/6cbe2a19/playlist.m3u8');
+});
+
+test('searchHentaiHavenTags suggests genres from API', async () => {
+  const mockFetch = async (url) => {
+    if (url.includes('/warden')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ success: true, data: { token: 'mock-token' } }),
+      };
+    }
+    if (url.includes('genre/all')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          success: true,
+          data: [
+            { term_id: 222, name: 'Anal', slug: 'anal', count: 331 },
+            { term_id: 11719, name: 'Big Breasts', slug: 'big-breasts', count: 50 },
+            { term_id: 102, name: 'Yuri', slug: 'yuri', count: 194 },
+          ],
+        }),
+      };
+    }
+    return { ok: false, status: 404 };
+  };
+
+  const hh = loadHentai(null, mockFetch);
+  const tags = await hh.searchHentaiHavenTags('anal');
+  assert.equal(tags.length, 1);
+  assert.equal(tags[0].name, 'Anal');
+  assert.equal(tags[0].postCount, 331);
+  assert.equal(tags[0].category, 'general');
 });

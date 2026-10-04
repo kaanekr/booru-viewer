@@ -41,6 +41,8 @@ import {
 import {
   buildHentaiHavenSearchCandidates,
   parseHentaiHavenListing,
+  fetchHentaiHavenPosts as fetchHHPostsService,
+  searchHentaiHavenTags,
   HENTAIHAVEN_BASE,
   HENTAIHAVEN_UA,
 } from './hentaihavens';
@@ -1655,47 +1657,8 @@ export class BooruApiService {
     tags: string,
     includeBlacklisted: boolean = false
   ): Promise<BooruPost[]> {
-    // Sitede serbest metin aramasi CSR'dir (duz fetch ile gorunmez);
-    // sorgu etiket slugina normalize edilip /tag/<slug>/ sayfasina gidilir.
-    // Tutmayan slug 404 -> bos liste (sonuc yok).
-    const k = tags
-      .split(/\s+/)
-      .map((t) => t.trim())
-      .filter(Boolean)
-      .filter((t) => !t.startsWith('-'))
-      .join(' ');
     void limit;
-
-    const candidates = buildHentaiHavenSearchCandidates(source.baseUrl || HENTAIHAVEN_BASE, page, k);
-    if (candidates.length === 0) return [];
-    const url = candidates[0];
-    const headers = {
-      'User-Agent': HENTAIHAVEN_UA,
-      Referer: `${(source.baseUrl || HENTAIHAVEN_BASE).replace(/\/$/, '')}/`,
-      'Accept-Language': 'en-US,en;q=0.9',
-      Accept: 'text/html,application/xhtml+xml',
-    };
-
-    let response: Response;
-    try {
-      response = await this.fetchWithRetry(url, { headers }, 1, 10000);
-    } catch (e: any) {
-      throw e instanceof Error ? e : new Error(String(e));
-    }
-    // 404 = olmayan etiket ya da sayfa sonu -> sessiz bos liste
-    if (response.status === 404) return [];
-    if (!response.ok) {
-      if (response.status === 429) {
-        throw new Error('HentaiHaven istek sınırı aşıldı (429 Too Many Requests). Lütfen bir süre bekleyin.');
-      }
-      if (response.status >= 500) {
-        throw new Error(`HentaiHaven sunucusu aşırı yüklendi (${response.status} ${response.statusText}).`);
-      }
-      throw new Error(`HentaiHaven hatası: ${response.status} ${response.statusText}`);
-    }
-
-    const html = await response.text();
-    const posts = parseHentaiHavenListing(html, source);
+    const posts = await fetchHHPostsService(source, page, tags);
     return await this.filterBlacklistedPosts(posts, includeBlacklisted);
   }
 
@@ -2374,9 +2337,11 @@ export class BooruApiService {
           }
         } catch {}
         return [];
-      } else if (source.type === 'xvideos' || source.type === 'xhamster' || source.type === 'pornhub' || source.type === 'sexcom' || source.type === 'hentaihaven') {
+      } else if (source.type === 'xvideos' || source.type === 'xhamster' || source.type === 'pornhub' || source.type === 'sexcom') {
         // Resmi öneri endpoint'i yok; istemci tarafı filtre yeterli
         return [];
+      } else if (source.type === 'hentaihaven') {
+        return await searchHentaiHavenTags(query, limit);
       } else if (source.type === 'nhentai') {
         return await searchNHentaiTags(query, limit);
       } else if (source.type === 'gelbooru' || source.type === 'realbooru') {

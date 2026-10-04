@@ -95,8 +95,9 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     id: 'hentaihaven',
     name: 'HentaiHaven',
     baseUrl: 'https://hentaihaven.xxx',
+    apiBaseUrl: 'https://api.hentaihaven.app/v1',
     type: 'hentaihaven',
-    description: 'Hentai serileri (trend akış + etiket araması)',
+    description: 'Hentai serileri (resmi v1 API + bölüm akışı)',
     isSafeOnly: false,
   },
   {
