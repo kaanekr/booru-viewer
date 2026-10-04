@@ -12,7 +12,7 @@ import { proxyService } from './proxyService';
  */
 
 export const NHENTAI_BASE = 'https://nhentai.net';
-export const NHENTAI_IMAGE_BASE = 'https://i2.nhentai.net';
+export const NHENTAI_IMAGE_BASE = 'https://i3.nhentai.net';
 export const NHENTAI_THUMB_BASE = 'https://t2.nhentai.net';
 
 /**
@@ -27,7 +27,7 @@ export const NHENTAI_THUMB_BASE = 'https://t2.nhentai.net';
 export const NHENTAI_API_BASE = 'https://nhentai.net/api/v2';
 export const NHENTAI_API_THUMB_BASE = 'https://t2.nhentai.net';
 export const NHENTAI_API_THUMB_FALLBACK_BASE = 'https://t3.nhentai.net';
-export const NHENTAI_API_IMAGE_BASE = 'https://i2.nhentai.net';
+export const NHENTAI_API_IMAGE_BASE = 'https://i3.nhentai.net';
 
 /**
  * v2 API istekleri Safari'yi birebir taklit eder (cihazda doğrulandı: aynı URL
@@ -594,10 +594,11 @@ export async function searchNHentaiTags(
  * Tam sayfa CDN host rotasyonu. Bazı ağlar tekil hostları engeller/çözemez
  * (cihazda doğrulandı: i1 ölü, i2/i3 yaşıyor). Sayfa hatasında sıradaki host
  * denenir; liste biterse null (vazgeç).
+ * Sıralama i3 önden: i1/i2 bazı ağlarda engelli, i3 en geniş erişilebilir olandır.
  */
 export const NHENTAI_API_IMAGE_HOSTS = [
-  'https://i2.nhentai.net',
   'https://i3.nhentai.net',
+  'https://i2.nhentai.net',
   'https://i4.nhentai.net',
   'https://i1.nhentai.net',
 ];
