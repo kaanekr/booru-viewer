@@ -32,7 +32,7 @@ function cardHtml(o) {
     '<img alt=\"' + o.title + '\" decoding=\"async\" srcSet=\"https://images.sxccdn.com/videos/' + o.id + '/288/thumbnail.0000012.jpg.webp 288w\" src=\"https://images.sxccdn.com/videos/' + o.id + '/288/thumbnail.0000012.jpg.webp\"/>' +
     '</div>' +
     '<div><div><time>' + o.duration + '</time></div></div>' +
-    '<video src=\"' + o.preview + '\" preload=\"none\" data-id=\"' + o.id + '\" data-title=\"' + o.title + '\" data-state=\"paused\"></video>' +
+    '<video src=\"' + o.preview + '\" preload=\"none\" data-premium=\"' + (o.premium || '0') + '\" data-id=\"' + o.id + '\" data-title=\"' + o.title + '\" data-state=\"paused\"></video>' +
     '</div></a>' +
     '<div><div>' +
     (o.channel ? '<div><a data-testid=\"video-link-to-source-channel\" href=\"/en/channels/600\">' + o.channel + '</a></div>' : '') +
@@ -197,4 +197,24 @@ test('poster.webp covers parse when no thumbnail frames exist', () => {
   const posts = sx.parseSexComListing(html, SOURCE);
   assert.equal(posts.length, 1);
   assert.equal(posts[0].previewUrl, 'https://images.sxccdn.com/videos/978584/288/poster.webp');
+});
+
+test('premium cards are flagged and excluded from listings', () => {
+  const sx = loadSexCom();
+  const free = sx.parseSexComListing(LISTING, SOURCE);
+  assert.ok(free.every((p) => p.isPremium === false));
+  const premiumHtml = '<html><body>' + cardHtml({
+    id: '999999', title: 'Premium Clip', duration: '22:10',
+    preview: 'https://videos2.sex.com/999999/preview_240p.mp4',
+    channel: 'Ocean Channel', views: '5K', rating: '99', premium: '1',
+  }) + '</body></html>';
+  const mixed = sx.parseSexComListing(LISTING + premiumHtml, SOURCE);
+  assert.equal(mixed.length, 3);
+  const premium = mixed.filter((p) => p.isPremium);
+  assert.equal(premium.length, 1);
+  assert.equal(premium[0].id, 'sx_999999');
+  const kept = sx.excludePremiumPosts(mixed);
+  assert.equal(kept.length, 2);
+  assert.ok(kept.every((p) => !p.isPremium));
+  assert.equal(sx.excludePremiumPosts([]).length, 0);
 });

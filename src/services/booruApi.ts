@@ -34,6 +34,7 @@ import type { PornhubOrdering, PornhubVideo } from './pornhub';
 import {
   buildSexComSearchCandidates,
   parseSexComListing,
+  excludePremiumPosts,
   SEXCOM_BASE,
   SEXCOM_UA,
 } from './sexcom';
@@ -1635,7 +1636,8 @@ export class BooruApiService {
 
     const html = await response.text();
     const posts = parseSexComListing(html, source);
-    return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+    // Premium kilitli videoların tam dosyası sunulmuyor: ızgaraya girmez.
+    return await this.filterBlacklistedPosts(excludePremiumPosts(posts), includeBlacklisted);
   }
 
   private async fetchHentaiHavenPosts(

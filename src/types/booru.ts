@@ -48,6 +48,8 @@ export interface BooruPost {
   createdAt: string;
   /** RedGifs kategori (niche) id'leri, örn. ['3-somes', 'natural-tits'] */
   niches?: string[];
+  /** Premium kilitli içerik (örn. sex.com): listelerde elenir, izleyicide önizleme oynar */
+  isPremium?: boolean;
 }
 
 export interface BooruTagSuggestion {
