@@ -23,6 +23,8 @@ class ProxyService {
     /thumb-cdn\d*\.xvideos-cdn\.com/i,
     /thumbs-gcore\.xvideos-cdn\.com/i,
     /mp4-cdn\d*\.xvideos-cdn\.com/i,
+    /videos\d*\.sex\.com/i,
+    /premium-videos\d*\.sex\.com/i,
   ];
 
   /** Ham URL TLS-kırılgan bir CDN'e mi işaret ediyor? */
