@@ -8,15 +8,14 @@ import { proxyService } from './proxyService';
  * - Thumbnail: thumb.jpg / 1t.jpg -> Full: 1.webp / 1.jpg.
  */
 
-export const NHENTAI_BASE = 'https://nhentai.xxx';
-export const NHENTAI_IMAGE_BASE = 'https://i.nhentai.net';
-export const NHENTAI_THUMB_BASE = 'https://t.nhentai.net';
+export const NHENTAI_BASE = 'https://nhentai.net';
+export const NHENTAI_IMAGE_BASE = 'https://i1.nhentai.net';
+export const NHENTAI_THUMB_BASE = 'https://t1.nhentai.net';
 
 /**
- * Resmi v2 API (Cloudflare duvarı arkasında ama JSON API erişilebilir —
- * v1 "/api/..." artık 403 "Use new API" döndürüyor, canlı doğrulandı).
- * Mirror (nhentai.xxx) HTML'inde favori sayısı YOK; v2'de `num_favorites` gelir.
- * Bu yüzden puan/skor, favori sayısına birebir eşlenir.
+ * Resmi v2 API (https://nhentai.net/api/v2/docs).
+ * Tamamen resmi REST JSON API üzerinden çalışır; ayna veya HTML kazıma kullanılmaz.
+ * Puan/skor doğrudan `num_favorites` değerine eşlenir.
  */
 export const NHENTAI_API_BASE = 'https://nhentai.net/api/v2';
 export const NHENTAI_API_THUMB_BASE = 'https://t1.nhentai.net';
@@ -592,7 +591,8 @@ export function parseNHentaiV2DetailTags(jsonText: string): { tags: BooruTagGrou
 }
 
 /**
- * nhentai galeri detayını (sayfalar + etiketler) çözer.
+ * nhentai galeri detayını (sayfalar + etiketler + favori sayısı) doğrudan
+ * resmi v2 API'den (https://nhentai.net/api/v2/docs) çözer.
  */
 export async function resolveNHentaiGalleryDetail(
   post: { id?: string; sourceLink?: string; mediaId?: string; pageCount?: number; fileExt?: string },
@@ -608,21 +608,11 @@ export async function resolveNHentaiGalleryDetail(
   const rawId = (post.id || '').replace(/^nh_/, '');
   if (!rawId) return empty;
 
-  const linkHost = post.sourceLink?.match(/^https?:\/\/([^/]+)/i)?.[1] || '';
-  const base = linkHost ? `https://${linkHost}` : NHENTAI_BASE;
-  /**
-   * Ayna (nhentai.xxx) ve net FARKLI galeri id uzayına sahip (canlı doğrulandı:
-   * net 685915 = "Furina Hu Tao", ayna 685915 = "Houkago Dorei Club"). Bu yüzden
-   * detay çözümü tek kaynağa bağlıdır: net kayıtları sadece v2 API'den, ayna
-   * kayıtları sadece ayna HTML'inden çözülür. Karıştırma yanlış manga açar.
-   */
-  const isNetGallery = /(^|\.)nhentai\.net$/i.test(linkHost) || /^\d+$/.test(String(post.mediaId || ''));
-
   const headers = {
     'User-Agent': NHENTAI_UA,
-    Referer: `${base}/`,
+    Referer: `${NHENTAI_BASE}/`,
     'Accept-Language': 'en-US,en;q=0.9',
-    Accept: 'text/html,application/json,*/*',
+    Accept: 'application/json,*/*',
   };
 
   const fetchWithTimeout = async (url: string, ms = 9000): Promise<string | null> => {
@@ -641,68 +631,30 @@ export async function resolveNHentaiGalleryDetail(
     }
   };
 
-  // Net kayıtları: v2 detay (sayfalar + adlı etiketler + favori sayısı)
-  if (isNetGallery) {
-    const v2Text = await fetchWithTimeout(`${NHENTAI_API_BASE}/galleries/${rawId}`, 8000);
-    if (v2Text) {
-      const pages = parseNHentaiGalleryPages(v2Text, rawId);
-      const detail = parseNHentaiV2DetailTags(v2Text);
-      if (pages.length > 0) {
-        return {
-          pages,
-          tags: detail.tags,
-          allTags: detail.allTags,
-          pageCount: pages.length,
-          numFavorites: detail.numFavorites || undefined,
-        };
-      }
-    }
-    // Sentetik güvenlik ağı (net CDN, uzantı korunur)
-    if (post.mediaId && post.pageCount && post.pageCount > 0) {
-      const ext = (post.fileExt || 'webp').toLowerCase().replace('jpeg', 'jpg');
-      const synthetic: string[] = [];
-      for (let p = 1; p <= post.pageCount; p++) {
-        synthetic.push(`${NHENTAI_API_IMAGE_BASE}/galleries/${post.mediaId}/${p}.${ext}`);
-      }
-      return { ...empty, pages: synthetic, pageCount: synthetic.length };
-    }
-    return empty;
-  }
-
-  // Ayna kayıtları: detay HTML sayfası /g/{id}/
-  const detailUrl = `${base}/g/${rawId}/`;
-  const detailText = await fetchWithTimeout(detailUrl, 9000);
-  if (detailText) {
-    const pages = parseNHentaiGalleryPages(detailText, rawId);
-    const parsedTags = parseNHentaiTagsFromHtml(detailText);
-    const mirrorFavorites = parseNHentaiFavoritesFromHtml(detailText);
+  // 1. Resmi v2 API detay: GET /api/v2/galleries/{id}
+  const v2Text = await fetchWithTimeout(`${NHENTAI_API_BASE}/galleries/${rawId}`, 8000);
+  if (v2Text) {
+    const pages = parseNHentaiGalleryPages(v2Text, rawId);
+    const detail = parseNHentaiV2DetailTags(v2Text);
     if (pages.length > 0) {
       return {
         pages,
-        tags: parsedTags.tags,
-        allTags: parsedTags.allTags,
+        tags: detail.tags,
+        allTags: detail.allTags,
         pageCount: pages.length,
-        numFavorites: mirrorFavorites || undefined,
+        numFavorites: detail.numFavorites || undefined,
       };
     }
   }
 
-  // Sentetik güvenlik ağı: ayna CDN'i (i5.nhentaimg.com/018/<slug>/N.webp)
+  // 2. Ağ hatası durumunda sentetik CDN güvenlik ağı (i1.nhentai.net)
   if (post.mediaId && post.pageCount && post.pageCount > 0) {
-    const isSlug = !/^\d+$/.test(String(post.mediaId));
+    const ext = (post.fileExt || 'webp').toLowerCase().replace('jpeg', 'jpg');
     const synthetic: string[] = [];
     for (let p = 1; p <= post.pageCount; p++) {
-      synthetic.push(
-        isSlug
-          ? `https://i5.nhentaimg.com/018/${post.mediaId}/${p}.webp`
-          : `${NHENTAI_IMAGE_BASE}/galleries/${post.mediaId}/${p}.jpg`
-      );
+      synthetic.push(`${NHENTAI_API_IMAGE_BASE}/galleries/${post.mediaId}/${p}.${ext}`);
     }
-    return {
-      ...empty,
-      pages: synthetic,
-      pageCount: synthetic.length,
-    };
+    return { ...empty, pages: synthetic, pageCount: synthetic.length };
   }
 
   return empty;
@@ -894,55 +846,6 @@ export async function searchNHentaiTags(
       results.push(r);
       if (results.length >= limit) break;
     }
-  }
-
-  // 3. Yeterli sonuç yoksa nhentai.xxx/tags/?key= sorgusu dene
-  if (results.length < limit) {
-    try {
-      const url = `${NHENTAI_BASE}/tags/?key=${encodeURIComponent(q)}`;
-      const res = await proxyService.fetchWithFallback(
-        url,
-        {
-          headers: {
-            'User-Agent': NHENTAI_UA,
-            Referer: `${NHENTAI_BASE}/`,
-          },
-        },
-        5000
-      );
-      if (res.ok) {
-        const html = await res.text();
-        const re = /<a[^>]+href=(["'])\/tag\/([^"']+)\/\1[^>]*>([\s\S]*?)<\/a>/gi;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(html)) !== null) {
-          const slug = m[2];
-          const inner = m[3];
-          const nameM = inner.match(/<span[^>]*class=['"]tag_name(?:\s+[^'"]*)?['"][^>]*>([^<]+)<\/span>/i);
-          const countM = inner.match(/<span[^>]*class=['"]tag_count(?:\s+[^'"]*)?['"][^>]*>([^<]+)<\/span>/i);
-          const name = nameM ? decodeEntities(nameM[1]).trim() : slug.replace(/-/g, ' ');
-          if (!name || seen.has(name.toLowerCase())) continue;
-          seen.add(name.toLowerCase());
-
-          let count = 0;
-          if (countM) {
-            const raw = countM[1].trim();
-            const km = raw.match(/([\d.]+)\s*([KMB])?/i);
-            if (km) {
-              const val = parseFloat(km[1]);
-              const unit = (km[2] || '').toUpperCase();
-              count = Math.round(val * (unit === 'K' ? 1000 : unit === 'M' ? 1000000 : 1));
-            }
-          }
-
-          results.push({
-            name,
-            category: 'general',
-            postCount: count,
-          });
-          if (results.length >= limit) break;
-        }
-      }
-    } catch {}
   }
 
   return results.slice(0, limit);

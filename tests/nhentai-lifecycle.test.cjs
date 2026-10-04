@@ -221,26 +221,19 @@ test('detail resolution never mixes mirror and net id spaces', async () => {
   });
   assert.equal(netDetail.pageCount, 1);
   assert.equal(netDetail.numFavorites, 610);
-  assert.ok(netCalls.every((u) => u.includes('/api/v2/')), 'net kaydı yalnız API ile çözülür');
+  assert.ok(netCalls.every((u) => u.includes('/api/v2/galleries/685915')), 'v2 API detay endpointi cagrilir');
 
-  // Ayna kayıt: yalnız ayna HTML'i çekilir, api/v2'ye gidilmez
-  const mirrorCalls = [];
-  const nhMirror = loadNHentai(async (url) => {
-    mirrorCalls.push(url);
-    return { ok: false, status: 404 };
-  });
-  const mirrorDetail = await nhMirror.resolveNHentaiGalleryDetail({
+  // Ağ hatasında sentetik güvenlik ağı (i1.nhentai.net)
+  const nhOffline = loadNHentai(async () => ({ ok: false, status: 500 }));
+  const fallback = await nhOffline.resolveNHentaiGalleryDetail({
     id: 'nh_685915',
-    sourceLink: 'https://nhentai.xxx/g/685915/',
-    mediaId: 'atyign0sbo',
-    pageCount: 32,
+    mediaId: '4224557',
+    pageCount: 3,
+    fileExt: 'webp',
   });
-  assert.equal(mirrorCalls.length, 1);
-  assert.ok(mirrorCalls[0].startsWith('https://nhentai.xxx/g/685915/'), 'ayana gidilir');
-  assert.ok(
-    mirrorDetail.pages[0] === 'https://i5.nhentaimg.com/018/atyign0sbo/1.webp',
-    'ayana CDN sentetik sayfalar slug ile üretilir: ' + mirrorDetail.pages[0]
-  );
+  assert.equal(fallback.pageCount, 3);
+  assert.equal(fallback.pages[0], 'https://i1.nhentai.net/galleries/4224557/1.webp');
+  assert.equal(fallback.pages[2], 'https://i1.nhentai.net/galleries/4224557/3.webp');
 });
 
 test('parseNHentaiFavoritesFromHtml reads mirror favorite counter', () => {
@@ -295,9 +288,9 @@ test('parseNHentaiJsonListing extracts manga metadata, tags, covers, pageCount',
   assert.equal(p.mediaId, '1556093');
   assert.equal(p.title, 'Sample Manga');
   assert.equal(p.pageCount, 3);
-  assert.equal(p.previewUrl, 'https://t.nhentai.net/galleries/1556093/thumb.jpg');
-  assert.equal(p.sampleUrl, 'https://t.nhentai.net/galleries/1556093/cover.jpg');
-  assert.equal(p.originalUrl, 'https://i.nhentai.net/galleries/1556093/1.jpg');
+  assert.equal(p.previewUrl, 'https://t1.nhentai.net/galleries/1556093/thumb.jpg');
+  assert.equal(p.sampleUrl, 'https://t1.nhentai.net/galleries/1556093/cover.jpg');
+  assert.equal(p.originalUrl, 'https://i1.nhentai.net/galleries/1556093/1.jpg');
   assert.equal(p.score, 4520);
   assert.equal(p.rating, 'e');
   assert.equal(p.tags.artist[0], 'cool_artist');
@@ -338,9 +331,9 @@ test('parseNHentaiGalleryPages parses pages from API JSON', () => {
   });
   const pages = nh.parseNHentaiGalleryPages(detailJson, '298547');
   assert.equal(pages.length, 3);
-  assert.equal(pages[0], 'https://i.nhentai.net/galleries/1556093/1.jpg');
-  assert.equal(pages[1], 'https://i.nhentai.net/galleries/1556093/2.png');
-  assert.equal(pages[2], 'https://i.nhentai.net/galleries/1556093/3.webp');
+  assert.equal(pages[0], 'https://i1.nhentai.net/galleries/1556093/1.jpg');
+  assert.equal(pages[1], 'https://i1.nhentai.net/galleries/1556093/2.png');
+  assert.equal(pages[2], 'https://i1.nhentai.net/galleries/1556093/3.webp');
 });
 
 test('parseNHentaiGalleryPages parses pages from nhentaimg and nhentai HTML thumbnails', () => {
@@ -373,8 +366,8 @@ test('parseNHentaiGalleryPages parses pages from nhentaimg and nhentai HTML thum
     '</div></body></html>';
   const netPages = nh.parseNHentaiGalleryPages(netHtml, '123');
   assert.equal(netPages.length, 2);
-  assert.equal(netPages[0], 'https://i.nhentai.net/galleries/999/1.jpg');
-  assert.equal(netPages[1], 'https://i.nhentai.net/galleries/999/2.png');
+  assert.equal(netPages[0], 'https://i1.nhentai.net/galleries/999/1.jpg');
+  assert.equal(netPages[1], 'https://i1.nhentai.net/galleries/999/2.png');
 });
 
 test('resolveNHentaiPages resolves pages end-to-end with synthetic fallback', async () => {
@@ -520,18 +513,25 @@ test('searchNHentaiApiTags uses official POST /api/v2/tags/search', async () => 
   assert.equal(tags[2].category, 'artist');
 });
 
-test('resolveNHentaiGalleryDetail resolves pages and categorized tags together', async () => {
+test('resolveNHentaiGalleryDetail resolves pages and categorized tags together via v2 API', async () => {
   const customFetch = async (url) => {
-    if (url.includes('/g/703517/')) {
+    if (url.includes('/api/v2/galleries/703517')) {
       return {
         ok: true,
-        text: async () => '<html><body>' +
-          '<span class="text">Pages:</span><span class="tags"><a class="tag_btn"><span class="tag_name pages">20</span></a></span>' +
-          '<input type="hidden" name="load_id" id="load_id" value="testfolder" />' +
-          '<div class="gt_th"><a href="/g/703517/1/"><img data-src="https://i5.nhentaimg.com/018/testfolder/1t.jpg"/></a></div>' +
-          '<a class="tag_btn" href="/artist/cool-artist/"><span class="tag_name">cool artist</span></a>' +
-          '<a class="tag_btn" href="/tag/milf/"><span class="tag_name">milf</span></a>' +
-          '</body></html>',
+        text: async () => JSON.stringify({
+          id: 703517,
+          media_id: 'testfolder',
+          num_pages: 20,
+          num_favorites: 107,
+          tags: [
+            { id: 1, type: 'artist', name: 'cool artist' },
+            { id: 2, type: 'tag', name: 'milf' },
+          ],
+          pages: [
+            { number: 1, path: 'galleries/testfolder/1.webp' },
+            { number: 2, path: 'galleries/testfolder/2.webp' },
+          ],
+        }),
       };
     }
     return { ok: false, status: 404 };
@@ -539,10 +539,11 @@ test('resolveNHentaiGalleryDetail resolves pages and categorized tags together',
 
   const nh = loadNHentai(customFetch);
   const detail = await nh.resolveNHentaiGalleryDetail({ id: 'nh_703517' });
-  assert.equal(detail.pages.length, 20);
-  assert.equal(detail.pages[0], 'https://i5.nhentaimg.com/018/testfolder/1.webp');
+  assert.equal(detail.pages.length, 2);
+  assert.equal(detail.pages[0], 'https://i1.nhentai.net/galleries/testfolder/1.webp');
   assert.equal(detail.tags.artist[0], 'cool artist');
   assert.equal(detail.tags.general[0], 'milf');
   assert.ok(detail.allTags.includes('cool artist'));
   assert.ok(detail.allTags.includes('milf'));
+  assert.equal(detail.numFavorites, 107);
 });
