@@ -139,6 +139,16 @@ const MIN_SCORE_OPTIONS: { label: string; value: number | undefined }[] = [
   { label: '500+ Puan', value: 500 },
 ];
 
+/** nhentai'de skor = favori sayısı; ölçek daha yüksek (binler). */
+const NHENTAI_MIN_SCORE_OPTIONS: { label: string; value: number | undefined }[] = [
+  { label: 'Fark Etmez', value: undefined },
+  { label: '100+ Favori', value: 100 },
+  { label: '500+ Favori', value: 500 },
+  { label: '1.000+ Favori', value: 1000 },
+  { label: '5.000+ Favori', value: 5000 },
+  { label: '10.000+ Favori', value: 10000 },
+];
+
 interface SearchFilterModalProps {
   visible: boolean;
   filterConfig: SearchFilterConfig;
@@ -625,8 +635,6 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
               <View style={styles.rowDivider} />
 
               {/* Popularity Time Range / Leaderboard (Zaman Dilimi) */}
-              {/* nhentai mirror'ında zaman aralıklı popülerlik yok (yalnız tüm zamanlar) */}
-              {activeSource.type !== 'nhentai' ? (
               <TouchableOpacity
                 style={styles.rowItem}
                 onPress={() => setShowTimePicker(true)}
@@ -642,7 +650,6 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                   <ChevronRight size={18} color={Colors.dark.textMuted} />
                 </View>
               </TouchableOpacity>
-              ) : null}
 
               {activeSource.type === 'cumst' ? (
                 <>
@@ -700,34 +707,41 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                     </View>
                   </TouchableOpacity>
                 </>
-              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven' || activeSource.type === 'nhentai' ? null : (
+              ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven' ? null : (
                 <>
+                  {/* Rating: nhentai'de tüm içerik 'e' (Explicit) olduğu için anlamsız */}
+                  {activeSource.type !== 'nhentai' ? (
+                    <>
+                      <View style={styles.rowDivider} />
+
+                      {/* Rating Filter */}
+                      <TouchableOpacity
+                        style={styles.rowItem}
+                        onPress={() => setShowRatingPicker(true)}
+                        activeOpacity={0.7}
+                      >
+                        <Text style={styles.rowLabel}>Derecelendirme</Text>
+                        <View style={styles.rowRight}>
+                          <Text style={[styles.rowValue, draft.rating !== 'all' && { color: GOLD_ACCENT }]}>
+                            {getRatingLabel()}
+                          </Text>
+                          <ChevronRight size={18} color={Colors.dark.textMuted} />
+                        </View>
+                      </TouchableOpacity>
+                    </>
+                  ) : null}
+
                   <View style={styles.rowDivider} />
 
-                  {/* Rating Filter */}
-                  <TouchableOpacity
-                    style={styles.rowItem}
-                    onPress={() => setShowRatingPicker(true)}
-                    activeOpacity={0.7}
-                  >
-                    <Text style={styles.rowLabel}>Derecelendirme</Text>
-                    <View style={styles.rowRight}>
-                      <Text style={[styles.rowValue, draft.rating !== 'all' && { color: GOLD_ACCENT }]}>
-                        {getRatingLabel()}
-                      </Text>
-                      <ChevronRight size={18} color={Colors.dark.textMuted} />
-                    </View>
-                  </TouchableOpacity>
-
-                  <View style={styles.rowDivider} />
-
-                  {/* Min Score */}
+                  {/* Min Score (nhentai'de = favori sayısı) */}
                   <TouchableOpacity
                     style={styles.rowItem}
                     onPress={() => setShowScorePicker(true)}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.rowLabel}>Min Puan (Score)</Text>
+                    <Text style={styles.rowLabel}>
+                      {activeSource.type === 'nhentai' ? 'Min Favori (Puan)' : 'Min Puan (Score)'}
+                    </Text>
                     <View style={styles.rowRight}>
                       <Text style={[styles.rowValue, draft.minScore ? { color: GOLD_ACCENT } : {}]}>
                         {getScoreLabel()}
@@ -934,9 +948,16 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
             <View style={styles.modalOverlay}>
               <TouchableWithoutFeedback>
                 <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>Minimum Puan (Score)</Text>
+                  <Text style={styles.popoverTitle}>
+                    {activeSource.type === 'nhentai'
+                      ? 'Minimum Favori Sayısı'
+                      : 'Minimum Puan (Score)'}
+                  </Text>
                   <View style={styles.popoverList}>
-                    {MIN_SCORE_OPTIONS.map((opt, i) => {
+                    {(activeSource.type === 'nhentai'
+                      ? NHENTAI_MIN_SCORE_OPTIONS
+                      : MIN_SCORE_OPTIONS
+                    ).map((opt, i) => {
                       const isSelected = draft.minScore === opt.value;
                       return (
                         <TouchableOpacity

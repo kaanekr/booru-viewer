@@ -45,9 +45,13 @@ import {
   HENTAIHAVEN_UA,
 } from './hentaihavens';
 import {
+  buildNHentaiApiCandidates,
   buildNHentaiSearchCandidates,
+  nhentaiApiSort,
   parseNHentaiListing,
+  parseNHentaiV2Listing,
   searchNHentaiTags,
+  NHENTAI_API_BASE,
   NHENTAI_BASE,
   NHENTAI_UA,
 } from './nhentai';
@@ -1706,43 +1710,53 @@ export class BooruApiService {
     includeBlacklisted: boolean = false,
     filter?: SearchFilterConfig
   ): Promise<BooruPost[]> {
-    const k = tags
+    const tokens = tags
       .split(/\s+/)
       .map((t) => t.trim())
-      .filter(Boolean)
-      .filter((t) => !t.startsWith('-'))
-      .join(' ');
+      .filter(Boolean);
+    const k = tokens.filter((t) => !t.startsWith('-')).join(' ');
     void limit;
 
-    // Mirror'un desteklediği tek sıralama: popüler (score -> sort=popular).
-    // Zaman aralıkları (1d/1w/1m) mirror'da yok sayılır, sessizce latest'e düşer.
-    const sort = filter?.sortBy === 'score' ? 'popular' : undefined;
-    const candidates = buildNHentaiSearchCandidates(source.baseUrl || NHENTAI_BASE, page, k, sort);
-    let lastError: any = null;
+    // Öncelik v2 API'de: favori sayısı (skor) ve zaman aralıklı popülerlik
+    // yalnız orada var. Cihazda TLS kırılgan (worker yoksa düşer) — o durumda
+    // mirror HTML adaylarına düşülür (skor 0 gelir, liste yine dolar).
+    const apiSort = nhentaiApiSort(filter?.sortBy, filter?.timeRange);
+    const apiCandidates = buildNHentaiApiCandidates(page, k, apiSort);
+    const mirrorSort = filter?.sortBy === 'score' ? 'popular' : undefined;
+    const mirrorCandidates = buildNHentaiSearchCandidates(
+      source.baseUrl || NHENTAI_BASE,
+      page,
+      k,
+      mirrorSort
+    );
+    const candidates = [...apiCandidates, ...mirrorCandidates];
 
+    const headers = {
+      'User-Agent': NHENTAI_UA,
+      Referer: `${NHENTAI_BASE}/`,
+      'Accept-Language': 'en-US,en;q=0.9',
+      Accept: 'application/json,text/html,*/*',
+    };
+
+    let lastError: any = null;
     for (const url of candidates) {
       try {
-        const response = await proxyService.fetchWithFallback(
-          url,
-          {
-            headers: {
-              'User-Agent': NHENTAI_UA,
-              Referer: `${(source.baseUrl || NHENTAI_BASE).replace(/\/$/, '')}/`,
-              'Accept-Language': 'en-US,en;q=0.9',
-              Accept: 'application/json,text/html,*/*',
-            },
-          },
-          10000
-        );
+        const response = await proxyService.fetchWithFallback(url, { headers }, 10000);
         if (response.status === 404) return [];
         if (!response.ok) {
           lastError = new Error(`HTTP ${response.status}`);
           continue;
         }
         const text = await response.text();
-        const posts = parseNHentaiListing(text, source);
+        const isApi = url.startsWith(NHENTAI_API_BASE);
+        const posts = isApi
+          ? parseNHentaiV2Listing(text, source)
+          : parseNHentaiListing(text, source);
         if (posts.length > 0) {
-          return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+          return await this.filterNHentaiMinScore(
+            await this.filterBlacklistedPosts(posts, includeBlacklisted),
+            filter
+          );
         }
       } catch (err) {
         lastError = err;
@@ -1752,6 +1766,18 @@ export class BooruApiService {
       console.warn('[BooruAPI] nhentai adayları başarısız oldu:', lastError);
     }
     return [];
+  }
+
+  /**
+   * Min puan eşiği: v2'de skor = favori sayısı olduğu için istemcide uygulanır.
+   * Mirror HTML'inde skor verisi yoktur (hepsi 0); bu durumda filtre uygulanmaz,
+   * aksi halde sonuç listesini boş yazardı.
+   */
+  private filterNHentaiMinScore(posts: BooruPost[], filter?: SearchFilterConfig): BooruPost[] {
+    const min = filter?.minScore;
+    if (!min || min <= 0 || posts.length === 0) return posts;
+    if (!posts.some((p) => (p.score || 0) > 0)) return posts;
+    return posts.filter((p) => (p.score || 0) >= min);
   }
 
   private async fetchXHamsterPosts(

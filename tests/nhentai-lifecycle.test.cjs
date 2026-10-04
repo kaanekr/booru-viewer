@@ -74,6 +74,112 @@ test('buildNHentaiSearchCandidates appends sort=popular for popular sort', () =>
   assert.equal(plain[0], 'https://nhentai.xxx/');
 });
 
+test('nhentaiApiSort maps sort option + time range to v2 sort values', () => {
+  const nh = loadNHentai();
+  assert.equal(nh.nhentaiApiSort('score', 'all'), 'popular');
+  assert.equal(nh.nhentaiApiSort('score', '1d'), 'popular-today');
+  assert.equal(nh.nhentaiApiSort('score', '1w'), 'popular-week');
+  assert.equal(nh.nhentaiApiSort('score', '1m'), 'popular-month');
+  assert.equal(nh.nhentaiApiSort('id', 'all'), 'date');
+  assert.equal(nh.nhentaiApiSort('default', '1w'), 'date');
+  assert.equal(nh.nhentaiApiSort(undefined, undefined), 'date');
+});
+
+test('buildNHentaiApiCandidates builds v2 feed, popular and search urls', () => {
+  const nh = loadNHentai();
+  assert.equal(nh.NHENTAI_API_BASE, 'https://nhentai.net/api/v2');
+
+  const feed = nh.buildNHentaiApiCandidates(2, '', 'date');
+  assert.equal(feed.join('|'), 'https://nhentai.net/api/v2/galleries?page=2');
+
+  const popular = nh.buildNHentaiApiCandidates(1, '', 'popular');
+  assert.equal(popular.join('|'), 'https://nhentai.net/api/v2/galleries/popular');
+  // popular endpoint sayfalı değil -> derin sayfalar API'ye gitmez
+  assert.equal(nh.buildNHentaiApiCandidates(2, '', 'popular').length, 0);
+
+  const search = nh.buildNHentaiApiCandidates(3, 'big breasts', 'popular-week');
+  assert.equal(search[0], 'https://nhentai.net/api/v2/search?query=big%20breasts&sort=popular-week&page=3');
+
+  // meta operatörleri temizlenir, normal kelimeler korunur
+  const cleaned = nh.buildNHentaiApiCandidates(1, 'score:>50 naruto <3', 'date');
+  assert.equal(cleaned[0], 'https://nhentai.net/api/v2/search?query=naruto&sort=date&page=1');
+});
+
+test('parseNHentaiV2Listing maps num_favorites to score and favCount', () => {
+  const nh = loadNHentai();
+  const body = JSON.stringify({
+    result: [
+      {
+        id: 685915,
+        media_id: '4224557',
+        english_title: 'Furina Hu Tao [English]',
+        thumbnail: 'galleries/4224557/thumb.webp',
+        thumbnail_width: 250,
+        thumbnail_height: 350,
+        num_pages: 21,
+        num_favorites: 454,
+        tag_ids: [1, 2],
+        blacklisted: false,
+      },
+      { id: 2, media_id: '9', num_favorites: 5, blacklisted: true },
+    ],
+  });
+  const posts = nh.parseNHentaiV2Listing(body, SOURCE);
+  assert.equal(posts.length, 1, 'kara listelenenler elenir');
+  const p = posts[0];
+  assert.equal(p.id, 'nh_685915');
+  assert.equal(p.title, 'Furina Hu Tao [English]');
+  assert.equal(p.score, 454, 'skor favori sayısına eşlenir');
+  assert.equal(p.favCount, 454);
+  assert.equal(p.pageCount, 21);
+  assert.equal(p.mediaId, '4224557');
+  assert.equal(p.previewUrl, 'https://t1.nhentai.net/galleries/4224557/thumb.webp');
+  assert.equal(p.sampleUrl, 'https://t1.nhentai.net/galleries/4224557/cover.webp');
+  assert.equal(p.originalUrl, 'https://i1.nhentai.net/galleries/4224557/1.webp');
+  assert.ok(Math.abs(p.aspectRatio - 250 / 350) < 0.001);
+
+  // popular endpoint düz dizi döner
+  const arr = nh.parseNHentaiV2Listing('[{"id":1,"media_id":"7","num_favorites":10}]', SOURCE);
+  assert.equal(arr.length, 1);
+  assert.equal(arr[0].score, 10);
+});
+
+test('parseNHentaiV2DetailTags groups tags and returns favorites', () => {
+  const nh = loadNHentai();
+  const body = JSON.stringify({
+    num_favorites: 12000,
+    tags: [
+      { type: 'category', name: 'doujinshi' },
+      { type: 'artist', name: 'tachi iyashi' },
+      { type: 'parody', name: 'naruto' },
+      { type: 'tag', name: 'big breasts' },
+      { type: 'language', name: 'english' },
+      { type: 'tag', name: 'big breasts' },
+    ],
+  });
+  const { tags, allTags, numFavorites } = nh.parseNHentaiV2DetailTags(body);
+  assert.equal(numFavorites, 12000);
+  assert.equal(tags.meta.join(','), 'manga,doujinshi,english');
+  assert.equal(tags.artist.join(','), 'tachi iyashi');
+  assert.equal(tags.copyright.join(','), 'naruto');
+  assert.equal(tags.general.join(','), 'big breasts');
+  assert.equal(allTags.length, 5, 'tekrar eden etiketler elenir');
+});
+
+test('parseNHentaiGalleryPages reads v2 detail page paths in order', () => {
+  const nh = loadNHentai();
+  const body = JSON.stringify({
+    media_id: '4224557',
+    pages: [
+      { number: 2, path: 'galleries/4224557/2.webp' },
+      { number: 1, path: 'galleries/4224557/1.webp' },
+    ],
+  });
+  const pages = nh.parseNHentaiGalleryPages(body, '685915');
+  assert.equal(pages.join('|'),
+    'https://i1.nhentai.net/galleries/4224557/1.webp|https://i1.nhentai.net/galleries/4224557/2.webp');
+});
+
 const JSON_LISTING = JSON.stringify({
   result: [
     {
@@ -200,12 +306,18 @@ test('parseNHentaiGalleryPages parses pages from nhentaimg and nhentai HTML thum
 
 test('resolveNHentaiPages resolves pages end-to-end with synthetic fallback', async () => {
   const customFetch = async (url) => {
-    if (url.includes('/api/gallery/298547')) {
+    if (url.includes('/api/v2/galleries/298547')) {
       return {
         ok: true,
         text: async () => JSON.stringify({
+          id: 298547,
           media_id: '1556093',
-          images: { pages: [{ t: 'j' }, { t: 'j' }] },
+          num_favorites: 42,
+          tags: [{ type: 'tag', name: 'big breasts' }],
+          pages: [
+            { number: 1, path: 'galleries/1556093/1.jpg' },
+            { number: 2, path: 'galleries/1556093/2.jpg' },
+          ],
         }),
       };
     }
@@ -215,7 +327,7 @@ test('resolveNHentaiPages resolves pages end-to-end with synthetic fallback', as
   const nh = loadNHentai(customFetch);
   const resolved = await nh.resolveNHentaiPages({ id: 'nh_298547' });
   assert.equal(resolved.length, 2);
-  assert.equal(resolved[0], 'https://i.nhentai.net/galleries/1556093/1.jpg');
+  assert.equal(resolved[0], 'https://i1.nhentai.net/galleries/1556093/1.jpg');
 
   // Synthetic fallback when network fails but mediaId + pageCount exist
   const nhOffline = loadNHentai(async () => ({ ok: false, status: 500 }));
