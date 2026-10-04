@@ -91,6 +91,33 @@ test('buildNHentaiApiCandidates builds v2 feed, popular and search urls accordin
   // Doküman: favorites:>=N yerel desteklenir, query sonuna otomatik eklenir
   const withMinScore = nh.buildNHentaiApiCandidates(1, 'naruto', 'popular', 1000);
   assert.equal(withMinScore[0], 'https://nhentai.net/api/v2/search?query=naruto%20favorites%3A%3E%3D1000&sort=popular&page=1');
+
+  // tag: mekaniği ve dışlama aynen taşınır (tırnaklar encode edilir)
+  const prefixed = nh.buildNHentaiApiCandidates(1, 'tag:"big breasts"', 'date');
+  assert.equal(prefixed[0], 'https://nhentai.net/api/v2/search?query=tag%3A%22big%20breasts%22&sort=date&page=1');
+
+  const negated = nh.buildNHentaiApiCandidates(2, 'tag:"sole female" -tag:"netorare"', 'popular');
+  assert.equal(negated[0], 'https://nhentai.net/api/v2/search?query=tag%3A%22sole%20female%22%20-tag%3A%22netorare%22&sort=popular&page=2');
+});
+
+test('nhentaiTagQuery builds prefix mechanics per category', () => {
+  const nh = loadNHentai();
+  assert.equal(nh.nhentaiTagQuery('big breasts', 'general'), 'tag:"big breasts"');
+  assert.equal(nh.nhentaiTagQuery('sole-female', 'general'), 'tag:"sole-female"');
+  assert.equal(nh.nhentaiTagQuery('shindol', 'artist'), 'artist:"shindol"');
+  assert.equal(nh.nhentaiTagQuery('naruto uzumaki', 'character'), 'character:"naruto uzumaki"');
+  assert.equal(nh.nhentaiTagQuery('naruto', 'copyright'), 'parody:"naruto"');
+  assert.equal(nh.nhentaiTagQuery('nunpokojin', 'artist'), 'artist:"nunpokojin"');
+  assert.equal(nh.nhentaiTagQuery('english', 'meta'), 'language:"english"');
+  assert.equal(nh.nhentaiTagQuery('doujinshi', 'meta'), 'category:"doujinshi"');
+  // Bilinmeyen meta öneksiz kalır (yanlış önek boş sonuç demek)
+  assert.equal(nh.nhentaiTagQuery('color', 'meta'), 'color');
+  assert.equal(nh.nhentaiTagQuery('mystery', undefined), 'mystery');
+  // Zaten önekli girdi normalize edilir, çift öneklenmez
+  assert.equal(nh.nhentaiTagQuery('tag:sole-female', 'general'), 'tag:sole-female');
+  assert.equal(nh.nhentaiTagQuery('tag:big breasts', 'general'), 'tag:"big breasts"');
+  assert.equal(nh.nhentaiTagQuery('artist:shindol', 'artist'), 'artist:shindol');
+  assert.equal(nh.nhentaiTagQuery('', 'general'), '');
 });
 
 test('parseNHentaiV2Listing maps num_favorites to score and favCount', () => {

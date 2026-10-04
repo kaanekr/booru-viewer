@@ -107,6 +107,60 @@ export function nhentaiApiSort(sortBy?: string, timeRange?: string): string {
   return 'date';
 }
 
+/** Bilinen dil etiketleri (meta kategoride `language:` öneki alır). */
+const NHENTAI_LANGUAGE_TAGS = new Set([
+  'english', 'japanese', 'chinese', 'translated', 'spanish', 'french',
+  'portuguese', 'german', 'italian', 'russian', 'korean', 'vietnamese',
+  'thai', 'indonesian', 'polish', 'dutch',
+]);
+
+/** Bilinen kategori etiketleri (meta kategoride `category:` öneki alır). */
+const NHENTAI_CATEGORY_TAGS = new Set([
+  'doujinshi', 'manga', 'doujin', 'oneshot', 'anthology', 'magazine',
+]);
+
+/**
+ * Etiket adı + kategoriden v2 API `önek:"ad"` sorgusu üretir
+ * (https://nhentai.net/api/v2/docs: keywords, "exact phrase", -negation,
+ * `artist:name`, `language:english`, `tag:"big breasts"`, `favorites:>=100`).
+ * Düz anahtar kelime araması başlıklarda full-text eşleşir; `tag:` öneki GERÇEK
+ * etiket eşleşmesi yapar (örn. `big breasts` 237.388, `tag:"big breasts"` 236.569
+ * ama farklı ilk sonuç — canlı doğrulandı).
+ * Zaten önekli girdi normalize edilir (`tag:big breasts` -> `tag:"big breasts"`).
+ * Bilinmeyen meta kategori öneksiz bırakılır (yanlış önek = boş sonuç riski).
+ */
+export function nhentaiTagQuery(name: string, category?: TagCategory | string): string {
+  const clean = (name || '').trim().replace(/^"+|"+$/g, '').trim();
+  if (!clean) return '';
+  const prefixed = clean.match(/^([a-z][a-z-]*):(.*)$/i);
+  if (prefixed) {
+    const val = prefixed[2].trim().replace(/^"+|"+$/g, '').trim();
+    if (!val) return clean;
+    return /\s/.test(val)
+      ? `${prefixed[1].toLowerCase()}:"${val}"`
+      : `${prefixed[1].toLowerCase()}:${val}`;
+  }
+  const quoted = (s: string) => `"${s.replace(/"/g, '')}"`;
+  switch ((category || '').toLowerCase()) {
+    case 'artist':
+      return `artist:${quoted(clean)}`;
+    case 'character':
+      return `character:${quoted(clean)}`;
+    case 'copyright':
+      return `parody:${quoted(clean)}`;
+    case 'general':
+      return `tag:${quoted(clean)}`;
+    case 'meta': {
+      const lower = clean.toLowerCase();
+      if (NHENTAI_LANGUAGE_TAGS.has(lower)) return `language:${quoted(clean)}`;
+      if (NHENTAI_CATEGORY_TAGS.has(lower)) return `category:${quoted(clean)}`;
+      return clean;
+    }
+    default:
+      return clean;
+  }
+}
+
 /**
  * v2 API aday URL'leri (resmi dokümantasyona göre: https://nhentai.net/api/v2/docs).
  * - En yeniler (filtresiz): GET /api/v2/galleries?page={p}&per_page=25
