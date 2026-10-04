@@ -88,8 +88,13 @@ export function nhentaiApiSort(sortBy?: string, timeRange?: string): string {
 /**
  * v2 API aday URL'leri (resmi dokümantasyona göre: https://nhentai.net/api/v2/docs).
  * - En yeniler (filtresiz): GET /api/v2/galleries?page={p}&per_page=25
+ * - Günün popülerleri (kelimesiz): GET /api/v2/galleries/popular (yalnız 1. sayfa,
+ *   94ms — `query=*&sort=popular-today` ile aynı havuz ama katbekat hızlı)
  * - Popüler akış (kelimesiz): GET /api/v2/search?query=*&sort={sort}&page={p}
  *   (dokümana göre query=* tüm arşivi döner; 650.000+ galeri sayfalanabilir).
+ *   NOT: `*` + zaman aralıklı sıralama sunucuda saniyeler sürer (popular-month
+ *   ~4s ölçüldü); istemci timeout'u buna göre cömert tutulur, retry YAPILMAZ
+ *   (her retry rate-limit bütçesini yakar: search anonim 10 req/dk).
  * - Arama: GET /api/v2/search?query={q}&sort={sort}&page={p}
  *   (doküman: keywords, "exact phrase", -negation, artist:x, tag:x, favorites:>=X).
  */
@@ -108,6 +113,9 @@ export function buildNHentaiApiCandidates(
   }
 
   if (!q) {
+    if (sort === 'popular-today') {
+      return p <= 1 ? [`${NHENTAI_API_BASE}/galleries/popular`] : [];
+    }
     if (sort !== 'date') {
       // Kelimesiz popüler akış: query=* ile tüm arşiv popülerliğe göre sayfalanır (25/sayfa)
       return [`${NHENTAI_API_BASE}/search?query=*&sort=${sort}&page=${p}`];
