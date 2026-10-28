@@ -40,7 +40,6 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     type: 'gelbooru',
     description: 'Community anime & illustration board',
     isSafeOnly: false,
-    authParams: 'api_key=4f974c8bf93033653826bf3811fdae8f4e3f505ccc2a1e7977997fbac1ecdcea826d65696c494f35b49fb5cd38dedb43e19ead140f32442cb5432403df8896f6&user_id=1903250',
   },
   {
     id: 'cumst',
@@ -63,7 +62,7 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     name: 'XVideos',
     baseUrl: 'https://www.xvideos.com',
     type: 'xvideos',
-    description: 'Popüler video platformu araması (önizlemeli klipler)',
+    description: 'Popular video platform search (with preview clips)',
     isSafeOnly: false,
   },
   {
@@ -71,7 +70,7 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     name: 'XHamster',
     baseUrl: 'https://xhamster.com',
     type: 'xhamster',
-    description: 'Popüler video platformu araması (önizlemeli klipler)',
+    description: 'Popular video platform search (with preview clips)',
     isSafeOnly: false,
   },
   {
@@ -79,7 +78,7 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     name: 'Pornhub',
     baseUrl: 'https://www.pornhub.com',
     type: 'pornhub',
-    description: 'Popüler video platformu araması (resmi Webmasters API)',
+    description: 'Popular video platform search (official Webmasters API)',
     isSafeOnly: false,
   },
   {
@@ -87,7 +86,7 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     name: 'Sex.com',
     baseUrl: 'https://www.sex.com',
     type: 'sexcom',
-    description: 'Popüler video platformu araması (önizlemeli klipler)',
+    description: 'Popular video platform search (with preview clips)',
     isSafeOnly: false,
     hidden: true,
   },
@@ -97,7 +96,7 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     baseUrl: 'https://hentaihaven.xxx',
     apiBaseUrl: 'https://api.hentaihaven.app/v1',
     type: 'hentaihaven',
-    description: 'Hentai serileri (resmi v1 API + bölüm akışı)',
+    description: 'Hentai series (official v1 API + episode streaming)',
     isSafeOnly: false,
   },
   {
@@ -106,7 +105,7 @@ export const AVAILABLE_SOURCES: BooruSource[] = [
     baseUrl: 'https://nhentai.net',
     apiBaseUrl: 'https://nhentai.net/api/v2',
     type: 'nhentai',
-    description: 'Manga ve doujinshi arşivi (resmi v2 API)',
+    description: 'Manga and doujinshi archive (official v2 API)',
     isSafeOnly: false,
   },
 ];

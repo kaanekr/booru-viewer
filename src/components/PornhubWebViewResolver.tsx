@@ -9,18 +9,18 @@ interface Props {
 }
 
 /**
- * Pornhub bot-duvarı (JS proof-of-work) RN fetch'i engellediğinde yedek yol:
- * gerçek Safari motorlu gizli WebView challenge'ı kendi çözer, ardından
- * `mediaDefinitions` bloğu RN tarafına post'lanır ve mevcut parser ile
- * HLS akışlarına çevrilir. Cookie'ler WebView'da kalıcıdır.
+ * Fallback when the Pornhub bot wall (JS proof-of-work) blocks RN fetch:
+ * a hidden WebView with the real Safari engine solves the challenge itself,
+ * then the `mediaDefinitions` block is posted to the RN side and converted
+ * to HLS streams with the existing parser. Cookies persist in the WebView.
  */
 export const PornhubWebViewResolver: React.FC<Props> = ({ pageUrl, onResolve }) => {
   const doneRef = useRef(false);
   const onResolveRef = useRef(onResolve);
   onResolveRef.current = onResolve;
 
-  // Sayfa bağlantısı asılı kalırsa ne mesaj ne hata gelir: mutlak tavanla
-  // resolver'ı her durumda sonlandır, spinner sonsuza dönmesin.
+  // If the page connection hangs, neither message nor error arrives: always
+  // terminate the resolver with an absolute ceiling so the spinner never spins forever.
   useEffect(() => {
     const t = setTimeout(() => {
       if (!doneRef.current) {
@@ -82,9 +82,9 @@ export const PornhubWebViewResolver: React.FC<Props> = ({ pageUrl, onResolve }) 
     onResolve(null);
   };
 
-  // Android'de onHttpError alt-kaynak (reklam/tracker) hatalarında da
-  // ateşlenir; sadece ana sayfa ölürse vazgeç, yoksa resolver gereksiz
-  // ölür ve gerçek video hiç gelmez.
+  // On Android onHttpError also fires for sub-resource (ad/tracker) errors;
+  // give up only if the main page dies, otherwise the resolver dies needlessly
+  // and the real video never arrives.
   const handleHttpError = (e: any) => {
     try {
       const failedUrl = String(e?.nativeEvent?.url || '');
@@ -111,7 +111,7 @@ export const PornhubWebViewResolver: React.FC<Props> = ({ pageUrl, onResolve }) 
       mediaPlaybackRequiresUserAction={false}
       injectedJavaScript={injected}
       onMessage={handleMessage}
-      // Sayfa yüklenemezse 15 sn'lik poll'u bekleme: ağır WebView'i hemen kaldır.
+      // If the page fails to load, don't wait for the 15s poll: tear down the heavy WebView immediately.
       onError={failFast}
       onHttpError={handleHttpError}
     />

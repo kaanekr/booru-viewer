@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
+  Alert,
   Modal,
   ScrollView,
   StyleSheet,
@@ -18,7 +19,6 @@ import {
   Search,
   ChevronRight,
   Check,
-  ShieldCheck,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import {
@@ -36,7 +36,7 @@ import { booruApi } from '../services/booruApi';
 import { nhentaiTagQuery } from '../services/nhentai';
 import { hentaiHavenTagQuery } from '../services/hentaihavens';
 import { dayDateOptions, weekDateOptions, monthDateOptions, describeAnchor } from '../utils/leaderboardPeriods';
-import { AVAILABLE_SOURCES } from '../services/sources';
+import { SourceCatalog, SourceMark } from './SourceCatalog';
 import { useSource } from '../context/SourceContext';
 import { TagChip } from './TagChip';
 import { Colors } from '../theme/colors';
@@ -46,116 +46,117 @@ const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
 
 const SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
-  { label: '---', value: 'default', desc: 'Varsayılan Sıralama' },
-  { label: 'Id', value: 'id', desc: 'En Yeniler / Gönderi No' },
-  { label: 'Score', value: 'score', desc: 'Popülerlik / En Yüksek Puan' },
-  { label: 'Rating', value: 'rating', desc: 'Derecelendirmeye Göre' },
-  { label: 'User', value: 'user', desc: 'Kullanıcı / Sanatçıya Göre' },
-  { label: 'Height', value: 'height', desc: 'Yüksekliğe Göre' },
-  { label: 'Width', value: 'width', desc: 'Genişliğe Göre' },
+  { label: '---', value: 'default', desc: 'Default Sorting' },
+  { label: 'Id', value: 'id', desc: 'Newest / Post No' },
+  { label: 'Score', value: 'score', desc: 'Popularity / Highest Score' },
+  { label: 'Rating', value: 'rating', desc: 'By Rating' },
+  { label: 'User', value: 'user', desc: 'By User / Artist' },
+  { label: 'Height', value: 'height', desc: 'By Height' },
+  { label: 'Width', value: 'width', desc: 'By Width' },
 ];
 
 const REDGIFS_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
-  { label: '---', value: 'default', desc: 'Varsayılan (Trendler)' },
-  { label: 'Trendler (Trending)', value: 'score', desc: 'En Popüler / Trend Klipler' },
-  { label: 'En Yeniler (Latest)', value: 'id', desc: 'Son Eklenen Videolar' },
+  { label: '---', value: 'default', desc: 'Default (Trending)' },
+  { label: 'Trending', value: 'score', desc: 'Most Popular / Trending Clips' },
+  { label: 'Latest', value: 'id', desc: 'Recently Added Videos' },
 ];
 
 const XVIDEOS_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
-  { label: '---', value: 'default', desc: 'Varsayılan (Alaka Düzeyi)' },
-  { label: 'En Yeniler', value: 'id', desc: 'Yüklenme Tarihine Göre' },
-  { label: 'İzlenme', value: 'score', desc: 'En Çok İzlenenler' },
-  { label: 'Oy Oranı', value: 'rating', desc: 'En Beğenilenler' },
-  { label: 'Süre', value: 'height', desc: 'Video Süresine Göre' },
+  { label: '---', value: 'default', desc: 'Default (Relevance)' },
+  { label: 'Newest', value: 'id', desc: 'By Upload Date' },
+  { label: 'Views', value: 'score', desc: 'Most Viewed' },
+  { label: 'Rating Ratio', value: 'rating', desc: 'Most Liked' },
+  { label: 'Duration', value: 'height', desc: 'By Video Duration' },
 ];
 
 const XHAMSTER_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
-  { label: '---', value: 'default', desc: 'Varsayılan (En Yeniler)' },
-  { label: 'En Yeniler', value: 'id', desc: 'Yüklenme Tarihine Göre' },
-  { label: 'İzlenme', value: 'score', desc: 'En Çok İzlenenler' },
-  { label: 'En İyiler', value: 'rating', desc: 'En Beğenilenler' },
-  { label: 'Süre', value: 'height', desc: 'Video Süresine Göre' },
+  { label: '---', value: 'default', desc: 'Default (Newest)' },
+  { label: 'Newest', value: 'id', desc: 'By Upload Date' },
+  { label: 'Views', value: 'score', desc: 'Most Viewed' },
+  { label: 'Top Rated', value: 'rating', desc: 'Most Liked' },
+  { label: 'Duration', value: 'height', desc: 'By Video Duration' },
 ];
 
 const PORNHUB_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
-  { label: '---', value: 'default', desc: 'Varsayılan (En Yeniler)' },
-  { label: 'En Yeniler', value: 'id', desc: 'Yüklenme Tarihine Göre' },
-  { label: 'İzlenme', value: 'score', desc: 'En Çok İzlenenler' },
-  { label: 'Oy Oranı', value: 'rating', desc: 'En Beğenilenler' },
+  { label: '---', value: 'default', desc: 'Default (Newest)' },
+  { label: 'Newest', value: 'id', desc: 'By Upload Date' },
+  { label: 'Views', value: 'score', desc: 'Most Viewed' },
+  { label: 'Rating Ratio', value: 'rating', desc: 'Most Liked' },
 ];
 
 const SEXCOM_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
-  { label: '---', value: 'default', desc: 'Varsayılan (Öne Çıkanlar)' },
+  { label: '---', value: 'default', desc: 'Default (Featured)' },
 ];
 
 const HENTAIHAVEN_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
-  { label: 'En Yeniler', value: 'default', desc: 'Son eklenen seriler (hentai/all)' },
-  { label: 'Ayın Trendleri', value: 'score', desc: 'En çok izlenenler (home/trending)' },
+  { label: 'Newest', value: 'default', desc: 'Recently added series (hentai/all)' },
+  { label: 'Monthly Trends', value: 'score', desc: 'Most watched (home/trending)' },
 ];
 
 const NHENTAI_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
-  { label: '---', value: 'default', desc: 'Varsayılan (En Yeniler)' },
-  { label: 'En Yeniler', value: 'id', desc: 'Son Eklenen Mangalar' },
-  { label: 'Popüler', value: 'score', desc: 'En Çok Favorilenenler' },
+  { label: '---', value: 'default', desc: 'Default (Newest)' },
+  { label: 'Newest', value: 'id', desc: 'Recently Added Manga' },
+  { label: 'Popular', value: 'score', desc: 'Most Favorited' },
 ];
 
 const CUMST_SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
-  { label: 'Score (Popülerlik)', value: 'score', desc: 'En Çok Kaydedilenler / Liderlik' },
-  { label: 'Id (En Yeniler)', value: 'id', desc: 'Son Eklenen Gönderiler' },
-  { label: 'Videolar', value: 'width', desc: 'Videolu Gönderiler' },
-  { label: 'Çoklu Medya', value: 'height', desc: 'Çoklu Medya Ekleri' },
+  { label: 'Score (Popularity)', value: 'score', desc: 'Most Saved / Leaderboard' },
+  { label: 'Id (Newest)', value: 'id', desc: 'Recently Added Posts' },
+  { label: 'Videos', value: 'width', desc: 'Posts with Video' },
+  { label: 'Multiple Media', value: 'height', desc: 'Multiple Media Attachments' },
 ];
 
 const TIME_RANGES: { label: string; value: TimeRangeOption }[] = [
-  { label: 'Tüm Zamanlar', value: 'all' },
-  { label: 'Son 24 Saat / Günün Lideri', value: '1d' },
-  { label: 'Bu Hafta / Haftanın Lideri', value: '1w' },
-  { label: 'Bu Ay / Ayın Lideri', value: '1m' },
-  { label: 'Bu Yıl', value: '1y' },
+  { label: 'All Time', value: 'all' },
+  { label: 'Last 24 Hours / Daily Leader', value: '1d' },
+  { label: 'This Week / Weekly Leader', value: '1w' },
+  { label: 'This Month / Monthly Leader', value: '1m' },
+  { label: 'This Year', value: '1y' },
 ];
 
 const CUMST_SERVICE_OPTIONS: { label: string; value: CumstServiceOption; desc: string }[] = [
-  { label: 'Hepsi', value: 'all', desc: 'Tüm Platformlar (OnlyFans & Fansly)' },
-  { label: 'OnlyFans', value: 'onlyfans', desc: 'Sadece OnlyFans içerikleri' },
-  { label: 'Fansly', value: 'fansly', desc: 'Sadece Fansly içerikleri' },
+  { label: 'All', value: 'all', desc: 'All Platforms (OnlyFans & Fansly)' },
+  { label: 'OnlyFans', value: 'onlyfans', desc: 'OnlyFans content only' },
+  { label: 'Fansly', value: 'fansly', desc: 'Fansly content only' },
 ];
 
 const CUMST_MEDIA_OPTIONS: { label: string; value: CumstMediaTypeOption; desc: string }[] = [
-  { label: 'Hepsi', value: 'all', desc: 'Tüm medya türleri' },
-  { label: 'Sadece Videolar', value: 'videos', desc: 'Video klipler ve kayıtlar' },
-  { label: 'Sadece Fotoğraflar', value: 'photos', desc: 'Görseller ve galeriler' },
-  { label: 'Ses / Audio', value: 'audio', desc: 'Ses kayıtları' },
+  { label: 'All', value: 'all', desc: 'All media types' },
+  { label: 'Videos Only', value: 'videos', desc: 'Video clips and recordings' },
+  { label: 'Photos Only', value: 'photos', desc: 'Images and galleries' },
+  { label: 'Audio', value: 'audio', desc: 'Audio recordings' },
 ];
 
 const RATING_OPTIONS: { label: string; value: RatingFilterOption }[] = [
   { label: 'Hepsi', value: 'all' },
-  { label: 'Safe (Güvenli)', value: 'safe' },
+  { label: 'Safe', value: 'safe' },
   { label: 'Questionable', value: 'questionable' },
   { label: 'Explicit (18+)', value: 'explicit' },
 ];
 
 const MIN_SCORE_OPTIONS: { label: string; value: number | undefined }[] = [
-  { label: 'Fark Etmez', value: undefined },
-  { label: '10+ Puan', value: 10 },
-  { label: '50+ Puan', value: 50 },
-  { label: '100+ Puan', value: 100 },
-  { label: '500+ Puan', value: 500 },
+  { label: 'Any', value: undefined },
+  { label: '10+ Points', value: 10 },
+  { label: '50+ Points', value: 50 },
+  { label: '100+ Points', value: 100 },
+  { label: '500+ Points', value: 500 },
 ];
 
-/** nhentai'de skor = favori sayısı; ölçek daha yüksek (binler). */
+/** On nhentai score = favorite count; scale is higher (thousands). */
 const NHENTAI_MIN_SCORE_OPTIONS: { label: string; value: number | undefined }[] = [
-  { label: 'Fark Etmez', value: undefined },
-  { label: '100+ Favori', value: 100 },
-  { label: '500+ Favori', value: 500 },
-  { label: '1.000+ Favori', value: 1000 },
-  { label: '5.000+ Favori', value: 5000 },
-  { label: '10.000+ Favori', value: 10000 },
+  { label: 'Any', value: undefined },
+  { label: '100+ Favorites', value: 100 },
+  { label: '500+ Favorites', value: 500 },
+  { label: '1,000+ Favorites', value: 1000 },
+  { label: '5,000+ Favorites', value: 5000 },
+  { label: '10,000+ Favorites', value: 10000 },
 ];
 
 interface SearchFilterModalProps {
   visible: boolean;
   filterConfig: SearchFilterConfig;
   activeSource: BooruSource;
+  onSelectSource?: (source: BooruSource) => Promise<void>;
   onClose: () => void;
   onApply: (config: SearchFilterConfig) => void;
 }
@@ -164,12 +165,13 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
   visible,
   filterConfig,
   activeSource: propSource,
+  onSelectSource,
   onClose,
   onApply,
 }) => {
   const insets = useSafeAreaInsets();
-  const { activeSource: contextSource, selectSource } = useSource();
-  const activeSource = contextSource ?? propSource;
+  const { selectSource } = useSource();
+  const activeSource = propSource;
   const [draft, setDraft] = useState<SearchFilterConfig>(filterConfig);
   const [tagInput, setTagInput] = useState('');
   const [suggestions, setSuggestions] = useState<BooruTagSuggestion[]>([]);
@@ -200,7 +202,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
   // Autocomplete from server for filter modal tag input
   useEffect(() => {
-    if (!draft.autocompleteFromServer || !tagInput) {
+    if (!visible || !draft.autocompleteFromServer || !tagInput) {
       setSuggestions([]);
       return;
     }
@@ -219,17 +221,22 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
       return;
     }
 
+    let cancelled = false;
     const timer = setTimeout(async () => {
-      const list = await booruApi.searchTags(cleanToken);
-      setSuggestions(list);
+      try {
+        const list = await booruApi.searchTags(cleanToken, 12, activeSource);
+        if (!cancelled) setSuggestions(list);
+      } catch {
+        if (!cancelled) setSuggestions([]);
+      }
     }, 200);
 
-    return () => clearTimeout(timer);
-  }, [tagInput, draft.autocompleteFromServer]);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [visible, tagInput, draft.autocompleteFromServer, activeSource]);
 
   const handleAddTag = (tagToAdd: string) => {
-    // Boşluk veya virgülle ayrılmış birden fazla etiketi tek tek ayrıştır;
-    // tırnaklı grup tek parça kalır (tag:"big breasts" bölünmez)
+    // Parse multiple space- or comma-separated tags one by one;
+    // a quoted group stays whole (tag:"big breasts" is not split)
     const parts = tagToAdd.trim().match(/("[^"]*"|[^\s,"])+/g) || [];
     const validTags = parts
       .map((p) => p.trim().toLowerCase())
@@ -248,15 +255,15 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
   const handleSelectSuggestion = (suggestedTag: string, category?: BooruTagSuggestion['category']) => {
     Haptics.selectionAsync();
-    // nhentai: öneri `tag:"ad"` / `artist:"ad"` mekaniğiyle eklenir
-    // hentaihaven: öneri `tag:...` veya `artist:...` mekaniğiyle eklenir
+    // nhentai: suggestions are added via the `tag:"name"` / `artist:"name"` mechanism
+    // hentaihaven: suggestions are added via the `tag:...` or `artist:...` mechanism
     const qualified =
       activeSource.type === 'nhentai'
         ? nhentaiTagQuery(suggestedTag, category)
         : activeSource.type === 'hentaihaven'
           ? hentaiHavenTagQuery(suggestedTag, category)
           : suggestedTag.trim().toLowerCase();
-    // Varsa önceki yazılmış token'ları da al, son yazılanı öneri ile tamamla
+    // Also pick up previously typed tokens, complete the last one with the suggestion
     const tokens = tagInput.trim().match(/("[^"]*"|[^\s,"])+/g) || [];
     const previousTokens = tokens.slice(0, -1).map((t) => t.trim().toLowerCase()).filter(Boolean);
 
@@ -313,7 +320,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
         }
       }
     }
-    // Emniyet: Kullanıcı sayfaya git popup'ında sayı yazıp doğrudan Uygula'ya basarsa
+    // Safety: if the user types a number in the go-to-page popup and hits Apply directly
     if (pageInputText.trim()) {
       const n = parseInt(pageInputText.replace(/[^0-9]/g, ''), 10);
       if (Number.isFinite(n) && n > 0) {
@@ -362,7 +369,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
   const getTimeLabel = () => {
     const opt = TIME_RANGES.find((t) => t.value === draft.timeRange);
-    return opt ? opt.label : 'Tüm Zamanlar';
+    return opt ? opt.label : 'All Time';
   };
 
   const getRatingLabel = () => {
@@ -387,8 +394,8 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
   const getDateLabel = () => describeAnchor(draft.leaderboardDate, draft.timeRange);
 
-  // Tarih seçici, aktif zaman dilimine göre periyoda uygun slot sunar:
-  // haftalık modda haftalar, aylık modda aylar, diğerlerinde günler.
+  // The date picker offers period-appropriate slots for the active time range:
+  // weeks in weekly mode, months in monthly mode, days otherwise.
   const dateSlots =
     draft.timeRange === '1w'
       ? weekDateOptions()
@@ -397,10 +404,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
         : dayDateOptions();
   const datePickerTitle =
     draft.timeRange === '1w'
-      ? 'Hafta Seçimi'
+      ? 'Select Week'
       : draft.timeRange === '1m'
-        ? 'Ay Seçimi'
-        : 'Geçmiş Tarih Seçimi';
+        ? 'Select Month'
+        : 'Select Past Date';
 
   return (
     <Modal
@@ -473,7 +480,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
               <TextInput
                 style={styles.textInput}
-                placeholder={draft.tags.length === 0 ? 'Etiket ekle (örn: 1girl)...' : 'Daha fazla ekle...'}
+                placeholder={draft.tags.length === 0 ? 'Add tag (e.g.: 1girl)...' : 'Add more...'}
                 placeholderTextColor={Colors.dark.textMuted}
                 value={tagInput}
                 onChangeText={setTagInput}
@@ -525,10 +532,15 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                 activeOpacity={0.7}
               >
                 <View style={styles.sourceInfo}>
-                  <Text style={styles.rowLabel}>Kaynak: {activeSource.name}</Text>
-                  <Text style={styles.serverUrlText} numberOfLines={1}>
-                    {activeSource.baseUrl}
-                  </Text>
+                  <View style={styles.sourceSummary}>
+                    <SourceMark source={activeSource} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.rowLabel}>{activeSource.name}</Text>
+                      <Text style={styles.serverUrlText} numberOfLines={1}>
+                        {isSourceListOpen ? 'Choose a source below' : 'Tap to change source'}
+                      </Text>
+                    </View>
+                  </View>
                 </View>
                 <View style={styles.rowRight}>
                   <ChevronRight size={18} color={Colors.dark.textMuted} />
@@ -536,49 +548,17 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
               </TouchableOpacity>
 
               {isSourceListOpen && (
-                <>
-                  <View style={styles.rowDivider} />
-                  {AVAILABLE_SOURCES.map((source, index) => {
-                    const isSelected = activeSource.id === source.id;
-                    return (
-                      <React.Fragment key={source.id}>
-                        <TouchableOpacity
-                          style={[
-                            styles.sourceRow,
-                            isSelected && styles.sourceRowSelected,
-                          ]}
-                          onPress={() => {
-                            Haptics.selectionAsync();
-                            selectSource(source);
-                          }}
-                          activeOpacity={0.7}
-                        >
-                          <View style={styles.sourceInfo}>
-                            <View style={styles.sourceNameRow}>
-                              <Text style={styles.sourceName}>{source.name}</Text>
-                              {source.isSafeOnly && (
-                                <View style={styles.safeBadge}>
-                                  <ShieldCheck size={12} color={Colors.dark.safe} />
-                                  <Text style={styles.safeBadgeText}>SFW</Text>
-                                </View>
-                              )}
-                            </View>
-                            <Text style={styles.sourceDesc} numberOfLines={1}>
-                              {source.description}
-                            </Text>
-                          </View>
-
-                          {isSelected && (
-                            <View style={styles.checkCircle}>
-                              <Check size={14} color="#FFFFFF" />
-                            </View>
-                          )}
-                        </TouchableOpacity>
-                        {index !== AVAILABLE_SOURCES.length - 1 && <View style={styles.rowDivider} />}
-                      </React.Fragment>
-                    );
-                  })}
-                </>
+                <View style={{ padding: 12 }}>
+                  <SourceCatalog activeSource={activeSource} onSelect={async (source) => {
+                    Haptics.selectionAsync();
+                    try {
+                      await (onSelectSource ?? selectSource)(source);
+                      setIsSourceListOpen(false);
+                    } catch {
+                      Alert.alert('Could not switch source', 'Please try again.');
+                    }
+                  }} />
+                </View>
               )}
             </View>
           </View>
@@ -643,14 +623,14 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
               <View style={styles.rowDivider} />
 
-              {/* Popularity Time Range / Leaderboard (Zaman Dilimi) */}
+              {/* Popularity Time Range / Leaderboard */}
               <TouchableOpacity
                 style={styles.rowItem}
                 onPress={() => setShowTimePicker(true)}
                 activeOpacity={0.7}
               >
                 <Text style={styles.rowLabel}>
-                  {activeSource.type === 'cumst' ? 'Zaman Dilimi (Liderlik Tablosu)' : 'Zaman Dilimi (Popülerlik)'}
+                  {activeSource.type === 'cumst' ? 'Time Range (Leaderboard)' : 'Time Range (Popularity)'}
                 </Text>
                 <View style={styles.rowRight}>
                   <Text style={[styles.rowValue, draft.timeRange !== 'all' && { color: GOLD_ACCENT }]}>
@@ -670,7 +650,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                     onPress={() => setShowCumstServicePicker(true)}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.rowLabel}>Platform / Servis</Text>
+                    <Text style={styles.rowLabel}>Platform / Service</Text>
                     <View style={styles.rowRight}>
                       <Text style={[styles.rowValue, draft.cumstService !== 'all' && { color: GOLD_ACCENT }]}>
                         {getCumstServiceLabel()}
@@ -687,7 +667,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                     onPress={() => setShowCumstMediaPicker(true)}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.rowLabel}>Medya Türü</Text>
+                    <Text style={styles.rowLabel}>Media Type</Text>
                     <View style={styles.rowRight}>
                       <Text style={[styles.rowValue, draft.cumstMediaType !== 'all' && { color: GOLD_ACCENT }]}>
                         {getCumstMediaLabel()}
@@ -698,7 +678,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
                   <View style={styles.rowDivider} />
 
-                  {/* Historical Date Anchor (Geçmiş Liderlik Tarihi) */}
+                  {/* Historical Date Anchor (Past Leaderboard Date) */}
                   <TouchableOpacity
                     style={styles.rowItem}
                     onPress={() => {
@@ -707,7 +687,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                     }}
                     activeOpacity={0.7}
                   >
-                    <Text style={styles.rowLabel}>Geçmiş Liderlik Tarihi (Arşiv)</Text>
+                    <Text style={styles.rowLabel}>Past Leaderboard Date (Archive)</Text>
                     <View style={styles.rowRight}>
                       <Text style={[styles.rowValue, !!draft.leaderboardDate && { color: GOLD_ACCENT }]}>
                         {getDateLabel()}
@@ -718,7 +698,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                 </>
               ) : activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven' ? null : (
                 <>
-                  {/* Rating: nhentai'de tüm içerik 'e' (Explicit) olduğu için anlamsız */}
+                  {/* Rating: meaningless on nhentai since all content is 'e' (Explicit) */}
                   {activeSource.type !== 'nhentai' ? (
                     <>
                       <View style={styles.rowDivider} />
@@ -729,7 +709,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                         onPress={() => setShowRatingPicker(true)}
                         activeOpacity={0.7}
                       >
-                        <Text style={styles.rowLabel}>Derecelendirme</Text>
+                        <Text style={styles.rowLabel}>Rating</Text>
                         <View style={styles.rowRight}>
                           <Text style={[styles.rowValue, draft.rating !== 'all' && { color: GOLD_ACCENT }]}>
                             {getRatingLabel()}
@@ -742,14 +722,14 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
                   <View style={styles.rowDivider} />
 
-                  {/* Min Score (nhentai'de = favori sayısı) */}
+                  {/* Min Score (on nhentai = favorite count) */}
                   <TouchableOpacity
                     style={styles.rowItem}
                     onPress={() => setShowScorePicker(true)}
                     activeOpacity={0.7}
                   >
                     <Text style={styles.rowLabel}>
-                      {activeSource.type === 'nhentai' ? 'Min Favori (Puan)' : 'Min Puan (Score)'}
+                      {activeSource.type === 'nhentai' ? 'Min Favorites (Score)' : 'Min Score'}
                     </Text>
                     <View style={styles.rowRight}>
                       <Text style={[styles.rowValue, draft.minScore ? { color: GOLD_ACCENT } : {}]}>
@@ -856,7 +836,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
           </TouchableWithoutFeedback>
         </Modal>
 
-        {/* 2. Time Range (Zaman Dilimi) Popup */}
+        {/* 2. Time Range Popup */}
         <Modal
           visible={showTimePicker}
           transparent
@@ -867,7 +847,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
             <View style={styles.modalOverlay}>
               <TouchableWithoutFeedback>
                 <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>Zaman Dilimi</Text>
+                  <Text style={styles.popoverTitle}>Time Range</Text>
                   <View style={styles.popoverList}>
                     {TIME_RANGES.map((opt) => {
                       const isSelected = draft.timeRange === opt.value;
@@ -959,8 +939,8 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                 <View style={styles.popoverCard}>
                   <Text style={styles.popoverTitle}>
                     {activeSource.type === 'nhentai'
-                      ? 'Minimum Favori Sayısı'
-                      : 'Minimum Puan (Score)'}
+                      ? 'Minimum Favorites Count'
+                      : 'Minimum Score'}
                   </Text>
                   <View style={styles.popoverList}>
                     {(activeSource.type === 'nhentai'
@@ -1007,10 +987,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
             <View style={styles.modalOverlay}>
               <TouchableWithoutFeedback>
                 <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>Sayfaya Git</Text>
+                  <Text style={styles.popoverTitle}>Go to Page</Text>
                   <TextInput
                     style={styles.pageInput}
-                    placeholder={`Sayfa numarası (şu an: ${draft.jumpToPage})`}
+                    placeholder={`Page number (current: ${draft.jumpToPage})`}
                     placeholderTextColor={Colors.dark.textMuted}
                     value={pageInputText}
                     onChangeText={setPageInputText}
@@ -1026,7 +1006,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                       style={[styles.popoverItem, styles.pageConfirmBtn]}
                       onPress={confirmPageInput}
                     >
-                      <Text style={[styles.popoverItemText, styles.popoverItemTextSelected]}>Git</Text>
+                      <Text style={[styles.popoverItemText, styles.popoverItemTextSelected]}>Go</Text>
                     </TouchableOpacity>
                     <TouchableOpacity
                       style={styles.popoverItem}
@@ -1037,7 +1017,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                         setShowPagePicker(false);
                       }}
                     >
-                      <Text style={styles.popoverItemText}>Sıfırla (1)</Text>
+                      <Text style={styles.popoverItemText}>Reset (1)</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -1056,7 +1036,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
             <View style={styles.modalOverlay}>
               <TouchableWithoutFeedback>
                 <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>Platform / Servis</Text>
+                  <Text style={styles.popoverTitle}>Platform / Service</Text>
                   <View style={styles.popoverList}>
                     {CUMST_SERVICE_OPTIONS.map((opt) => {
                       const isSelected = draft.cumstService === opt.value;
@@ -1099,7 +1079,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
             <View style={styles.modalOverlay}>
               <TouchableWithoutFeedback>
                 <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>Medya Türü</Text>
+                  <Text style={styles.popoverTitle}>Media Type</Text>
                   <View style={styles.popoverList}>
                     {CUMST_MEDIA_OPTIONS.map((opt) => {
                       const isSelected = draft.cumstMediaType === opt.value;
@@ -1157,9 +1137,9 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                                 ...prev,
                                 leaderboardDate: opt.value,
                                 sortBy: opt.value ? 'score' : prev.sortBy,
-                                // Tarih seçimi periyodun zamanını da seçer:
-                                // haftalık slot haftalık liderliği, aylık slot
-                                // aylık liderliği açar. Temizlemede aynen kalır.
+                                // Picking a date also picks the period time:
+                                // a weekly slot opens the weekly leaderboard, a monthly slot
+                                // the monthly leaderboard. Clearing keeps it as-is.
                                 timeRange: opt.value ? opt.range : prev.timeRange,
                               }));
                               setShowDateAnchorPicker(false);
@@ -1181,7 +1161,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
                   {/* Custom Date Input Row */}
                   <View style={{ marginTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 10 }}>
-                    <Text style={{ fontSize: 12, color: '#8E92A4', marginBottom: 6 }}>Özel Tarih (YYYY-AA-GG):</Text>
+                    <Text style={{ fontSize: 12, color: '#8E92A4', marginBottom: 6 }}>Custom Date (YYYY-MM-DD):</Text>
                     <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
                       <TextInput
                         style={{
@@ -1195,7 +1175,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                           paddingVertical: 6,
                           fontSize: 13,
                         }}
-                        placeholder="Örn: 2026-05-15"
+                        placeholder="E.g.: 2026-05-15"
                         placeholderTextColor="#7E8494"
                         value={customDateText}
                         onChangeText={setCustomDateText}
@@ -1222,7 +1202,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                           }
                         }}
                       >
-                        <Text style={{ color: '#111216', fontWeight: '700', fontSize: 13 }}>Uygula</Text>
+                        <Text style={{ color: '#111216', fontWeight: '700', fontSize: 13 }}>Apply</Text>
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -1395,56 +1375,14 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: '#CBD5E1',
   },
-  sourceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 13,
-  },
-  sourceRowSelected: {
-    backgroundColor: 'rgba(108, 99, 255, 0.08)',
-  },
   sourceInfo: {
     flex: 1,
     marginRight: 12,
   },
-  sourceNameRow: {
+  sourceSummary: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 2,
-  },
-  sourceName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  safeBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    backgroundColor: 'rgba(81, 207, 102, 0.12)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  safeBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: Colors.dark.safe,
-  },
-  sourceDesc: {
-    fontSize: 12,
-    color: '#7E8494',
-  },
-  checkCircle: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: Colors.dark.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
+    gap: 12,
   },
   cardGroup: {
     backgroundColor: '#1A1C22',

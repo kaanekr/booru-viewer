@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 
-// Bir AppState aboneliği: her kart için ayrı native abonelik oluşturma.
+// A single AppState subscription: no separate native subscription per card.
 export const MediaPlaybackContext = createContext(true);
 
 export function useAppForeground(): boolean {

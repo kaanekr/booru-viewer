@@ -56,10 +56,16 @@ import {
 } from './nhentai';
 
 const USER_AGENT = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
+const RULE34_AUTH_ERROR = 'Rule34 requires your own API key and user_id. Set them in Settings → Sources → Rule34.xxx → Account & API (rule34.xxx/index.php?page=account&s=options).';
+
+/** UI/booru tag labels use underscores; RedGifs search text uses spaces. */
+function redGifsSearchText(value: string): string {
+  return value.replace(/[_\s]+/g, ' ').trim();
+}
 
 /**
- * Abort'e bağlı kalmayan hard-timeout: release build'de abort edilen fetch
- * askıda kalabilir; bu yarış sözü mutlaka sonlandırır (sarkan istek asılı kalır).
+ * Hard timeout not tied to Abort: an aborted fetch may hang in release builds,
+ * so this race always settles the promise (a dangling request stays pending).
  */
 function withHardTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   let rt: ReturnType<typeof setTimeout> | undefined;
@@ -73,11 +79,11 @@ async function fetchBooru(url: string, init?: RequestInit): Promise<Response> {
   return await proxyService.fetchWithFallback(url, init);
 }
 
-/** Gelbooru-motoru zamanlı popüler: dönemin ilk post id'si (alt sınır) önbelleği.
- *  Motor tarih filtresi desteklemediği için sınır, son eklenenlerde geriye
- *  yürüyerek bulunur; asıl sorgu `id:>SINIR sort:score:desc` ile sunucuda sıralanır. */
+/** Gelbooru-engine timed popular: cache of the period's first post id (lower bound).
+ *  The engine doesn't support date filters, so the bound is found by walking
+ *  backwards through recent additions; the real query sorts server-side via `id:>BOUND sort:score:desc`. */
 interface GelbooruBoundEntry {
-  bound: number | null; // null = pencerede hiç post yok
+  bound: number | null; // null = no posts in the window
   at: number;
 }
 const gelbooruBoundCache = new Map<string, GelbooruBoundEntry>();
@@ -121,7 +127,7 @@ function normalizeRating(rawRating: string | undefined): 's' | 'q' | 'e' | 'g' {
   return 's';
 }
 
-/** YYYY-MM-DD (Moebooru date:A..B aralıkları için) */
+/** YYYY-MM-DD (for Moebooru date:A..B ranges) */
 function formatYMD(d: Date): string {
   const p = (n: number) => (n < 10 ? `0${n}` : `${n}`);
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
@@ -133,7 +139,7 @@ function pastYMD(daysAgo: number): string {
   return formatYMD(d);
 }
 
-/** TimeRangeOption → gün sayısı (0 = sınırsız) */
+/** TimeRangeOption → day count (0 = unlimited) */
 export function timeRangeToDays(timeRange: string | undefined): number {
   if (timeRange === '1d') return 1;
   if (timeRange === '1w') return 7;
@@ -143,13 +149,13 @@ export function timeRangeToDays(timeRange: string | undefined): number {
 }
 
 /**
- * Liderlik çapası hizalama (cum.st): haftalık/aylık periyotta çapayı takvim
- * periyodunun başına yaslar — aynı periyottaki her gün birebir aynı `date:`
- * sorgusunu üretir, periyot kaymaz ("2 gün önce + haftanın lideri" === "bugünün
- * haftasının liderleri"). Sunucu da aynı hizalamayı yapar (canlı doğrulandı:
- * week→Pazartesi, month→ayın 1'i); istemcide yapmak davranışı garanti altına alır.
- * Günlük/periyotsuz aralıklar aynen geçer. UTC matematiği kullanılır (SAAT
- * dilimi kayması yok). Geçersiz girdi aynen geri döner.
+ * Leaderboard anchor alignment (cum.st): in weekly/monthly periods snaps the anchor
+ * to the start of the calendar period — every day in the same period produces the
+ * exact same `date:` query, the period never drifts ("2 days ago + week's leader" ===
+ * "this week's leaders"). The server applies the same alignment (verified live:
+ * week→Monday, month→the 1st); doing it client-side guarantees the behavior.
+ * Daily/period-less ranges pass through untouched. UTC math is used (no
+ * timezone shift). Invalid input is returned as-is.
  */
 export function snapLeaderboardAnchor(anchorYMD: string | undefined, timeRange: string | undefined): string {
   const clean = (anchorYMD || '').trim();
@@ -158,11 +164,11 @@ export function snapLeaderboardAnchor(anchorYMD: string | undefined, timeRange: 
     const [y, m, d] = clean.split('-').map(Number);
     if (m < 1 || m > 12 || d < 1 || d > 31) return clean;
     const dt = new Date(Date.UTC(y, m - 1, d));
-    // Taşan gün (örn. 30 Şubat) sessizce yuvarlanır — girdiyi bozma, aynen geçir
+    // Overflowing days (e.g. Feb 30) silently round — don't corrupt the input, pass it through
     if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== m - 1 || dt.getUTCDate() !== d) {
       return clean;
     }
-    const back = (dt.getUTCDay() + 6) % 7; // Pazartesi=0 … Pazar=6 gün geri
+    const back = (dt.getUTCDay() + 6) % 7; // Monday=0 … Sunday=6 days back
     dt.setUTCDate(dt.getUTCDate() - back);
     const p = (n: number) => (n < 10 ? `0${n}` : `${n}`);
     return `${dt.getUTCFullYear()}-${p(dt.getUTCMonth() + 1)}-${p(dt.getUTCDate())}`;
@@ -177,7 +183,8 @@ export function snapLeaderboardAnchor(anchorYMD: string | undefined, timeRange: 
 
 export class BooruApiService {
   private currentSource: BooruSource = DEFAULT_SOURCE;
-  private lastRequestAt = 0;
+  private lastRequestAt = new Map<string, number>();
+  private requestSlots = new Map<string, Promise<void>>();
 
   setSource(source: BooruSource) {
     this.currentSource = source;
@@ -187,25 +194,46 @@ export class BooruApiService {
     return this.currentSource;
   }
 
+  private reserveRequestSlot(url: string): Promise<void> {
+    const origin = new URL(url).origin;
+    const slot = (this.requestSlots.get(origin) ?? Promise.resolve()).then(async () => {
+      const previous = this.lastRequestAt.get(origin);
+      const wait = previous === undefined ? 0 : 800 - (Date.now() - previous);
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      this.lastRequestAt.set(origin, Date.now());
+    });
+    const settled = slot.then(() => {}, () => {});
+    this.requestSlots.set(origin, settled);
+    void settled.then(() => {
+      if (this.requestSlots.get(origin) === settled) this.requestSlots.delete(origin);
+    });
+    return slot;
+  }
+
   /**
-   * Rate-limit koruması + 429/5xx retry: Gelbooru scrape'i banlamasın diye
-   * istekler arası min 800ms boşluk, 429/503'te tek seferlik bekleyip tekrar dener.
-   * 403 de retry edilir (DPI/bot-duvarı akış-bazlı düşürür, ikinci deneme genelde geçer).
+   * Rate-limit protection + 429/5xx retry: at least 800ms between requests
+   * so Gelbooru doesn't ban the scraper; on 429/503 it waits once and retries.
+   * 403 is also retried (DPI/bot walls drop flows intermittently, the second attempt usually passes).
    */
   private async fetchWithRetry(url: string, init?: RequestInit, retries = 1, timeoutMs = 12000): Promise<Response> {
-    const now = Date.now();
-    const wait = 800 - (now - this.lastRequestAt);
-    if (wait > 0) {
-      await new Promise((r) => setTimeout(r, wait));
-    }
     const attempt = async (): Promise<Response> => {
-      this.lastRequestAt = Date.now();
+      await this.reserveRequestSlot(url);
       const ctrl = new AbortController();
+      const callerSignal = init?.signal;
+      const onAbort = () => ctrl.abort();
+      callerSignal?.addEventListener('abort', onAbort, { once: true });
+      if (callerSignal?.aborted) ctrl.abort();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
       try {
+        if (ctrl.signal.aborted) {
+          const error = new Error('Request aborted');
+          error.name = 'AbortError';
+          throw error;
+        }
         return await withHardTimeout(fetchBooru(url, { ...init, signal: ctrl.signal }), timeoutMs, url);
       } finally {
         clearTimeout(t);
+        callerSignal?.removeEventListener('abort', onAbort);
       }
     };
     const res = await attempt();
@@ -229,13 +257,13 @@ export class BooruApiService {
       });
     }
 
-    // Min Score (RedGifs/XVideos/XHamster/Pornhub/Sex.com/HentaiHaven/nhentai'de skor filtresi yok; literal tag olarak gidip sonucu sıfırlar)
+    // Min Score (RedGifs/XVideos/XHamster/Pornhub/Sex.com/HentaiHaven/nhentai have no score filter; sent as a literal tag it would zero out results)
     if (filter.minScore && filter.minScore > 0 && activeSource.type !== 'redgifs' && activeSource.type !== 'xvideos' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub' && activeSource.type !== 'sexcom' && activeSource.type !== 'hentaihaven' && activeSource.type !== 'nhentai') {
       parts.push(`score:>=${filter.minScore}`);
     }
 
-    // User / Artist / Creator (RedGifs kullanıcı araması ayrı endpoint'ten yapılır;
-    // XVideos/XHamster/Pornhub'da profil sayfası araması yok, kullanıcı adı düz kelime olarak aranır)
+    // User / Artist / Creator (RedGifs user search runs on a separate endpoint;
+    // XVideos/XHamster/Pornhub have no profile-page search, the username is searched as a plain word)
     if (filter.user && filter.user.trim()) {
       if (activeSource.type === 'cumst') {
         parts.push(`creator:${filter.user.trim()}`);
@@ -256,9 +284,9 @@ export class BooruApiService {
       parts.push(`type:${filter.cumstMediaType}`);
     }
 
-    // Historical Leaderboard / Anchor Date (Cum.st'e özel; başka motorda
-    // literal tag sayılıp sonucu sıfırlar). Haftalık/aylık periyotta çapa
-    // takvim başına yaslanır: aynı periyodun günleri aynı sorguyu üretir.
+    // Historical Leaderboard / Anchor Date (cum.st-only; on other engines it
+    // counts as a literal tag and zeroes out results). In weekly/monthly periods the anchor
+    // snaps to the calendar start: days of the same period produce the same query.
     if (filter.leaderboardDate && activeSource.type !== 'xvideos' && activeSource.type !== 'redgifs' && activeSource.type !== 'xhamster' && activeSource.type !== 'pornhub' && activeSource.type !== 'sexcom' && activeSource.type !== 'hentaihaven' && activeSource.type !== 'nhentai') {
       const anchor =
         activeSource.type === 'cumst'
@@ -269,26 +297,29 @@ export class BooruApiService {
 
     // Rating Filter
     if (filter.rating && filter.rating !== 'all') {
-      if (activeSource.type === 'danbooru' || activeSource.type === 'moebooru') {
+      if (activeSource.type === 'danbooru') {
+        const map: Record<string, string> = { safe: 'rating:g', questionable: 'rating:q', explicit: 'rating:e' };
+        if (map[filter.rating]) parts.push(map[filter.rating]);
+      } else if (activeSource.type === 'moebooru') {
         const map: Record<string, string> = { safe: 'rating:s', questionable: 'rating:q', explicit: 'rating:e' };
         if (map[filter.rating]) parts.push(map[filter.rating]);
       } else if (activeSource.type === 'gelbooru' || activeSource.type === 'realbooru') {
-        const map: Record<string, string> = { safe: 'rating:safe', questionable: 'rating:questionable', explicit: 'rating:explicit' };
+        const map: Record<string, string> = { safe: activeSource.id === 'gelbooru' ? 'rating:general' : 'rating:safe', questionable: 'rating:questionable', explicit: 'rating:explicit' };
         if (map[filter.rating]) parts.push(map[filter.rating]);
       }
     }
 
-    // Sort By & Time Range (RedGifs/XVideos/XHamster/Pornhub/nhentai sıralaması kendi fonksiyonları içinde yapılır)
+    // Sort By & Time Range (RedGifs/XVideos/XHamster/Pornhub/nhentai ordering is handled inside their own functions)
     if (activeSource.type === 'redgifs' || activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven' || activeSource.type === 'nhentai') {
       return parts.join(' ').trim();
     }
     if (filter.sortBy === 'score') {
       if (activeSource.type === 'gelbooru' || activeSource.type === 'realbooru') {
-        // Gelbooru motoru yalnızca toplam skora göre sıralar; zaman aralığı
-        // fetchGelbooruPosts içinde alt-sınır id'sine (`id:>X`) çevrilir.
+        // The Gelbooru engine only sorts by total score; the time range
+        // is converted to a lower-bound id (`id:>X`) inside fetchGelbooruPosts.
         parts.push('sort:score:desc');
       } else if (activeSource.type === 'danbooru') {
-        // 'age:1w' tam 1 haftalıkları getirir; aralık için '<' gerekir (canlı doğrulandı)
+        // 'age:1w' fetches exactly week-olds; ranges need '<' (verified live)
         if (filter.timeRange === '1d') {
           parts.push('age:<1day', 'order:score');
         } else if (filter.timeRange === '1w') {
@@ -298,11 +329,11 @@ export class BooruApiService {
         } else if (filter.timeRange === '1y') {
           parts.push('age:<1year', 'order:score');
         } else {
-          parts.push('order:rank');
+          parts.push('order:score');
         }
       } else if (activeSource.type === 'moebooru') {
-        // 'date:today' gibi anahtar kelimeler çalışmıyor (boş dönüyor, canlı doğrulandı);
-        // date:BAŞLANGIÇ..BİTİŞ aralığı çalışıyor
+        // Keywords like 'date:today' don't work (return empty, verified live);
+        // date:START..END ranges do work
         const days = timeRangeToDays(filter.timeRange);
         if (days > 0) {
           parts.push('order:score', `date:${pastYMD(days)}..${formatYMD(new Date())}`);
@@ -325,6 +356,8 @@ export class BooruApiService {
         parts.push('sort:recent');
       } else if (activeSource.type === 'gelbooru' || activeSource.type === 'realbooru') {
         parts.push('sort:id:desc');
+      } else if (activeSource.type === 'moebooru') {
+        parts.push('order:id_desc');
       } else {
         parts.push('order:id');
       }
@@ -396,7 +429,7 @@ export class BooruApiService {
         }
       }
 
-      // 1b. RedGifs niches — 'niche:<id>' kara liste girdileriyle eşleşir
+      // 1b. RedGifs niches — 'niche:<id>' matches blacklist entries
       if (post.niches) {
         for (let i = 0; i < post.niches.length; i++) {
           const nid = post.niches[i]?.trim().toLowerCase();
@@ -404,7 +437,7 @@ export class BooruApiService {
         }
       }
 
-      // 1c. RedGifs kullanıcıları — 'user:<ad>' kara liste girdileri sanatçıyla eşleşir
+      // 1c. RedGifs users — 'user:<name>' blacklist entries match the artist
       if (post.tags?.artist) {
         for (let i = 0; i < post.tags.artist.length; i++) {
           const aname = post.tags.artist[i]?.trim().toLowerCase();
@@ -433,25 +466,26 @@ export class BooruApiService {
   async fetchPostsWithFilter(
     filter: SearchFilterConfig,
     page: number = 1,
-    limit: number = 20
+    limit: number = 20,
+    source: BooruSource = this.currentSource
   ): Promise<BooruPost[]> {
-    const queryTags = this.buildQueryTags(filter);
-    return await this.fetchPosts(page, limit, queryTags, filter);
+    const queryTags = this.buildQueryTags(filter, source);
+    return await this.fetchPosts(page, limit, queryTags, filter, source);
   }
 
   async fetchPosts(
     page: number = 1,
     limit: number = 20,
     tags: string = '',
-    filter?: SearchFilterConfig
+    filter?: SearchFilterConfig,
+    source: BooruSource = this.currentSource
   ): Promise<BooruPost[]> {
-    const source = this.currentSource;
     const includeBlacklisted = filter?.includeBlacklisted ?? false;
 
     try {
       if (source.id === 'gelbooru') {
-        // Anahtarlı DAPI 401 verirse (yanlış/eksik anahtar) scrape'e düşme:
-        // kullanıcıya anahtarın geçersiz olduğunu göster ki düzeltebilsin
+        // With a stored DAPI key a 401 means wrong/missing key: surface it
+        // instead of falling back to scrape so the user can fix the key.
         const { userId, apiKey } = await StorageService.getGelbooruAuth().catch(() => ({ userId: '', apiKey: '' }));
         if (userId.trim() && apiKey.trim()) {
           return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted, filter);
@@ -470,15 +504,9 @@ export class BooruApiService {
       } else if (source.type === 'cumst') {
         return await this.fetchCumStPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'redgifs') {
-        const posts = await this.fetchRedGifsPosts(source, page, limit, tags, filter);
-        // Keşfet akışında (etiketsiz) sayfa çakışmalarını eler: trending
-        // sayfaları aynı gönderileri tekrarlayabiliyor. Arama sonuçları
-        // etkilenmez.
-        const isFeed = !tags.trim() && !(filter && (filter.tags.length > 0 || filter.user?.trim()));
-        if (!isFeed) return posts;
-        const fresh = posts.filter((p) => !this.feedSeenIds.has(p.id));
-        fresh.forEach((p) => this.feedSeenIds.add(p.id));
-        return fresh;
+        // Deduplication belongs to each screen's query session. A shared seen
+        // set made browsing one list consume results from another open list.
+        return await this.fetchRedGifsPosts(source, page, limit, tags, filter);
       } else if (source.type === 'xvideos') {
         return await this.fetchXVideosPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else if (source.type === 'xhamster') {
@@ -527,12 +555,12 @@ export class BooruApiService {
 
     if (!response.ok) {
       if (response.status === 429) {
-        throw new Error('Gelbooru web istek sınırı aşıldı (429 Too Many Requests). Lütfen bir süre bekleyin.');
+        throw new Error('Gelbooru web rate limit exceeded (429 Too Many Requests). Please wait a while.');
       }
       if (response.status >= 500) {
-        throw new Error(`Gelbooru web sunucusu aşırı yüklendi (${response.status} ${response.statusText}).`);
+        throw new Error(`Gelbooru web server overloaded (${response.status} ${response.statusText}).`);
       }
-      throw new Error(`Gelbooru hatası: ${response.status} ${response.statusText}`);
+      throw new Error(`Gelbooru error: ${response.status} ${response.statusText}`);
     }
 
     const html = await response.text();
@@ -570,9 +598,9 @@ export class BooruApiService {
         thumbSrc.endsWith('.mp4') ||
         rawTags.some((t) => ['video', 'webm', 'mp4', 'sound', 'animated'].includes(t.toLowerCase()));
 
-      // Liste HTML'inde boyut yok; gerçek ölçüler post sayfasındadır.
-      // width/height placeholder (800x1000) bırakılır, Info modalı açıldığında
-      // gerçek değerler doldurulur (resolveRealDimensions).
+      // The list HTML has no dimensions; real sizes live on the post page.
+      // width/height stay as placeholders (800x1000) until the Info modal
+      // fills in the real values (resolveRealDimensions).
       const width = 800;
       const height = 1000;
 
@@ -585,11 +613,11 @@ export class BooruApiService {
 
       if (imgMatch) {
         const [, sub, dir1, dir2, hash, thumbnailExt] = imgMatch;
-        // Thumbnail uzantısı original ile aynı değildir. Gelbooru özellikle
-        // JPEG original'ları thumbnail/sample için .jpg, original için .jpeg
-        // verir; .jpg tahmini 404/hotlink redirect ile sonuçlanır.
-        // Scrape yolunda gerçek uzantıyı post sayfasından çözene dek sample
-        // güvenilir fallback'tir; original'i ancak DAPI gerçek file_url ile verir.
+        // The thumbnail extension is not the same as the original. Gelbooru serves
+        // JPEG originals as .jpg for thumbnail/sample but .jpeg for the original;
+        // a .jpg guess ends in a 404/hotlink redirect.
+        // On the scrape path the sample stays the trusted fallback until the real
+        // extension is resolved from the post page; only DAPI gives the original via its real file_url.
         fileExt = thumbnailExt;
         if (isVideo) {
           rawOriginal = `https://${sub}.gelbooru.com/images/${dir1}/${dir2}/${hash}.mp4`;
@@ -647,9 +675,9 @@ export class BooruApiService {
     const windowDays =
       filter?.sortBy === 'score' ? timeRangeToDays(filter.timeRange) : 0;
     if (windowDays > 0) {
-      // Dönemin alt sınır id'sini bul, sonra popülerleri sunucuda sıralat.
-      // Yürüyüş id-desc yapılır; tarih için `change` alanı kullanılır
-      // (son düzenleme zamanıdır, yükleme değil — sınıra yakın postlarda +- sapma olur).
+      // Find the period's lower-bound id, then let the server sort the popular posts.
+      // The walk runs id-desc; the `change` field is used for dates
+      // (it's the last-edit time, not the upload — posts near the bound deviate by +-).
       const walkTags = cleanTags.replace('sort:score:desc', 'sort:id:desc');
       const bound = await this.resolveGelbooruLowerBound(source, walkTags, windowDays);
       if (bound === null) return [];
@@ -666,7 +694,7 @@ export class BooruApiService {
     return await this.fetchGelbooruPage(source, pid, limit, cleanTags, includeBlacklisted);
   }
 
-  /** Son eklenenlerde geriye yürü, tarih eşiğine giren en küçük id'yi döndür */
+  /** Walks backwards through recent additions, returns the smallest id inside the date threshold */
   private async resolveGelbooruLowerBound(
     source: BooruSource,
     walkTags: string,
@@ -697,7 +725,7 @@ export class BooruApiService {
         }
       }
       if (batch.length < BOUND_WALK_LIMIT) break;
-      // Sayfanın en eski (son) postu eşikten eskiyse daha geriye gitme
+      // If the page's oldest (last) post is older than the threshold, don't walk further back
       const lastT = new Date(batch[batch.length - 1].createdAt).getTime();
       if (Number.isFinite(lastT) && lastT < cutoff) break;
     }
@@ -712,6 +740,8 @@ export class BooruApiService {
     cleanTags: string,
     includeBlacklisted: boolean = false
   ): Promise<BooruPost[]> {
+    const isRule34 = source.id === 'rule34';
+    const apiName = isRule34 ? 'Rule34' : 'Gelbooru';
     const queryParams = new URLSearchParams({
       page: 'dapi',
       s: 'post',
@@ -727,7 +757,7 @@ export class BooruApiService {
       const authTokens = new URLSearchParams(source.authParams);
       authTokens.forEach((v, k) => queryParams.append(k, v));
     }
-    // Kullanıcının kendi Gelbooru anahtarı (Doküman sırası: &api_key=...&user_id=...)
+    // The user's own Gelbooru key (doc order: &api_key=...&user_id=...)
     if (source.id === 'gelbooru') {
       try {
         const { userId, apiKey } = await StorageService.getGelbooruAuth();
@@ -736,6 +766,17 @@ export class BooruApiService {
           queryParams.append('user_id', userId.trim());
         }
       } catch {}
+    }
+
+    if (isRule34) {
+      const { userId, apiKey } = await StorageService.getRule34Auth();
+      if (userId.trim() && apiKey.trim()) {
+        queryParams.set('api_key', apiKey.trim());
+        queryParams.set('user_id', userId.trim());
+      }
+      if (!queryParams.get('api_key') || !queryParams.get('user_id')) {
+        throw new Error(RULE34_AUTH_ERROR);
+      }
     }
 
     const url = `${source.apiBaseUrl || source.baseUrl}/index.php?${queryParams.toString()}`;
@@ -747,23 +788,35 @@ export class BooruApiService {
     });
 
     if (!response.ok) {
+      if (isRule34 && (response.status === 401 || response.status === 403)) {
+        throw new Error(RULE34_AUTH_ERROR);
+      }
       if (response.status === 401) {
-        throw new Error('Gelbooru API kimlik doğrulaması gerekiyor (401 Unauthorized). Lütfen Ayarlar sayfasından API anahtarınızı (api_key ve user_id) tanımlayın.');
+        throw new Error('Gelbooru API authentication required (401 Unauthorized). Please set your API key (api_key and user_id) on the Settings screen.');
       }
       if (response.status === 429) {
-        throw new Error('Gelbooru istek sınırı aşıldı (429 Too Many Requests). Lütfen birkaç saniye bekleyin veya API anahtarınızı tanımlayın.');
+        throw new Error(`${apiName} rate limit exceeded (429 Too Many Requests). Please wait a few seconds or check your API key.`);
       }
       if (response.status >= 500) {
-        throw new Error(`Gelbooru sunucusu aşırı yüklendi veya arama sorgusu zaman aşımına uğradı (${response.status} ${response.statusText}).`);
+        throw new Error(`${apiName} server overloaded or search query timed out (${response.status} ${response.statusText}).`);
       }
-      throw new Error(`Gelbooru API hatası: ${response.status} ${response.statusText}`);
+      throw new Error(`${apiName} API error: ${response.status} ${response.statusText}`);
     }
 
     let data: any;
     try {
       data = await response.json();
     } catch {
-      throw new Error('Gelbooru API geçerli bir JSON yanıtı döndürmedi (sunucu aşırı yüklü veya arama tamamlanamadı).');
+      throw new Error(`${apiName} API did not return a valid JSON response (server overloaded or search could not complete).`);
+    }
+    // Rule34 returns HTTP 200 with a JSON string for missing/invalid auth.
+    // Do not turn API failures into an apparently successful empty feed.
+    if (isRule34 && (typeof data === 'string' || data?.success === false)) {
+      const message = typeof data === 'string' ? data : String(data?.message || '');
+      if (/auth|api.?key|user.?id|access.denied/i.test(message)) {
+        throw new Error(RULE34_AUTH_ERROR);
+      }
+      throw new Error('Rule34 API could not complete the request. Please try again later.');
     }
     let rawItems: any[] = [];
     if (Array.isArray(data)) {
@@ -984,7 +1037,7 @@ export class BooruApiService {
     includeBlacklisted: boolean = false
   ): Promise<BooruPost[]> {
     const cleanTags = tags.trim();
-    // Realbooru sayfa başına 42 post listeler (pid=0, 42, 84, ...)
+    // Realbooru lists 42 posts per page (pid=0, 42, 84, ...)
     const pid = (page - 1) * 42;
     const queryParams = new URLSearchParams({
       page: 'post',
@@ -1049,10 +1102,17 @@ export class BooruApiService {
         )
       );
 
+      const lowerTags = rawTags.map((t) => t.toLowerCase());
+      const hasGifTag = lowerTags.includes('gif');
+      const hasVideoTag = lowerTags.some((t) => t === 'video' || t === 'webm' || t === 'mp4');
+      // GIFs are tagged `animated` + `gif` (no `video` tag) and must not be
+      // treated as videos: the viewer would hand a .gif to the video player.
+      const isGif = hasGifTag && !hasVideoTag;
       const isVideo =
-        rawThumb.endsWith('.mp4') ||
-        rawThumb.endsWith('.webm') ||
-        rawTags.some((t) => ['video', 'webm', 'mp4', 'sound', 'animated'].includes(t.toLowerCase()));
+        !isGif &&
+        (rawThumb.endsWith('.mp4') ||
+          rawThumb.endsWith('.webm') ||
+          lowerTags.some((t) => ['video', 'webm', 'mp4', 'sound', 'animated'].includes(t)));
 
       // Extract verified file URL / extension from HTML if available (a href, data attributes, etc.)
       let verifiedExt: string | null = null;
@@ -1084,7 +1144,7 @@ export class BooruApiService {
         }
       }
 
-      let fileExt = verifiedExt || (isVideo ? 'mp4' : 'jpg');
+      let fileExt = verifiedExt || (isGif ? 'gif' : isVideo ? 'mp4' : 'jpg');
 
       let rawOriginal = '';
       let rawSample = rawThumb;
@@ -1092,14 +1152,17 @@ export class BooruApiService {
       if (verifiedOriginalUrl) {
         rawOriginal = verifiedOriginalUrl;
         rawSample = verifiedOriginalUrl;
-      } else if (isVideo && thumbMatch) {
+      } else if ((isVideo || isGif) && thumbMatch) {
         const [, dir1, dir2, hash] = thumbMatch;
-        rawOriginal = `${source.baseUrl}/images/${dir1}/${dir2}/${hash}.mp4`;
-        rawSample = rawOriginal;
+        // Thumbnail and file share the hash. GIFs keep the light thumbnail as
+        // the sample (full GIFs are tens of MB — never a grid frame) and only
+        // the original points at the .gif; the viewer loads it at open.
+        rawOriginal = `${source.baseUrl}/images/${dir1}/${dir2}/${hash}.${isGif ? 'gif' : 'mp4'}`;
+        rawSample = isGif ? rawThumb : rawOriginal;
       } else {
-        // Thumbnail uzantısından original uzantısı türetilmez (jpeg tahmini 404 üretir).
-        // Scrape aşamasında verified url yoksa sample preview'da kalır,
-        // original ise viewer'da resolveGelbooruOriginalUrl ile post sayfasından çözülür.
+        // The original extension can't be derived from the thumbnail extension (a jpeg guess produces 404s).
+        // Without a verified url at scrape time the sample stays on the preview,
+        // while the original is resolved from the post page in the viewer via resolveGelbooruOriginalUrl.
         rawSample = rawThumb;
         rawOriginal = '';
       }
@@ -1146,8 +1209,6 @@ export class BooruApiService {
   private redGifsTokenExpiry: number = 0;
   private redGifsTokenScope = '';
   private redGifsTokenRequest: { scope: string; id: symbol; promise: Promise<string> } | null = null;
-  /** Keşfet akışında gösterilmiş gönderi id'leri (sayfa çakışmalarını eler). */
-  private feedSeenIds = new Set<string>();
 
   private async fetchRedGifsApi(url: string, token?: string): Promise<Response> {
     const headers: Record<string, string> = {
@@ -1158,8 +1219,8 @@ export class BooruApiService {
       'Cache-Control': 'no-store, no-cache',
     };
     if (token) {
-      // RedGifs tek başlık bekliyor; üç varyantı birden göndermek WAF'a
-      // kırmaya çalışan bir dolambaçtı.
+      // RedGifs expects a single header; sending all three variants at once
+      // looked like a workaround trying to break the WAF.
       headers['Authorization'] = `Bearer ${token}`;
     }
     return await this.fetchWithRetry(url, { headers }, 0, 10000);
@@ -1168,7 +1229,7 @@ export class BooruApiService {
   private async getRedGifsToken(rejectedToken?: string): Promise<string> {
     await proxyService.ensureInitialized();
     const scope = proxyService.isEnabled() ? proxyService.getWorkerUrl() : 'direct';
-    // Geç gelen başka bir 401, daha yeni ve geçerli token'ı silemez.
+    // A late-arriving 401 from another request must not wipe a newer, valid token.
     if (rejectedToken && this.redGifsToken === rejectedToken && this.redGifsTokenScope === scope) {
       this.redGifsToken = null;
       this.redGifsTokenExpiry = 0;
@@ -1181,18 +1242,18 @@ export class BooruApiService {
       return this.redGifsTokenRequest.promise;
     }
 
-    // Token gönderen bağlantıya bağlıdır. Diske yazıp başka açılışta/IP'de
-    // kullanma: 401 sonrası aynı kayıt tekrar okunarak WrongSender döngüsü oluşuyordu.
+    // The token is tied to the connection that requested it. Don't persist it to disk
+    // for reuse across launches/IPs: re-reading the same record after a 401 caused a WrongSender loop.
     const id = Symbol(scope);
     const promise = (async () => {
       const authRes = await this.fetchRedGifsApi('https://api.redgifs.com/v2/auth/temporary');
       if (!authRes.ok) {
         const errText = await authRes.text().catch(() => '');
-        throw new Error(`RedGifs auth başarısız (${authRes.status}): ${errText}`);
+        throw new Error(`RedGifs auth failed (${authRes.status}): ${errText}`);
       }
       const data = await authRes.json();
       if (typeof data?.token !== 'string' || !data.token) {
-        throw new Error('RedGifs token alınamadı (boş yanıt)');
+        throw new Error('Could not obtain RedGifs token (empty response)');
       }
       if (this.redGifsTokenRequest?.id === id) {
         this.redGifsToken = data.token;
@@ -1214,25 +1275,20 @@ export class BooruApiService {
     const response = await this.fetchRedGifsApi(url, token);
     if (response.status !== 401) return response;
     const refreshed = await this.getRedGifsToken(token);
-    // Bir yenileme hakkı: kalıcı ağ/proxy sorunu sonsuz auth döngüsü oluşturmaz.
+    // Single refresh allowance: a persistent network/proxy problem won't cause an infinite auth loop.
     return this.fetchRedGifsApi(url, refreshed);
   }
 
   /**
-   * RedGifs token'ını arka planda hazırlar. Uygulama açılışında çağrılır:
-   * Keşfet ekranı auth turunu beklemez.
+   * Warms up the RedGifs token in the background. Called at app launch:
+   * the Discover screen doesn't wait for the auth round-trip.
    */
   async warmupRedGifs(): Promise<void> {
     try {
       await this.getRedGifsToken();
     } catch (e) {
-      console.warn('[BooruAPI] RedGifs warmup başarısız:', e);
+      console.warn('[BooruAPI] RedGifs warmup failed:', e);
     }
-  }
-
-  /** Keşfet akışı yeniden başlatılırken (kaynak/sıra değişimi, pull-to-refresh). */
-  resetFeedSeen(): void {
-    this.feedSeenIds.clear();
   }
 
   private async fetchRedGifsPosts(
@@ -1243,23 +1299,23 @@ export class BooruApiService {
     filter?: SearchFilterConfig
   ): Promise<BooruPost[]> {
     let cleanTags = tags.trim();
-    // Eğer tags içinde rating filtresi vs yoksa ve doğrudan etiket araması yapılıyorsa
-    // filter.tags varsa onu da kontrol et
+    // If tags carry no rating filter etc. and this is a direct tag search,
+    // also check filter.tags
     if (!cleanTags && filter?.tags && filter.tags.length > 0) {
       cleanTags = filter.tags.map((t) => t.trim()).filter(Boolean).join(' ');
     }
 
-    // RedGifs '-tag' dışlama sözdizimini bilmez; dahil/hariç ayrımı yapılıp
-    // hariç tutulanlar sunucuya gönderilmeden istemcide filtrelenir
+    // RedGifs doesn't know the '-tag' exclusion syntax; includes/excludes are split
+    // and excluded ones are filtered client-side without being sent to the server
     const normTag = (t: string) => t.toLowerCase().replace(/\s+/g, '_');
     const tokens = cleanTags.split(/\s+/).filter(Boolean);
     const excludeTags = tokens.filter((t) => t.startsWith('-')).map((t) => normTag(t.replace(/^-+/, ''))).filter(Boolean);
-    // '-niche:<id>' dışlamaları post.niches ile eşleşir
+    // '-niche:<id>' exclusions match post.niches
     const nicheExcludes = excludeTags
       .filter((t) => t.startsWith('niche:'))
       .map((t) => t.substring(6).trim())
       .filter(Boolean);
-    // '-user:<ad>' dışlamaları post.tags.artist ile eşleşir
+    // '-user:<name>' exclusions match post.tags.artist
     const userExcludes = excludeTags
       .filter((t) => t.startsWith('user:'))
       .map((t) => t.substring(5).trim().toLowerCase())
@@ -1267,14 +1323,14 @@ export class BooruApiService {
     const includeTokens = tokens
       .filter((t) => !t.startsWith('-'))
       .filter((t) => !t.toLowerCase().startsWith('user:'));
-    // 'user:<ad>' yazımı filtredeki Kullanıcı alanıyla aynı mekanikle çalışır
+    // The 'user:<name>' spelling works through the same mechanism as the User field in the filter
     const userToken = tokens.find((t) => !t.startsWith('-') && t.toLowerCase().startsWith('user:'));
     const tokenUsername = userToken ? userToken.substring(5).trim() : '';
-    // Sunucuya ham yazımıyla gider: RedGifs kısmi eşleşme yapar ('ana' -> 'anal'),
-    // '_' ile yarım kalan çok kelimeli etikette ('big_t') 0 döner.
-    const includeTags = includeTokens.map((t) => t.trim()).filter(Boolean).join(' ');
+    // Decode display labels such as real_couples back to RedGifs search text.
+    // Keep the original tokens for local filters and user/niche identifiers.
+    const includeTags = redGifsSearchText(includeTokens.join(' '));
 
-    // Sıralama belirleme (RedGifs Order değerleri: trending, latest, score, top7, top28, top)
+    // Order mapping (RedGifs Order values: trending, latest, score, top7, top28, top)
     let order = 'trending';
     if (filter?.sortBy === 'id') {
       order = 'latest';
@@ -1295,17 +1351,17 @@ export class BooruApiService {
     }
 
     const count = Math.min(Math.max(limit, 10), 40);
-    // Niche (kategori) araması: 'niche:<id>' token'ı görülürse kütüphanedeki
-    // kategori mantığı karşılığı /v2/niches/{id}/gifs kullanılır (canlı doğrulandı).
-    // Bu endpoint tags almaz; kalan etiketler istemcide filtrelenir.
+    // Niche (category) search: when a 'niche:<id>' token is seen, the library's
+    // category equivalent /v2/niches/{id}/gifs is used (verified live).
+    // That endpoint takes no tags; remaining tags are filtered client-side.
     const nicheToken = includeTokens.find((t) => t.toLowerCase().startsWith('niche:'));
     const nicheId = nicheToken ? nicheToken.substring(6).trim() : '';
     const remainingTokens = nicheId ? includeTokens.filter((t) => t !== nicheToken) : includeTokens;
     const remainingTags = remainingTokens.map((t) => t.trim()).filter(Boolean).join(' ');
-    // Kullanıcı/üretici araması: filtredeki Kullanıcı alanı veya 'user:<ad>' yazımı
-    // (kütüphanedeki search_user karşılığı, canlı doğrulandı).
-    // Not: bu endpoint order=trending ile boş döner (latest zorunlu) ve tags parametresini
-    // desteklemez (tags eklenirse 0 döner); kullanıcı+etiket birlikteyse etiketler istemcide filtrelenir.
+    // User/creator search: the User field in the filter or the 'user:<name>' spelling
+    // (the library's search_user equivalent, verified live).
+    // Note: this endpoint returns empty with order=trending (latest is required) and doesn't
+    // support tags (adding tags returns 0); with user+tags combined, tags are filtered client-side.
     const searchUsername = filter?.user?.trim() || tokenUsername;
     const searchUrl = searchUsername
       ? `https://api.redgifs.com/v2/users/${encodeURIComponent(searchUsername)}/search?page=${page}&count=${count}&order=latest&type=g`
@@ -1320,12 +1376,12 @@ export class BooruApiService {
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
       if (response.status === 404 && searchUsername) {
-        throw new Error(`RedGifs kullanıcısı bulunamadı: ${searchUsername}`);
+        throw new Error(`RedGifs user not found: ${searchUsername}`);
       }
       if (response.status === 404 && nicheId) {
-        throw new Error(`RedGifs kategorisi bulunamadı: ${nicheId}`);
+        throw new Error(`RedGifs category not found: ${nicheId}`);
       }
-      throw new Error(`RedGifs API hatası (${response.status}): ${errText}`);
+      throw new Error(`RedGifs API error (${response.status}): ${errText}`);
     }
 
     const data = await response.json();
@@ -1333,8 +1389,8 @@ export class BooruApiService {
 
     const posts = this.mapRedGifsGifs(source, gifs);
 
-    // İstemci tarafı filtreleme: kullanıcı/niche+etiket birlikteliğinde veya '-tag'
-    // dışlamalarında sunucu filtrelemez; burada elenir
+    // Client-side filtering: the server doesn't filter user/niche+tag combos or '-tag'
+    // exclusions; they're removed here
     const filterTokens = nicheId ? remainingTokens : includeTokens;
     const needsClientFilter =
       excludeTags.length > 0 || ((searchUsername || nicheId) && filterTokens.length > 0);
@@ -1345,22 +1401,26 @@ export class BooruApiService {
       const hay = p.allTags.map(normTag);
       if (excludeTags.some((t) => hay.includes(t))) return false;
       if ((searchUsername || nicheId) && includeNorm.some((t) => !hay.includes(t))) return false;
-      // '-niche:<id>' dışlaması: bu kategorideki gönderiyi ele
+      // '-niche:<id>' exclusion: drop posts in this category
       if (nicheExcludes.length > 0 && p.niches?.some((n) => nicheExcludes.includes(normTag(n)))) return false;
-      // '-user:<ad>' dışlaması: bu hesabın gönderisini ele
+      // '-user:<name>' exclusion: drop posts from this account
       if (userExcludes.length > 0 && p.tags.artist?.some((a) => userExcludes.includes(a.trim().toLowerCase()))) return false;
       return true;
     });
   }
 
-  /** RedGifs API'sinden gelen ham gif kayıtlarını BooruPost'a çevirir. */
+  /** Converts raw gif records from the RedGifs API into BooruPosts. */
   private mapRedGifsGifs(source: BooruSource, gifs: any[]): BooruPost[] {
     return gifs.map((g: any) => {
       const hdUrl = g.urls?.hd || '';
       const sdUrl = g.urls?.sd || '';
       const silentUrl = g.urls?.silent || '';
       const fullVideo = hdUrl || sdUrl || silentUrl;
-      const previewThumb = g.urls?.thumbnail || g.urls?.poster || '';
+      const coverUrls: string[] = [g.urls?.thumbnail, g.urls?.poster]
+        .filter((url): url is string => typeof url === 'string' && !!url.trim())
+        .map((url) => url.trim());
+      const previewThumb = coverUrls[0] || '';
+      const previewFallback = coverUrls.find((url) => url !== previewThumb);
       const sampleMedia = sdUrl || silentUrl || fullVideo;
 
       const rawTags = Array.isArray(g.tags) ? g.tags : [];
@@ -1383,6 +1443,7 @@ export class BooruApiService {
         sourceId: source.id,
         sourceName: source.name,
         previewUrl: previewThumb,
+        previewFallbackUrl: previewFallback,
         previewVideoUrl: silentUrl || sdUrl || undefined,
         sampleUrl: sampleMedia,
         originalUrl: fullVideo,
@@ -1411,9 +1472,9 @@ export class BooruApiService {
   private redGifsTrendingTagsCache: { at: number; tags: RedGifsTrendingTag[] } | null = null;
 
   /**
-   * RedGifs trend arama terimleri: `/v2/tags/trending` → `{tags:[{name,count}]}`
-   * (canlı doğrulandı). Sabit trending akışını çeşitlendiren yüzey; etiketler
-   * günlük değişir. 30 dakika bellek cache'i — her açılışta bir istek.
+   * RedGifs trending search terms: `/v2/tags/trending` → `{tags:[{name,count}]}`
+   * (verified live). The surface that diversifies the fixed trending feed; tags
+   * change daily. 30-minute memory cache — one request per launch.
    */
   async fetchRedGifsTrendingTags(limit: number = 20): Promise<RedGifsTrendingTag[]> {
     const now = Date.now();
@@ -1425,7 +1486,7 @@ export class BooruApiService {
     try {
       const response = await this.fetchAuthenticatedRedGifs(url);
       if (!response.ok) {
-        // Satır boş kalır, akış çalışmaya devam eder
+        // Row stays empty, the feed keeps working
         console.warn(`[BooruAPI] RedGifs trending tags HTTP ${response.status}`);
         return [];
       }
@@ -1438,14 +1499,14 @@ export class BooruApiService {
       this.redGifsTrendingTagsCache = { at: now, tags };
       return tags;
     } catch (e) {
-      console.warn('[BooruAPI] RedGifs trending tags hatası:', e);
+      console.warn('[BooruAPI] RedGifs trending tags error:', e);
       return [];
     }
   }
 
   /**
-   * RedGifs niches (kategoriler): query boşsa trendler, doluysa arama.
-   * Kütüphanede doğrudan karşılığı yok; /v2/niches uçları canlı doğrulandı.
+   * RedGifs niches (categories): trends when the query is empty, search when set.
+   * No direct library equivalent; the /v2/niches endpoints are verified live.
    */
   async fetchRedGifsNiches(query?: string): Promise<RedGifsNiche[]> {
     const q = query?.trim();
@@ -1454,8 +1515,8 @@ export class BooruApiService {
       : 'https://api.redgifs.com/v2/niches/trending?page=1&count=20';
     const response = await this.fetchAuthenticatedRedGifs(url);
     if (!response.ok) {
-      // Sözleşme [] döndürür (niş yok gibi görünür); tanılama için logla
-      console.warn(`[BooruAPI] RedGifs niches HTTP ${response.status}, boş liste dönülüyor`);
+      // Contract returns [] (looks like no niches); log for diagnostics
+      console.warn(`[BooruAPI] RedGifs niches HTTP ${response.status}, returning empty list`);
       return [];
     }
     try {
@@ -1479,10 +1540,10 @@ export class BooruApiService {
   private xvideosBestMonthAt = 0;
 
   /**
-   * XVideos `/best` güncel ayını (`YYYY-AA`) çözer (6 saat cache).
-   * Sayfa-1 `/best` redirect'i ayı kendisi bulur; deeper keşfet sayfaları
-   * için aydan türetilmiş URL gerekir. Bulunamazsa '' döner ve keşfet
-   * `/new` varyantlarına düşer.
+   * Resolves the XVideos `/best` current month (`YYYY-MM`) (6-hour cache).
+   * The page-1 `/best` redirect finds the month itself; deeper Discover pages
+   * need a month-derived URL. Returns '' when not found, and Discover
+   * falls back to the `/new` variants.
    */
   private async resolveXVideosBestMonth(baseUrl: string): Promise<string> {
     const now = Date.now();
@@ -1509,7 +1570,7 @@ export class BooruApiService {
         }
       }
     } catch {
-      // yok say: /new fallback'i devrede
+      // ignore: the /new fallback is active
     }
     return '';
   }
@@ -1522,8 +1583,8 @@ export class BooruApiService {
     includeBlacklisted: boolean = false,
     filter?: SearchFilterConfig
   ): Promise<BooruPost[]> {
-    // XVideos '-' dışlama sözdizimini anlamaz; hariç tutulanlar atılır
-    // (liste kartlarında etiket verisi yok, istemcide filtrelenemez).
+    // XVideos doesn't understand the '-' exclusion syntax; excluded ones are dropped
+    // (list cards carry no tag data, so they can't be filtered client-side).
     const tokens = tags
       .split(/\s+/)
       .map((t) => t.trim())
@@ -1532,8 +1593,8 @@ export class BooruApiService {
     const k = tokens.join(' ');
     void limit;
 
-    // Sıralama eşlemesi (sitenin sort parametreleri: relevance, uploaddate,
-    // rating, length, views, random). 'user' sort'unun site karşılığı yok.
+    // Order mapping (site sort params: relevance, uploaddate,
+    // rating, length, views, random). There is no site equivalent for the 'user' sort.
     let sort: XVideosSort = 'relevance';
     let datef: XVideosDatef = 'all';
     const sb = filter?.sortBy;
@@ -1549,7 +1610,7 @@ export class BooruApiService {
       sort = 'length';
     }
 
-    const bestMonth = !k && page > 1 ? await this.resolveXVideosBestMonth(source.baseUrl || XVIDEOS_BASE) : this.xvideosBestMonth;
+    const bestMonth = !k && page > 1 && sort !== 'uploaddate' ? await this.resolveXVideosBestMonth(source.baseUrl || XVIDEOS_BASE) : this.xvideosBestMonth;
     const candidates = buildXVideosSearchCandidates(source.baseUrl || XVIDEOS_BASE, page, k, sort, datef, bestMonth);
     const headers = {
       'User-Agent': XVIDEOS_UA,
@@ -1568,19 +1629,19 @@ export class BooruApiService {
         lastError = e instanceof Error ? e : new Error(String(e));
         continue;
       }
-      // 404 = yanlış sayfa varyantı, sonraki adayı dene; diğerleri gerçek hata
+      // 404 = wrong page variant, try the next candidate; others are real errors
       if (response.status === 404) {
-        lastError = new Error(`XVideos sayfası bulunamadı (404): ${url}`);
+        lastError = new Error(`XVideos page not found (404): ${url}`);
         continue;
       }
       if (!response.ok) {
         if (response.status === 429) {
-          throw new Error('XVideos istek sınırı aşıldı (429 Too Many Requests). Lütfen bir süre bekleyin.');
+          throw new Error('XVideos rate limit exceeded (429 Too Many Requests). Please wait a while.');
         }
         if (response.status >= 500) {
-          throw new Error(`XVideos sunucusu aşırı yüklendi (${response.status} ${response.statusText}).`);
+          throw new Error(`XVideos server overloaded (${response.status} ${response.statusText}).`);
         }
-        throw new Error(`XVideos hatası: ${response.status} ${response.statusText}`);
+        throw new Error(`XVideos error: ${response.status} ${response.statusText}`);
       }
 
       reachedSite = true;
@@ -1596,11 +1657,11 @@ export class BooruApiService {
         }
         return await this.filterBlacklistedPosts(posts, includeBlacklisted);
       }
-      // Boş liste: aday varyantı yanlış olabilir, sonrakini dene
+      // Empty list: the candidate variant may be wrong, try the next one
     }
 
-    // Siteye hiç ulaşılamadıysa (ağ hatası / tüm adaylar 404) son hatayı
-    // fırlat; aksi halde gerçekten sonuç yok (liste sonu) → []
+    // If the site was never reached (network error / all candidates 404), throw
+    // the last error; otherwise there are genuinely no results (end of list) → []
     if (!reachedSite && lastError) throw lastError;
     return [];
   }
@@ -1612,7 +1673,7 @@ export class BooruApiService {
     tags: string,
     includeBlacklisted: boolean = false
   ): Promise<BooruPost[]> {
-    // Sitede sıralama parametresi yok; anahtar kelime düz metin aranır.
+    // The site has no sort parameter; keywords are searched as plain text.
     const k = tags
       .split(/\s+/)
       .map((t) => t.trim())
@@ -1636,17 +1697,17 @@ export class BooruApiService {
     }
     if (!response.ok) {
       if (response.status === 429) {
-        throw new Error('Sex.com istek sınırı aşıldı (429 Too Many Requests). Lütfen bir süre bekleyin.');
+        throw new Error('Sex.com rate limit exceeded (429 Too Many Requests). Please wait a while.');
       }
       if (response.status >= 500) {
-        throw new Error(`Sex.com sunucusu aşırı yüklendi (${response.status} ${response.statusText}).`);
+        throw new Error(`Sex.com server overloaded (${response.status} ${response.statusText}).`);
       }
-      throw new Error(`Sex.com hatası: ${response.status} ${response.statusText}`);
+      throw new Error(`Sex.com error: ${response.status} ${response.statusText}`);
     }
 
     const html = await response.text();
     const posts = parseSexComListing(html, source);
-    // Premium kilitli videoların tam dosyası sunulmuyor: ızgaraya girmez.
+    // Premium-locked videos have no full file served: they stay out of the grid.
     return await this.filterBlacklistedPosts(excludePremiumPosts(posts), includeBlacklisted);
   }
 
@@ -1676,8 +1737,8 @@ export class BooruApiService {
   ): Promise<BooruPost[]> {
     // YALNIZCA resmi v2 API (https://nhentai.net/api/v2/docs).
     // API; keywords, "exact phrase", -negation, tag:/artist:/language: filtrelerini,
-    // favorites:>=N eşiğini ve date/popular/popular-today/popular-week/popular-month
-    // sıralamalarını yerel olarak destekler.
+    // Supports the `favorites:>=N` threshold and the date/popular/popular-today/
+    // popular-week/popular-month sorts locally.
     const fullQuery = tags
       .split(/\s+/)
       .map((t) => t.trim())
@@ -1688,18 +1749,18 @@ export class BooruApiService {
     const apiSort = nhentaiApiSort(filter?.sortBy, filter?.timeRange);
     const candidates = buildNHentaiApiCandidates(page, fullQuery, apiSort, filter?.minScore);
 
-    // Safari-mimikri (cihazda doğrulandı): bot koruması istek parmak izini
-    // bayraklayıp gövdeyi akıtmıyordu; tam Safari formu + Referer yok + AE yok.
+    // Safari mimicry (verified on device): bot protection flagged the request
+    // fingerprint and refused to stream the body; full Safari form + no Referer + no AE.
     const headers = nhentaiApiHeaders();
 
     let lastError: any = null;
     let saw404 = false;
     for (const url of candidates) {
       try {
-        // TEK ATIM: retry yok. Gerekçe: (1) search anonim limiti 10 req/dk —
-        // her retry bütçeyi yakıp 429/tarpit sarmalına sokar; (2) `query=*` +
-        // zaman aralıklı sıralama sunucuda zaten ~4s sürer, 20s tek timeout
-        // yavaş sorguya yeterli alanı tanır.
+        // SINGLE ATTEMPT: no retry. Rationale: (1) the anonymous search limit is
+        // 10 req/min — every retry burns budget and spirals into 429/tarpit;
+        // (2) `query=*` + time-ranged sort already takes ~4s server-side, so a
+        // single 20s timeout gives the slow query enough headroom.
         const timeoutMs = 20000;
         const response = await proxyService.fetchWithFallback(url, { headers }, timeoutMs);
         if (response.status === 404) {
@@ -1708,9 +1769,9 @@ export class BooruApiService {
           continue;
         }
         if (response.status === 429) {
-          // Doküman: anonim IP için 10-15 req/dakika. Ekranda boş grid yerine
-          // anlaşılır hata gösterilir.
-          throw new Error('nhentai API istek sınırı aşıldı (429 Rate limit). Lütfen biraz bekleyin.');
+          // Docs: 10-15 req/min for anonymous IPs. Show a clear error on
+          // screen instead of an empty grid.
+          throw new Error('nhentai API rate limit exceeded (429 Rate limit). Please wait a bit.');
         }
         if (!response.ok) {
           lastError = new Error(`HTTP ${response.status}`);
@@ -1719,8 +1780,8 @@ export class BooruApiService {
         }
         const text = await withHardTimeout(response.text(), timeoutMs, 'nhentai body api/v2');
         if (/just a moment|challenge-platform|cf-challenge|attention required/i.test(text.slice(0, 4000))) {
-          lastError = new Error('Cloudflare challenge sayfası alındı');
-          console.warn(`[BooruAPI] nhentai bot-duvarı sayfası aldı (challenge): ${url}`);
+          lastError = new Error('Cloudflare challenge page received');
+          console.warn(`[BooruAPI] nhentai returned a bot-wall (challenge) page: ${url}`);
           continue;
         }
         const posts = parseNHentaiV2Listing(text, source);
@@ -1732,7 +1793,7 @@ export class BooruApiService {
           );
         }
       } catch (err) {
-        // 429 fırlatması doğrudan kullanıcıya gösterilir (yutulmaz)
+        // The 429 error surfaces directly to the user (not swallowed)
         if (err instanceof Error && err.message.includes('429')) throw err;
         lastError = err;
         console.log(`[BooruAPI] nhentai hata (${err instanceof Error ? err.message : String(err)}): ${url}`);
@@ -1742,14 +1803,15 @@ export class BooruApiService {
       return [];
     }
     if (lastError) {
-      console.warn('[BooruAPI] nhentai v2 API başarısız oldu:', lastError);
+      console.warn('[BooruAPI] nhentai v2 API failed:', lastError);
     }
     return [];
   }
 
   /**
-   * Min favori eşiği: sunucu sorguya `favorites:>=N` eklediği için çoğu durumda
-   * zaten filtrelidir; bu istemci tarafı ikinci güvenlik ağıdır.
+   * Min favorite threshold: since the server appends `favorites:>=N` to the
+   * query it is already filtered in most cases; this client-side pass is the
+   * second safety net.
    */
   private filterNHentaiMinScore(posts: BooruPost[], filter?: SearchFilterConfig): BooruPost[] {
     const min = filter?.minScore;
@@ -1766,7 +1828,7 @@ export class BooruApiService {
     includeBlacklisted: boolean = false,
     filter?: SearchFilterConfig
   ): Promise<BooruPost[]> {
-    // XHamster '-' dışlama sözdizimini anlamaz; hariç tutulanlar atılır
+    // XHamster does not understand '-' exclusions; excluded terms are dropped
     const tokens = tags
       .split(/\s+/)
       .map((t) => t.trim())
@@ -1810,19 +1872,19 @@ export class BooruApiService {
         lastError = e instanceof Error ? e : new Error(String(e));
         continue;
       }
-      // 404 = sonraki adayı dene; 429/5xx = fırlat
+      // 404 = try the next candidate; 429/5xx = throw
       if (response.status === 404) {
-        lastError = new Error(`XHamster sayfası bulunamadı (404): ${url}`);
+        lastError = new Error(`XHamster page not found (404): ${url}`);
         continue;
       }
       if (!response.ok) {
         if (response.status === 429) {
-          throw new Error('XHamster istek sınırı aşıldı (429 Too Many Requests). Lütfen bir süre bekleyin.');
+          throw new Error('XHamster rate limit exceeded (429 Too Many Requests). Please wait a while.');
         }
         if (response.status >= 500) {
-          throw new Error(`XHamster sunucusu aşırı yüklendi (${response.status} ${response.statusText}).`);
+          throw new Error(`XHamster server overloaded (${response.status} ${response.statusText}).`);
         }
-        throw new Error(`XHamster hatası: ${response.status} ${response.statusText}`);
+        throw new Error(`XHamster error: ${response.status} ${response.statusText}`);
       }
 
       reachedSite = true;
@@ -1831,7 +1893,7 @@ export class BooruApiService {
       if (posts.length > 0) {
         return await this.filterBlacklistedPosts(posts, includeBlacklisted);
       }
-      // Boş liste: sonraki adayı dene
+      // Empty list: try the next candidate
     }
 
     if (!reachedSite && lastError) {
@@ -1845,10 +1907,10 @@ export class BooruApiService {
 
   private phDiscoverCache: BooruPost[] = [];
   private phDiscoverCacheAt = 0;
-  /** nhentai v2 API 429 (Rate limit: 10-15 req/dk) alındığında 60s bekleme süresi */
+  /** Wait time after an nhentai v2 API 429 (rate limit: 10-15 req/min) */
   private nhentaiApiCooldownUntil = 0;
 
-  /** Keşfet önbelleği 15dk geçerli (site düşse bile grid boş kalmaz). */
+  /** Explore cache is valid for 15 min (the grid stays populated even if the site is down). */
   private phDiscoverCacheValid(): boolean {
     return this.phDiscoverCache.length > 0 && Date.now() - this.phDiscoverCacheAt < 15 * 60 * 1000;
   }
@@ -1868,7 +1930,7 @@ export class BooruApiService {
     includeBlacklisted: boolean = false,
     filter?: SearchFilterConfig
   ): Promise<BooruPost[]> {
-    // Webmasters API '-' dışlama sözdizimini anlamaz; hariç tutulanlar atılır
+    // The Webmasters API does not understand '-' exclusions; excluded terms are dropped
     const tokens = tags
       .split(/\s+/)
       .map((t) => t.trim())
@@ -1877,7 +1939,7 @@ export class BooruApiService {
     const k = tokens.join(' ');
     void limit;
 
-    // Aramada featured (alaka), keşfette mostviewed+daily (dinamik trendler)
+    // Featured (relevance) in search, mostviewed+daily in explore (dynamic trends)
     let ordering: PornhubOrdering = 'featured';
     let period = pornhubPeriodForTimeRange(filter?.timeRange);
 
@@ -1907,8 +1969,8 @@ export class BooruApiService {
       Referer: `${PORNHUB_BASE}/`,
     };
 
-    // Keşfet sayfa 1: anasayfa (sitenin o an öne çıkardıkları). Başarısız
-    // olursa aşağıdaki API akışına düşülür; deeper sayfalar API'den gelir.
+    // Explore page 1: the homepage (what the site currently features). On
+    // failure it falls back to the API flow below; deeper pages come from the API.
     if (!k && page <= 1) {
       try {
         const homeRes = await this.fetchWithRetry(`${PORNHUB_BASE}/`, {
@@ -1950,12 +2012,12 @@ export class BooruApiService {
         return this.phDiscoverCache;
       }
       if (response.status === 429) {
-        throw new Error('Pornhub istek sınırı aşıldı (429 Too Many Requests). Lütfen bir süre bekleyin.');
+        throw new Error('Pornhub rate limit exceeded (429 Too Many Requests). Please wait a while.');
       }
       if (response.status >= 500) {
-        throw new Error(`Pornhub sunucusu aşırı yüklendi (${response.status} ${response.statusText}).`);
+        throw new Error(`Pornhub server overloaded (${response.status} ${response.statusText}).`);
       }
-      throw new Error(`Pornhub hatası: ${response.status} ${response.statusText}`);
+      throw new Error(`Pornhub error: ${response.status} ${response.statusText}`);
     }
 
     let rawVideos: PornhubVideo[] = [];
@@ -2025,7 +2087,7 @@ export class BooruApiService {
         console.warn('[BooruAPI] Pornhub returned 0 posts, serving cached discover');
         return this.phDiscoverCache;
       }
-      throw new Error('Pornhub videoları yüklenemedi. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.');
+      throw new Error('Could not load Pornhub videos. Please check your internet connection and try again.');
     }
     const out = await this.filterBlacklistedPosts(posts, includeBlacklisted);
     this.storePhDiscoverCache(out, k, page);
@@ -2079,8 +2141,8 @@ export class BooruApiService {
     }
 
     let url: string;
-    // Kelime araması varsa, daima genel arama (/api/v1/posts?q=...) endpoint'i kullanılmalı!
-    // /api/v1/posts/popular sadece kelimesiz saf liderlik tablosu / periyot aramalarında kullanılmalı.
+    // With a word search always use the generic search endpoint (/api/v1/posts?q=...)!
+    // /api/v1/posts/popular is only for wordless pure leaderboard / period searches.
     if (searchKeywords.length === 0 && ((period && ['day', 'week', 'month'].includes(period.toLowerCase())) || dateAnchor)) {
       const queryParams = new URLSearchParams({
         period: period ? period.toLowerCase() : 'day',
@@ -2225,13 +2287,12 @@ export class BooruApiService {
     return result;
   }
 
-  async searchTags(query: string, limit: number = 12): Promise<BooruTagSuggestion[]> {
+  async searchTags(query: string, limit: number = 12, source: BooruSource = this.currentSource): Promise<BooruTagSuggestion[]> {
     if (!query || query.trim().length < 2) return [];
 
-    const source = this.currentSource;
     try {
       if (source.id === 'gelbooru') {
-        // 1. Öncelikli: Kategori etiketli ve anonim çalışan autocomplete2 sorgusu
+        // 1. Preferred: the category-tagged autocomplete2 query that works anonymously
         try {
           const url = `${source.baseUrl}/index.php?page=autocomplete2&term=${encodeURIComponent(query.trim())}&type=tag_query&limit=${limit}`;
           const response = await this.fetchWithRetry(url, {
@@ -2260,10 +2321,10 @@ export class BooruApiService {
             }
           }
         } catch {
-          // autocomplete2 yanıt vermezse resmi DAPI Tag List endpoint'ine geç
+          // If autocomplete2 gives no response, switch to the official DAPI Tag List endpoint
         }
 
-        // 2. Dokümandaki resmi DAPI Tag List fallback (/index.php?page=dapi&s=tag&q=index)
+        // 2. Official DAPI Tag List fallback from the docs (/index.php?page=dapi&s=tag&q=index)
         try {
           const queryParams = new URLSearchParams({
             page: 'dapi',
@@ -2323,8 +2384,8 @@ export class BooruApiService {
         return [];
       } else if (source.type === 'redgifs') {
         try {
-          // Kütüphanedeki fetch_tag_suggestions karşılığı (canlı doğrulandı)
-          const url = `https://api.redgifs.com/v2/search/suggest?query=${encodeURIComponent(query.trim())}`;
+          // Equivalent of the library's fetch_tag_suggestions (verified live)
+          const url = `https://api.redgifs.com/v2/search/suggest?query=${encodeURIComponent(redGifsSearchText(query))}`;
           const response = await this.fetchAuthenticatedRedGifs(url);
           if (response.ok) {
             const data = await response.json();
@@ -2342,7 +2403,7 @@ export class BooruApiService {
         } catch {}
         return [];
       } else if (source.type === 'xvideos' || source.type === 'xhamster' || source.type === 'pornhub' || source.type === 'sexcom') {
-        // Resmi öneri endpoint'i yok; istemci tarafı filtre yeterli
+        // No official suggestion endpoint; a client-side filter is enough
         return [];
       } else if (source.type === 'hentaihaven') {
         return await searchHentaiHavenTags(query, limit);

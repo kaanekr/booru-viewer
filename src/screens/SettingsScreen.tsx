@@ -1,1227 +1,281 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import React, { useCallback, useState } from 'react';
+import { ActivityIndicator, Alert, BackHandler, KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import {
-  ShieldCheck,
-  Shield,
-  Lock,
-  KeyRound,
-  ScanFace,
-  Fingerprint,
-  ChevronRight,
-  Layers,
-  Trash2,
-  Check,
-  Smartphone,
-  Globe,
-  Radio,
-  Zap,
-  FolderDown,
-  FolderUp,
-  HardDrive,
-  Share2,
-  Image as ImageIcon,
-  EyeOff,
-  X,
-} from 'lucide-react-native';
-import * as Haptics from 'expo-haptics';
-import { Image } from 'expo-image';
-import { BooruSource } from '../types/booru';
-import { AVAILABLE_SOURCES } from '../services/sources';
-import { StorageService, ImageQuality } from '../services/storage';
-import { setGridPreviewsEnabled } from '../utils/gridPreviews';
-import { proxyService } from '../services/proxyService';
-import { PORNHUB_UA, PORNHUB_BASE, parsePornhubHtmlListing } from '../services/pornhub';
-import { SEXCOM_UA, SEXCOM_BASE, parseSexComListing } from '../services/sexcom';
-import { HENTAIHAVEN_UA, HENTAIHAVEN_BASE, parseHentaiHavenListing } from '../services/hentaihavens';
-import { XVIDEOS_UA, XVIDEOS_BASE, parseXVideosListing } from '../services/xvideos';
-import { XHAMSTER_UA, XHAMSTER_BASE, parseXhamsterListing } from '../services/xhamster';
-import { BackupService } from '../services/backupService';
-import { SecurityService, BiometryType } from '../services/securityService';
-import { PasscodeModal, PasscodeModalMode } from '../components/PasscodeModal';
-import { clearCachedPosts } from '../navigation/postsCache';
-import { navigationRef } from '../navigation/rootNavigation';
+import { useFocusEffect } from '@react-navigation/native';
+import { ArrowLeft, ArrowUpRight, Check, ChevronRight, Database, Download, EyeOff, HardDrive, Image as ImageIcon, KeyRound, Layers, Lock, Radio, Settings2, Shield, SlidersHorizontal, Smartphone, Trash2, Upload, X } from 'lucide-react-native';
+import type { BooruSource } from '../types/booru';
 import { useSource } from '../context/SourceContext';
-import { useFocusEffect, StackActions } from '@react-navigation/native';
+import { SourceCatalog, SourceMark, sourcePresentation } from '../components/SourceCatalog';
+import { PasscodeModal } from '../components/PasscodeModal';
+import { SettingsButton, SettingsRow, SettingsSection, settingsStyles as ui } from './settings/SettingsUI';
+import { useSettings } from './settings/useSettings';
 import { Colors } from '../theme/colors';
 
-const GOLD_ACCENT = '#F5A623';
-
-interface QualityOption {
-  id: ImageQuality;
-  title: string;
-  desc: string;
-}
-
-const QUALITY_OPTIONS: QualityOption[] = [
-  {
-    id: 'preview',
-    title: 'Hızlı Önizleme',
-    desc: 'Sample çözünürlük, az veri kullanımı',
-  },
-  {
-    id: 'auto',
-    title: 'Otomatik (Önerilen)',
-    desc: 'Normalde sample, zoom\'da tam çözünürlük',
-  },
-  {
-    id: 'full',
-    title: 'Tam Çözünürlük',
-    desc: 'Her zaman original, çok veri kullanımı',
-  },
-];
-
+type Page = 'home' | 'sources' | 'source' | 'appearance' | 'privacy' | 'storage' | 'network' | 'about';
 interface SettingsScreenProps {
   activeSource?: BooruSource;
-  onSelectSource?: (source: BooruSource) => void;
+  onSelectSource?: (source: BooruSource) => void | Promise<void>;
+  route?: { params?: { section?: 'sources' | 'network' } };
+  navigation?: { setParams: (params: { section: undefined }) => void };
 }
+const TITLES: Record<Page, string> = {
+  home: 'Settings', sources: 'Sources', source: 'Source settings', appearance: 'Viewing',
+  privacy: 'Privacy & safety', storage: 'Storage & backup', network: 'Connection', about: 'About',
+};
+const QUALITY = [
+  { id: 'preview' as const, name: 'Quick preview', description: 'Sample images. Lower data usage.' },
+  { id: 'auto' as const, name: 'Automatic', description: 'Sample first, original when you zoom.' },
+  { id: 'full' as const, name: 'Original quality', description: 'Full-resolution images from the start.' },
+];
 
-export const SettingsScreen: React.FC<SettingsScreenProps> = ({
-  activeSource: propSource,
-  onSelectSource: propSelectSource,
-}) => {
-  const { activeSource: contextSource, selectSource } = useSource();
-  const activeSource = propSource ?? contextSource;
-  const onSelectSource = propSelectSource ?? selectSource;
+export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: propSource, onSelectSource, route, navigation }) => {
+  const context = useSource();
+  const activeSource = propSource ?? context.activeSource;
+  const settings = useSettings(onSelectSource ?? context.selectSource);
   const insets = useSafeAreaInsets();
-  const [proxyEnabled, setProxyEnabled] = useState(false);
-  const [workerUrl, setWorkerUrl] = useState('');
-  const [isTestingProxy, setIsTestingProxy] = useState(false);
-  const [proxyTestResult, setProxyTestResult] = useState<string | null>(null);
-  const [imageQuality, setImageQuality] = useState<ImageQuality>('auto');
-  const [gridPreviews, setGridPreviews] = useState(true);
-  const [blacklistedTags, setBlacklistedTags] = useState<string[]>([]);
-  const [gelbooruUserId, setGelbooruUserId] = useState('');
-  const [gelbooruApiKey, setGelbooruApiKey] = useState('');
-  const [gelbooruAuthSaved, setGelbooruAuthSaved] = useState(false);
-  const [isBlacklistOpen, setIsBlacklistOpen] = useState(false);
+  const [pages, setPages] = useState<Page[]>(['home']);
+  const [configuringSource, setConfiguringSource] = useState<BooruSource>(activeSource);
+  const page = pages[pages.length - 1];
+  const open = (next: Page) => setPages((previous) => [...previous, next]);
+  const back = useCallback(() => setPages((previous) => previous.length > 1 ? previous.slice(0, -1) : previous), []);
 
-  // Security & Passcode State
-  const [passcodeEnabled, setPasscodeEnabled] = useState(false);
-  const [useBiometrics, setUseBiometrics] = useState(true);
-  const [biometryType, setBiometryType] = useState<BiometryType | null>(null);
-  const [hasBiometrics, setHasBiometrics] = useState(false);
-  const [passcodeModalVisible, setPasscodeModalVisible] = useState(false);
-  const [passcodeModalMode, setPasscodeModalMode] = useState<PasscodeModalMode>('setup');
-
-  const refreshSecurityConfig = async () => {
-    const config = await SecurityService.getConfig();
-    const bioStatus = await SecurityService.getBiometricStatus();
-    setPasscodeEnabled(config.enabled && !!config.passcodeHash);
-    setUseBiometrics(config.useBiometrics);
-    setBiometryType(bioStatus.biometryType);
-    setHasBiometrics(bioStatus.hasHardware && bioStatus.isEnrolled);
-  };
-
-  useEffect(() => {
-    StorageService.getProxyConfig().then((config) => {
-      setProxyEnabled(config.enabled);
-      setWorkerUrl(config.workerUrl);
-      proxyService.setConfig(config.enabled, config.workerUrl);
-    });
-    StorageService.getImageQuality().then(setImageQuality);
-    StorageService.getGridPreviews().then((v) => {
-      setGridPreviews(v);
-      setGridPreviewsEnabled(v);
-    });
-    StorageService.getGelbooruAuth().then((auth) => {
-      setGelbooruUserId(auth.userId || '');
-      setGelbooruApiKey(auth.apiKey || '');
-      setGelbooruAuthSaved(!!(auth.userId && auth.apiKey));
-    });
-    refreshSecurityConfig();
-  }, []);
-
-  // Kara liste içerikten de değişebildiği için (PostInfoModal) her odakta tazele
-  useFocusEffect(
-    useCallback(() => {
-      StorageService.getBlacklistedTags().then(setBlacklistedTags);
-    }, [])
-  );
-
-  const handleRemoveBlacklistedTag = async (tag: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await StorageService.removeBlacklistedTag(tag);
-    setBlacklistedTags((prev) => prev.filter((t) => t !== tag));
-  };
-
-  const handleClearAllBlacklistedTags = () => {
-    Alert.alert(
-      'Kara Listeyi Temizle',
-      'Tüm engellenen etiketleri silmek istediğinizden emin misiniz?',
-      [
-        { text: 'İptal', style: 'cancel' },
-        {
-          text: 'Temizle',
-          style: 'destructive',
-          onPress: async () => {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            await StorageService.saveAllBlacklistedTags([]);
-            setBlacklistedTags([]);
-          },
-        },
-      ]
-    );
-  };
-
-  const handleSourceChange = (source: BooruSource) => {
-    Haptics.selectionAsync();
-    onSelectSource(source);
-    // Sunucu değişince biriken Viewer/SearchDetail ekranlarını kapat:
-    // arka planda canlı kalan oyuncular + resolve istekleri donmaya
-    // ve kontrollerin tepki vermemesine yol açıyordu.
-    // Birikme yoksa (zaten en üstte) dispatch etme — POP_TO_TOP uyarısı verir.
-    try {
-      if (navigationRef.isReady()) {
-        const state = navigationRef.getState();
-        if (state && state.routes.length > 1) {
-          navigationRef.dispatch(StackActions.popToTop());
-        }
-      }
-    } catch {}
-  };
-
-  const handleQualityChange = async (quality: ImageQuality) => {
-    Haptics.selectionAsync();
-    setImageQuality(quality);
-    await StorageService.setImageQuality(quality);
-  };
-
-  const handleToggleGridPreviews = async (val: boolean) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setGridPreviews(val);
-    setGridPreviewsEnabled(val);
-    await StorageService.setGridPreviews(val);
-  };
-
-  const handleSaveGelbooruAuth = async () => {
-    Haptics.selectionAsync();
-    const userId = gelbooruUserId.trim();
-    const apiKey = gelbooruApiKey.trim();
-    await StorageService.setGelbooruAuth({ userId, apiKey });
-    setGelbooruAuthSaved(!!(userId && apiKey));
-  };
-
-  const handleClearGelbooruAuth = async () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    await StorageService.setGelbooruAuth({ userId: '', apiKey: '' });
-    setGelbooruUserId('');
-    setGelbooruApiKey('');
-    setGelbooruAuthSaved(false);
-  };
-
-  const handleToggleProxy = async (val: boolean) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setProxyEnabled(val);
-    proxyService.setConfig(val, workerUrl);
-    await StorageService.setProxyConfig({ enabled: val, workerUrl });
-    setProxyTestResult(null);
-  };
-
-  const handleSaveWorkerUrl = async (text: string) => {
-    const cleaned = text.trim();
-    setWorkerUrl(cleaned);
-    proxyService.setConfig(proxyEnabled, cleaned);
-    await StorageService.setProxyConfig({ enabled: proxyEnabled, workerUrl: cleaned });
-  };
-
-  const handleTestProxy = async () => {
-    if (!workerUrl.trim()) {
-      Alert.alert('Eksik Bilgi', 'Lütfen geçerli bir Cloudflare Worker URL adresi girin.');
-      return;
+  useFocusEffect(useCallback(() => {
+    if (route?.params?.section) {
+      setPages(['home', route.params.section]);
+      navigation?.setParams({ section: undefined });
     }
+  }, [route?.params?.section, navigation]));
+  useFocusEffect(useCallback(() => {
+    if (page === 'home' || settings.passcodeModalVisible) return;
+    const listener = BackHandler.addEventListener('hardwareBackPress', () => { back(); return true; });
+    return () => listener.remove();
+  }, [page, back, settings.passcodeModalVisible]));
 
-    setIsTestingProxy(true);
-    setProxyTestResult(null);
-    Haptics.selectionAsync();
+  const configure = (source: BooruSource) => { setConfiguringSource(source); open('source'); };
+  const icon = (Icon: typeof Layers, danger = false) => <Icon size={18} color={danger ? '#F28B94' : '#A0A7F5'} strokeWidth={1.7} />;
+  const openWebsite = (url: string) => Linking.openURL(url).catch(() => Alert.alert('Could not open link', 'Please open the website in your browser.'));
+  const networkSummary = settings.savedWorkerUrl ? (settings.proxyEnabled ? 'Relay enabled' : 'Direct + CDN fallback') : 'Direct connection';
 
-    const cleanUrl = workerUrl.trim().replace(/\/$/, '');
-    // Engel tanısı: her video hostuna direkt + worker üzerinden paralel
-    // yoklama. HTTP kodu dönmesi = yol açık (401 bile ulaşılabilir demek);
-    // 'kopuk'/'zaman aşımı' = TLS/SNI engeli. Kart sayısı = gövde gerçekten
-    // parse edilebiliyor mu (worker içeriği bozuyorsa 200/0 çıkar).
-    const stubSource = (id: string, baseUrl: string) => ({ id, name: id, baseUrl, type: id }) as any;
-    const targets: {
-      name: string;
-      url: string;
-      headers: Record<string, string>;
-      parse?: (html: string) => number;
-    }[] = [
-      {
-        name: 'PH',
-        url: `${PORNHUB_BASE}/webmasters/search?search=test&page=1&thumbsize=medium`,
-        headers: { 'User-Agent': PORNHUB_UA, Referer: `${PORNHUB_BASE}/`, Accept: 'application/json' },
-      },
-      {
-        name: 'PHweb',
-        url: `${PORNHUB_BASE}/video?o=mv&page=1`,
-        headers: { 'User-Agent': PORNHUB_UA, Referer: `${PORNHUB_BASE}/` },
-        parse: (html) => parsePornhubHtmlListing(html, stubSource('pornhub', PORNHUB_BASE)).length,
-      },
-      {
-        name: 'XH',
-        url: `${XHAMSTER_BASE}/newest/1`,
-        headers: { 'User-Agent': XHAMSTER_UA, Referer: `${XHAMSTER_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
-        parse: (html) => parseXhamsterListing(html, stubSource('xhamster', XHAMSTER_BASE)).length,
-      },
-      {
-        name: 'XV',
-        url: `${XVIDEOS_BASE}/new/1`,
-        headers: { 'User-Agent': XVIDEOS_UA, Referer: `${XVIDEOS_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
-        parse: (html) => parseXVideosListing(html, stubSource('xvideos', XVIDEOS_BASE)).length,
-      },
-      {
-        name: 'SX',
-        url: `${SEXCOM_BASE}/en/videos`,
-        headers: { 'User-Agent': SEXCOM_UA, Referer: `${SEXCOM_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
-        parse: (html) => parseSexComListing(html, stubSource('sexcom', SEXCOM_BASE)).length,
-      },
-      {
-        name: 'HH',
-        url: `${HENTAIHAVEN_BASE}/browse/trending/`,
-        headers: { 'User-Agent': HENTAIHAVEN_UA, Referer: `${HENTAIHAVEN_BASE}/`, Accept: 'text/html,application/xhtml+xml' },
-        parse: (html) => parseHentaiHavenListing(html, stubSource('hentaihaven', HENTAIHAVEN_BASE)).length,
-      },
-      {
-        name: 'SXmp4',
-        url: 'https://videos2.sex.com/1038553/preview_240p.mp4',
-        headers: { 'User-Agent': SEXCOM_UA, Referer: `${SEXCOM_BASE}/` },
-      },
-      {
-        name: 'RG',
-        url: 'https://api.redgifs.com/v2/gifs/search?type=g&order=trending&count=1&page=1',
-        headers: { 'User-Agent': PORNHUB_UA, Origin: 'https://www.redgifs.com', Referer: 'https://www.redgifs.com/', Accept: 'application/json' },
-      },
-    ];
-    const probe = async (url: string, headers: Record<string, string>, parse?: (html: string) => number): Promise<string> => {
-      const ctrl = new AbortController();
-      const t = setTimeout(() => ctrl.abort(), 10000);
-      const run = (async () => {
-        try {
-          const res = await fetch(url, { headers, signal: ctrl.signal });
-          if (!res.ok || !parse) return String(res.status);
-          const html = await res.text();
-          let n = 0;
-          try {
-            n = parse(html);
-          } catch {
-            n = -1;
-          }
-          return `${res.status}/${n}`;
-        } catch (e: any) {
-          const msg = String(e?.message || e || '');
-          return /abort|cancel/i.test(e?.name || '') || /abort/i.test(msg) ? 'zaman aşımı' : 'kopuk';
-        } finally {
-          clearTimeout(t);
-        }
-      })();
-      // Release'de abort askıda kalabilir: test sonsuza dönmesin diye 12sn'de kes.
-      let rt: ReturnType<typeof setTimeout> | undefined;
-      try {
-        return await Promise.race([
-          run.then((v) => { if (rt) clearTimeout(rt); return v; }, (e) => { if (rt) clearTimeout(rt); throw e; }),
-          new Promise<string>((resolve) => { rt = setTimeout(() => resolve('zaman aşımı'), 12000); }),
-        ]);
-      } catch {
-        return 'kopuk';
-      }
-    };
-    try {
-      const rows = await Promise.all(
-        targets.map(async (tg) => {
-          const [direct, via] = await Promise.all([
-            probe(tg.url, tg.headers, tg.parse),
-            probe(
-              `${cleanUrl}?url=${encodeURIComponent(tg.url)}`,
-              proxyService.workerHeaders(tg.url, tg.headers),
-              tg.parse
-            ),
-          ]);
-          return `${tg.name}: direkt ${direct} → worker ${via}`;
-        })
-      );
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setProxyTestResult(rows.join('\n'));
-    } catch (e: any) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setProxyTestResult(`❌ Hata: ${e?.message || 'Bağlanılamadı'}`);
-    } finally {
-      setIsTestingProxy(false);
-    }
-  };
-
-  const [isImporting, setIsImporting] = useState(false);
-
-  const handlePickAndImportFile = async () => {
-    setIsImporting(true);
-    try {
-      const res = await BackupService.pickAndImportFile();
-      if (res) {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        Alert.alert(
-          'Yedek Başarıyla Yüklendi! 🎉',
-          `• ${res.favoritesImported.toLocaleString()} Yeni Favori Görsel\n• ${res.tagsImported} Favori Etiket\n• ${res.historyImported} Arama Geçmişi\n\nToplam Favori: ${res.totalFavorites.toLocaleString()}`
-        );
-      }
-    } catch (e: any) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Hata', 'Dosya okunurken veya ayrıştırılırken bir sorun oluştu: ' + (e?.message || 'Bilinmeyen hata'));
-    } finally {
-      setIsImporting(false);
-    }
-  };
-
-  const handleExportBackup = async () => {
-    try {
-      Haptics.selectionAsync();
-      const ok = await BackupService.exportBackup();
-      if (ok) {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      }
-    } catch (e: any) {
-      Alert.alert('Dışa Aktarma Hatası', e?.message || 'Yedek dışa aktarılamadı.');
-    }
-  };
-
-  const handleClearHistory = () => {
-    Alert.alert(
-      'Arama Geçmişini Temizle',
-      'Tüm kayıtlı arama geçmişiniz silinecektir. Onaylıyor musunuz?',
-      [
-        { text: 'Vazgeç', style: 'cancel' },
-        {
-          text: 'Temizle',
-          style: 'destructive',
-          onPress: async () => {
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            await StorageService.clearSearchHistory();
-            Alert.alert('Başarılı', 'Arama geçmişi temizlendi.');
-          },
-        },
-      ]
-    );
-  };
-
-  const handleClearCache = () => {
-    Alert.alert(
-      'Önbelleği Temizle',
-      'Görsel disk ve bellek önbelleği ile geçici veriler silinecektir. Onaylıyor musunuz?',
-      [
-        { text: 'Vazgeç', style: 'cancel' },
-        {
-          text: 'Temizle',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              clearCachedPosts();
-              await Image.clearDiskCache();
-              await Image.clearMemoryCache();
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              Alert.alert('Başarılı', 'Önbellek başarıyla temizlendi.');
-            } catch (e: any) {
-              Alert.alert('Hata', 'Önbellek temizlenirken bir sorun oluştu.');
-            }
-          },
-        },
-      ]
-    );
-  };
-
-  const handleTogglePasscode = (val: boolean) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    if (val) {
-      setPasscodeModalMode('setup');
-      setPasscodeModalVisible(true);
-    } else {
-      setPasscodeModalMode('disable');
-      setPasscodeModalVisible(true);
-    }
-  };
-
-  const handleChangePasscode = () => {
-    Haptics.selectionAsync();
-    setPasscodeModalMode('change');
-    setPasscodeModalVisible(true);
-  };
-
-  const handleToggleBiometrics = async (val: boolean) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setUseBiometrics(val);
-    await SecurityService.setUseBiometrics(val);
-  };
-
-  const handlePasscodeModalSuccess = async () => {
-    await refreshSecurityConfig();
-  };
-
-  return (
-    <View style={[styles.container, { paddingTop: insets.top }]}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Ayarlar</Text>
-        <Text style={styles.headerSubtitle}>Kaynaklar, ağ ve tercihler</Text>
+  const renderHome = () => <>
+    <TouchableOpacity accessibilityRole="button" accessibilityLabel="Choose source" onPress={() => open('sources')} activeOpacity={0.75} style={styles.sourceHero}>
+      <View style={styles.heroTop}><Text style={styles.eyebrow}>YOUR SOURCE</Text><View style={styles.selectedPill}><View style={styles.dot} /><Text style={styles.selectedPillText}>Selected</Text></View></View>
+      <View style={styles.heroMain}><SourceMark source={activeSource} large />
+        <View style={styles.flex}><Text style={styles.heroName}>{activeSource.name}</Text><Text style={styles.heroDetail}>{sourcePresentation(activeSource).kind} · {activeSource.baseUrl.replace(/^https?:\/\//, '')}</Text></View>
+        <ChevronRight size={20} color="#9B9FC0" />
       </View>
+      <View style={styles.heroBottom}><Layers size={13} color="#949AC4" /><Text style={styles.heroBottomText}>Browse & manage sources</Text><ArrowUpRight size={14} color="#949AC4" /></View>
+    </TouchableOpacity>
 
-      <ScrollView
-        style={styles.scroll}
-        contentContainerStyle={[
-          styles.scrollContent,
-          { paddingBottom: insets.bottom + 40 },
-        ]}
-        showsVerticalScrollIndicator={true}
-      >
-        {/* 1. Source Section (Most frequently used) */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Layers size={18} color={Colors.dark.primaryLight} />
-            <Text style={styles.sectionTitle}>Booru Kaynağı Seçin</Text>
+    <SettingsSection title="Your experience">
+      <SettingsRow icon={icon(ImageIcon)} title="Viewing" subtitle="Image quality & video previews" value={QUALITY.find((item) => item.id === settings.imageQuality)?.name} onPress={() => open('appearance')} />
+      <SettingsRow icon={icon(Shield)} title="Privacy & safety" subtitle="App lock, biometrics & blocked tags" onPress={() => open('privacy')} last />
+    </SettingsSection>
+    <SettingsSection title="App & data">
+      <SettingsRow icon={icon(Radio)} title="Connection" subtitle={networkSummary} onPress={() => open('network')} />
+      <SettingsRow icon={icon(Database)} title="Storage & backup" subtitle="Cache, history & your library" onPress={() => open('storage')} />
+      <SettingsRow icon={icon(Smartphone)} title="About" value="1.0.0" onPress={() => open('about')} last />
+    </SettingsSection>
+    <View style={styles.footer}><View style={styles.footerRule} /><Text style={styles.footerText}>BOORU VIEWER</Text><View style={styles.footerRule} /></View>
+    <Text style={styles.footerNote}>Version 1.0.0</Text>
+  </>;
+
+  const renderSource = () => {
+    const source = configuringSource;
+    const authId = source.id === 'rule34' || source.id === 'gelbooru' ? source.id : null;
+    const auth = authId === 'rule34' ? settings.rule34Auth : settings.gelbooruAuth;
+    const setAuth = authId === 'rule34' ? settings.setRule34Auth : settings.setGelbooruAuth;
+    const saved = authId ? settings.savedAuth[authId] : null;
+    const isSaved = !!saved?.apiKey && auth.apiKey === saved.apiKey && auth.userId === saved.userId;
+    const accountUrl = source.id === 'rule34' ? 'https://rule34.xxx/index.php?page=account&s=options' : 'https://gelbooru.com/index.php?page=account&s=options';
+    return <>
+      <View style={styles.detailHero}><SourceMark source={source} large /><Text style={styles.detailName}>{source.name}</Text>
+        <Text style={styles.detailMeta}>{sourcePresentation(source).kind} source</Text>
+        <Text style={styles.detailDescription}>{source.description}</Text>
+        {activeSource.id === source.id ? <View style={styles.currentLabel}><Check size={14} color="#A6ACFF" /><Text style={styles.currentLabelText}>Your current source</Text></View>
+          : <SettingsButton title={`Use ${source.name}`} busy={settings.busy === 'source'} onPress={() => settings.changeSource(source)} />}
+      </View>
+      {authId && <SettingsSection title="Account & API" hint="Keys are saved on this device. Each source needs its own key. Refresh your feed after saving.">
+        <View style={ui.form}>
+          <View style={styles.authHeading}><KeyRound size={18} color="#A0A7F5" /><Text style={styles.formTitle}>{source.id === 'rule34' ? 'API key required' : 'Connect your account'}</Text></View>
+          <Text style={ui.hint}>{source.id === 'rule34' ? 'Rule34 requires your user ID and API key to load posts.' : 'A Gelbooru API key enables DAPI access and higher request limits.'}</Text>
+          <TouchableOpacity accessibilityRole="link" onPress={() => openWebsite(accountUrl)} style={styles.link}><Text style={styles.linkText}>Get your API key</Text><ArrowUpRight size={14} color="#A6ACFF" /></TouchableOpacity>
+          <View><Text style={ui.label}>User ID</Text><TextInput accessibilityLabel={`${source.name} user ID`} placeholder={`${source.id === 'rule34' ? 'Rule34' : 'Gelbooru'} user_id`}
+            placeholderTextColor={Colors.dark.textMuted} value={auth.userId} onChangeText={(userId) => setAuth((previous) => ({ ...previous, userId }))}
+            keyboardType="numeric" autoCapitalize="none" autoCorrect={false} style={ui.input} /></View>
+          <View><Text style={ui.label}>API key</Text><TextInput accessibilityLabel={`${source.name} API key`} placeholder={`${source.id === 'rule34' ? 'Rule34' : 'Gelbooru'} api_key`}
+            placeholderTextColor={Colors.dark.textMuted} value={auth.apiKey} onChangeText={(apiKey) => setAuth((previous) => ({ ...previous, apiKey }))}
+            autoCapitalize="none" autoCorrect={false} secureTextEntry style={ui.input} /></View>
+          <View style={ui.actions}><SettingsButton title="Save" busy={settings.busy === 'auth'} disabled={!!settings.busy} onPress={() => settings.saveAuth(authId)} />
+            {(auth.apiKey || auth.userId || saved?.apiKey) ? <SettingsButton title="Delete Key" secondary danger disabled={!!settings.busy} onPress={() => settings.clearAuth(authId)} /> : null}
           </View>
-          <Text style={styles.sectionDescription}>
-            Görsellerin ve etiketlerin çekileceği ana görsel havuzunu belirleyin.
-          </Text>
-
-          <View style={styles.card}>
-            {AVAILABLE_SOURCES.filter((s) => !s.hidden).map((source, index, list) => {
-              const isSelected = activeSource.id === source.id;
-              return (
-                <TouchableOpacity
-                  key={source.id}
-                  style={[
-                    styles.sourceRow,
-                    index !== list.length - 1 && styles.borderBottom,
-                    isSelected && styles.sourceRowSelected,
-                  ]}
-                  onPress={() => handleSourceChange(source)}
-                >
-                  <View style={styles.sourceInfo}>
-                    <View style={styles.sourceNameRow}>
-                      <Text style={styles.sourceName}>{source.name}</Text>
-                      {source.isSafeOnly && (
-                        <View style={styles.safeBadge}>
-                          <ShieldCheck size={12} color={Colors.dark.safe} />
-                          <Text style={styles.safeBadgeText}>SFW</Text>
-                        </View>
-                      )}
-                    </View>
-                    <Text style={styles.sourceDesc}>{source.description}</Text>
-                  </View>
-
-                  {isSelected && (
-                    <View style={styles.checkCircle}>
-                      <Check size={14} color="#FFFFFF" />
-                    </View>
-                  )}
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+          {isSaved && <Text accessibilityLiveRegion="polite" style={ui.status}>Saved — {source.id === 'rule34' ? 'Rule34' : 'Gelbooru'} requests use your key</Text>}
         </View>
+      </SettingsSection>}
+      <SettingsSection title="Source details">
+        <SettingsRow title="Website" subtitle={source.baseUrl.replace(/^https?:\/\//, '')} onPress={() => openWebsite(source.id === 'rule34' ? 'https://rule34.xxx' : source.baseUrl)} />
+        <SettingsRow title="Connection settings" subtitle="App-wide relay & connection diagnostics" icon={icon(Radio)} onPress={() => open('network')} last />
+      </SettingsSection>
+      {!authId && <View style={ui.note}><Text style={ui.hint}>No manual API key is needed for this source. Connection preferences apply across all sources.</Text></View>}
+    </>;
+  };
 
-        {/* 2. Image Quality Section */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <ImageIcon size={18} color={GOLD_ACCENT} />
-            <Text style={styles.sectionTitle}>Görsel Kalitesi</Text>
-          </View>
-          <Text style={styles.sectionDescription}>
-            Görüntüleyicide görsellerin açılış kalitesini ve yakınlaştırma (zoom) davranışını belirleyin.
-          </Text>
+  const renderAppearance = () => <>
+    <Text style={styles.pageIntro}>Image quality and motion preferences.</Text>
+    <SettingsSection title="Image quality" hint="Applies to images in the viewer. Original files can use considerably more data.">
+      {QUALITY.map((item, index) => <TouchableOpacity key={item.id} accessibilityRole="radio" accessibilityLabel={item.name}
+        accessibilityState={{ selected: settings.imageQuality === item.id, disabled: !!settings.busy }} disabled={!!settings.busy}
+        onPress={() => settings.changeQuality(item.id)} style={[styles.qualityRow, index < QUALITY.length - 1 && styles.divider]}>
+        <View style={styles.flex}><View style={styles.inline}><Text style={styles.formTitle}>{item.name}</Text>{item.id === 'auto' && <Text style={styles.recommended}>RECOMMENDED</Text>}</View><Text style={styles.rowDescription}>{item.description}</Text></View>
+        <View style={[styles.radio, settings.imageQuality === item.id && styles.radioSelected]}>{settings.imageQuality === item.id && <Check size={12} color="#FFF" />}</View>
+      </TouchableOpacity>)}
+    </SettingsSection>
+    <SettingsSection title="Motion" hint="Turn off previews for quieter browsing, less data usage and fewer active video players.">
+      <SettingsRow icon={icon(ImageIcon)} title="Video previews" subtitle={settings.gridPreviews ? 'Play previews on visible cards' : 'Show static covers only'} toggle={settings.gridPreviews} onToggle={settings.togglePreviews} busy={settings.busy === 'previews'} last />
+    </SettingsSection>
+  </>;
 
-          <View style={styles.card}>
-            {QUALITY_OPTIONS.map((opt, index) => {
-              const isSelected = imageQuality === opt.id;
-              return (
-                <TouchableOpacity
-                  key={opt.id}
-                  style={[
-                    styles.sourceRow,
-                    index !== QUALITY_OPTIONS.length - 1 && styles.borderBottom,
-                    isSelected && styles.sourceRowSelected,
-                  ]}
-                  onPress={() => handleQualityChange(opt.id)}
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.sourceInfo}>
-                    <View style={styles.sourceNameRow}>
-                      <Text style={styles.sourceName}>{opt.title}</Text>
-                    </View>
-                    <Text style={styles.sourceDesc}>{opt.desc}</Text>
-                  </View>
+  const renderPrivacy = () => <>
+    <Text style={styles.pageIntro}>Control access to the app and what appears in your feed.</Text>
+    <SettingsSection title="App lock" hint="A four-digit PIN protects the app when you open it or return from the background.">
+      <SettingsRow icon={icon(Lock)} title="Passcode lock" subtitle={settings.passcodeEnabled ? 'PIN protection enabled' : 'Not enabled'} toggle={settings.passcodeEnabled}
+        onToggle={(enabled) => settings.openPasscode(enabled ? 'setup' : 'disable')} last={!settings.passcodeEnabled} />
+      {settings.passcodeEnabled && <>
+        {settings.hasBiometrics && <SettingsRow title={`Unlock with ${settings.biometryType || 'biometrics'}`} subtitle="Your PIN remains available as a fallback" toggle={settings.useBiometrics} onToggle={settings.toggleBiometrics} busy={settings.busy === 'biometrics'} />}
+        <SettingsRow title="Change passcode" onPress={() => settings.openPasscode('change')} last />
+      </>}
+    </SettingsSection>
+    <SettingsSection title={`Blocked tags · ${settings.blacklistedTags.length}`} hint="Posts containing these tags are hidden from feeds and search. Add tags from a post’s info panel.">
+      {settings.blacklistedTags.length ? <>
+        <View style={styles.tags}>{settings.blacklistedTags.map((tag) => <View key={tag} style={styles.tag}><Text style={styles.tagText}>{tag}</Text>
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Unblock ${tag}`} onPress={() => settings.removeTag(tag)} disabled={!!settings.busy} style={styles.removeTag}><X size={14} color="#C5C8D5" /></TouchableOpacity>
+        </View>)}</View>
+        <SettingsRow title="Clear blocked tags" danger icon={icon(Trash2, true)} onPress={settings.clearTags} last />
+      </> : <View style={styles.empty}><EyeOff size={24} color={Colors.dark.textMuted} /><Text style={styles.emptyTitle}>Nothing blocked</Text><Text style={ui.hint}>Your blocked tags will appear here.</Text></View>}
+    </SettingsSection>
+  </>;
 
-                  {isSelected && (
-                    <View style={styles.checkCircle}>
-                      <Check size={14} color="#FFFFFF" />
-                    </View>
-                  )}
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+  const renderStorage = () => <>
+    <Text style={styles.pageIntro}>Back up your library and manage local data.</Text>
+    <SettingsSection title="Backup & transfer" hint="Supports AnimeBoxes (.abbj) and JSON files. Export your favorites and tags before moving to another device.">
+      <SettingsRow title="Import backup" subtitle="Choose an .abbj or JSON file" icon={icon(Download)} onPress={settings.importBackup} busy={settings.busy === 'import'} />
+      <SettingsRow title="Export library" subtitle="Save or share a JSON backup" icon={icon(Upload)} onPress={settings.exportBackup} busy={settings.busy === 'export'} last />
+    </SettingsSection>
+    <SettingsSection title="Free up space" hint="These actions do not delete your favorites, API keys or preferences.">
+      <SettingsRow title="Clear media cache" subtitle="Thumbnails & temporary post data" icon={icon(HardDrive)} onPress={settings.clearCache} />
+      <SettingsRow title="Clear search history" subtitle="Remove searches saved on this device" icon={icon(Trash2, true)} onPress={settings.clearHistory} danger last />
+    </SettingsSection>
+  </>;
 
-          <View style={[styles.card, { marginTop: 12 }]}>
-            <View style={styles.switchRow}>
-              <View style={styles.switchInfo}>
-                <Text style={styles.switchTitle}>Video Önizlemeler</Text>
-                <Text style={styles.switchSub}>
-                  {gridPreviews
-                    ? 'Açık (kartlar kaydırırken otomatik oynar)'
-                    : 'Kapalı (yalnızca statik kapak, daha az veri ve yük)'}
-                </Text>
-              </View>
-              <Switch
-                value={gridPreviews}
-                onValueChange={handleToggleGridPreviews}
-                trackColor={{ false: '#2C2D35', true: GOLD_ACCENT }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-          </View>
+  const renderNetwork = () => <>
+    <Text style={styles.pageIntro}>Choose how you connect.</Text>
+    <View style={styles.connectionBanner}><Radio size={22} color="#A0A7F5" /><View style={styles.flex}><Text style={styles.formTitle}>{networkSummary}</Text><Text style={styles.rowDescription}>Applies to all sources</Text></View></View>
+    <SettingsSection title="Cloudflare relay" hint="With the relay off, a saved Worker is still used for TLS-fragile CDNs and request fallbacks. Remove it to use direct connections only.">
+      <SettingsRow title="Route all traffic via Worker" subtitle={settings.proxyEnabled ? 'Relay enabled for all requests' : 'Direct first, with registered Worker fallback'} toggle={settings.proxyEnabled} onToggle={settings.toggleProxy} busy={settings.busy === 'proxy'} />
+      <View style={ui.form}><View><Text style={ui.label}>Worker URL</Text><TextInput accessibilityLabel="Worker URL" placeholder="https://your-worker.workers.dev" value={settings.workerUrl}
+        onChangeText={settings.setWorkerUrl} autoCapitalize="none" autoCorrect={false} keyboardType="url" placeholderTextColor={Colors.dark.textMuted} style={ui.input} /></View>
+        <View style={ui.actions}><SettingsButton title="Save URL" onPress={settings.saveWorker} busy={settings.busy === 'worker'} disabled={!!settings.busy || settings.isTestingProxy} />
+          {!!settings.savedWorkerUrl && <SettingsButton title="Remove Worker" secondary danger onPress={settings.removeWorker} disabled={!!settings.busy || settings.isTestingProxy} />}
         </View>
+        {!!settings.savedWorkerUrl && settings.workerUrl === settings.savedWorkerUrl && <Text style={ui.status}>Worker URL saved on this device</Text>}
+      </View>
+    </SettingsSection>
+    <SettingsSection title="Diagnostics" hint="Compares direct and relay access. HTTP codes show reachability, not successful authentication. Tests do not send your API keys.">
+      <View style={ui.form}><Text style={ui.hint}>Check which sources can be reached on your current connection.</Text>
+        <SettingsButton title="Test connection" secondary onPress={settings.testConnection} busy={settings.isTestingProxy} disabled={!settings.savedWorkerUrl || !!settings.busy} />
+      </View>
+      {!!settings.connectionResults.length && <View style={styles.results}>
+        <View style={styles.resultRow}><Text style={[styles.resultName, styles.eyebrow]}>SOURCE</Text><Text style={styles.resultHeader}>DIRECT</Text><Text style={styles.resultHeader}>RELAY</Text></View>
+        {settings.connectionResults.map((result) => <View key={result.name} style={styles.resultRow}><Text style={styles.resultName}>{result.name}</Text><Text style={styles.resultValue}>{result.direct}</Text><Text style={styles.resultValue}>{result.relay}</Text></View>)}
+      </View>}
+    </SettingsSection>
+  </>;
 
-        {/* 3. Kara Liste Section */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <EyeOff size={18} color={GOLD_ACCENT} />
-            <Text style={styles.sectionTitle}>Kara Liste</Text>
-          </View>
-          <Text style={styles.sectionDescription}>
-            Engellenen etiketleri içeren gönderiler arama ve akışlarda otomatik olarak gizlenir.
-          </Text>
-
-          <View style={styles.card}>
-            <TouchableOpacity
-              style={styles.actionRow}
-              onPress={() => {
-                Haptics.selectionAsync();
-                setIsBlacklistOpen((v) => !v);
-              }}
-              activeOpacity={0.7}
-            >
-              <View style={styles.switchInfo}>
-                <Text style={styles.switchTitle}>
-                  Engellenen Etiketler{blacklistedTags.length > 0 ? ` (${blacklistedTags.length})` : ''}
-                </Text>
-                <Text style={styles.switchSub}>
-                  {blacklistedTags.length === 0 ? 'Kara liste boş' : 'Listeyi görüntüle ve düzenle'}
-                </Text>
-              </View>
-              <ChevronRight size={18} color={Colors.dark.textMuted} />
-            </TouchableOpacity>
-
-            {isBlacklistOpen && (
-              <>
-                {blacklistedTags.length === 0 ? (
-                  <View style={[styles.emptyCardContent, styles.borderTop]}>
-                    <Text style={styles.emptyCardText}>Kara liste boş</Text>
-                  </View>
-                ) : (
-                  <>
-                    {blacklistedTags.map((tag, index) => (
-                      <View
-                        key={`bl-tag-${tag}-${index}`}
-                        style={[styles.blacklistRow, styles.borderTop]}
-                      >
-                        <Text style={styles.blacklistTagText} numberOfLines={1}>
-                          {tag}
-                        </Text>
-                        <TouchableOpacity
-                          style={styles.blacklistRemoveBtn}
-                          onPress={() => handleRemoveBlacklistedTag(tag)}
-                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                          activeOpacity={0.7}
-                        >
-                          <X size={16} color={Colors.dark.danger} />
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-
-                    <TouchableOpacity
-                      style={[styles.actionRow, styles.borderTop]}
-                      onPress={handleClearAllBlacklistedTags}
-                      activeOpacity={0.7}
-                    >
-                      <Text style={styles.actionRowText}>Tümünü Temizle</Text>
-                      <Text style={styles.actionRowSub}>Tüm engellenen etiketleri listeden kaldır</Text>
-                    </TouchableOpacity>
-                  </>
-                )}
-              </>
-            )}
-          </View>
-        </View>
-
-        {/* 4. Security & Passcode Section */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Shield size={18} color={GOLD_ACCENT} />
-            <Text style={styles.sectionTitle}>Güvenlik & Passcode (Uygulama Kilidi)</Text>
-          </View>
-          <Text style={styles.sectionDescription}>
-            Uygulamaya erişirken 4 haneli PIN ve biyometrik kilit doğrulaması isteyin.
-          </Text>
-
-          <View style={styles.card}>
-            {/* Passcode Toggle */}
-            <View style={[styles.switchRow, passcodeEnabled && styles.borderBottom]}>
-              <View style={styles.switchInfo}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Lock size={15} color={passcodeEnabled ? GOLD_ACCENT : Colors.dark.textMuted} />
-                  <Text style={styles.switchTitle}>Uygulama Kilidi (Passcode)</Text>
-                </View>
-                <Text style={styles.switchSub}>
-                  {passcodeEnabled ? 'Aktif (4 Haneli PIN Koruması 🔒)' : 'Devre Dışı (Korumasız)'}
-                </Text>
-              </View>
-              <Switch
-                value={passcodeEnabled}
-                onValueChange={handleTogglePasscode}
-                trackColor={{ false: '#2C2D35', true: GOLD_ACCENT }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-
-            {/* Sub-options if Passcode is Enabled */}
-            {passcodeEnabled && (
-              <>
-                {/* Biometrics Toggle (if hardware available) */}
-                {hasBiometrics && (
-                  <View style={[styles.switchRow, styles.borderBottom]}>
-                    <View style={styles.switchInfo}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                        {biometryType === 'Face ID' ? (
-                          <ScanFace size={15} color={GOLD_ACCENT} />
-                        ) : (
-                          <Fingerprint size={15} color={GOLD_ACCENT} />
-                        )}
-                        <Text style={styles.switchTitle}>
-                          {biometryType || 'Biyometrik'} ile Kilit Aç
-                        </Text>
-                      </View>
-                      <Text style={styles.switchSub}>
-                        {useBiometrics
-                          ? `${biometryType || 'Biyometrik'} ile anında açılış`
-                          : 'Yalnızca PIN kodu kullan'}
-                      </Text>
-                    </View>
-                    <Switch
-                      value={useBiometrics}
-                      onValueChange={handleToggleBiometrics}
-                      trackColor={{ false: '#2C2D35', true: GOLD_ACCENT }}
-                      thumbColor="#FFFFFF"
-                    />
-                  </View>
-                )}
-
-                {/* Change Passcode */}
-                <TouchableOpacity
-                  style={styles.actionRow}
-                  onPress={handleChangePasscode}
-                  activeOpacity={0.7}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                      <KeyRound size={16} color={Colors.dark.primaryLight} />
-                      <Text style={[styles.actionRowText, { color: Colors.dark.text, marginBottom: 0 }]}>
-                        Passcode'u Değiştir
-                      </Text>
-                    </View>
-                    <ChevronRight size={16} color={Colors.dark.textMuted} />
-                  </View>
-                  <Text style={[styles.actionRowSub, { marginTop: 4 }]}>
-                    Mevcut 4 haneli PIN kodunuzu güncelleyin
-                  </Text>
-                </TouchableOpacity>
-              </>
-            )}
-          </View>
-        </View>
-
-        {/* 3. Data & Privacy Section */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Trash2 size={18} color={Colors.dark.danger} />
-            <Text style={styles.sectionTitle}>Veri ve Depolama</Text>
-          </View>
-          <Text style={styles.sectionDescription}>
-            Yerel arama geçmişi ve arama önbelleğini yönetin.
-          </Text>
-
-          <View style={styles.card}>
-            <TouchableOpacity
-              style={styles.actionRow}
-              onPress={handleClearHistory}
-            >
-              <Text style={styles.actionRowText}>Arama Geçmişini Temizle</Text>
-              <Text style={styles.actionRowSub}>Cihazdaki kayıtlı arama ve etiket geçmişini sil</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* Önbellek Bölümü */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <HardDrive size={18} color={Colors.dark.primaryLight} />
-            <Text style={styles.sectionTitle}>Önbellek</Text>
-          </View>
-          <Text style={styles.sectionDescription}>
-            Görsel disk ve bellek önbelleği ile geçici veri havuzunu yönetin.
-          </Text>
-
-          <View style={styles.card}>
-            <TouchableOpacity
-              style={styles.actionRow}
-              onPress={handleClearCache}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.actionRowText}>Önbelleği Temizle</Text>
-              <Text style={styles.actionRowSub}>
-                expo-image disk/bellek önbelleğini ve geçici gönderi verilerini sil
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* 4. Backup & Transfer Section (Technical) */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <FolderDown size={18} color={GOLD_ACCENT} />
-            <Text style={styles.sectionTitle}>Yedekleme & Aktarma</Text>
-          </View>
-          <Text style={styles.sectionDescription}>
-            AnimeBoxes (.abbj) veya JSON yedek dosyalarınızı içe/dışa aktarın.
-          </Text>
-
-          <View style={styles.card}>
-            {/* Pick Document (.abbj / .json) */}
-            <TouchableOpacity
-              style={[styles.actionRow, styles.borderBottom]}
-              onPress={handlePickAndImportFile}
-              disabled={isImporting}
-              activeOpacity={0.7}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                <FolderUp size={16} color={Colors.dark.primaryLight} />
-                <Text style={[styles.actionRowText, { color: Colors.dark.text }]}>
-                  Dosyadan .abbj / JSON Seç ve Aktar
-                </Text>
-              </View>
-              <Text style={styles.actionRowSub}>Cihazınızdaki AnimeBoxes veya JSON yedek dosyasını içe aktarın</Text>
-            </TouchableOpacity>
-
-            {/* Export Backup */}
-            <TouchableOpacity
-              style={styles.actionRow}
-              onPress={handleExportBackup}
-              activeOpacity={0.7}
-            >
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                <Share2 size={16} color="#51CF66" />
-                <Text style={[styles.actionRowText, { color: Colors.dark.text }]}>
-                  Tüm Favorileri Dışa Aktar (JSON)
-                </Text>
-              </View>
-              <Text style={styles.actionRowSub}>Mevcut favorileri ve etiketleri dosya olarak kaydet / paylaş</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* 5. Network & Bypass (Cloudflare Worker Proxy - Technical) */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Radio size={18} color={GOLD_ACCENT} />
-            <Text style={styles.sectionTitle}>Ağ & Bypass (Cloudflare Relay)</Text>
-          </View>
-          <Text style={styles.sectionDescription}>
-            ISS sansürlerini VPN'e gerek kalmadan aşmak için Cloudflare Worker ters proxy köprüsünü etkinleştirin. Kapalıyken bile TLS düşüren host'lar (örn. api-cdn-mp4.rule34.xxx) kayıtlı Worker üzerinden seçici olarak geçilir; diğer sonuçlar doğrudan kalır.
-          </Text>
-
-          <View style={styles.card}>
-            {/* Toggle Row */}
-            <View style={[styles.switchRow, styles.borderBottom]}>
-              <View style={styles.switchInfo}>
-                <Text style={styles.switchTitle}>Gömülü Proxy Köprüsü</Text>
-                <Text style={styles.switchSub}>
-                  {proxyEnabled ? 'Aktif (Tüm trafik Worker üzerinden geçer)' : 'Devre Dışı (yalnızca TLS düşen videolar Worker üzerinden geçilir)'}
-                </Text>
-              </View>
-              <Switch
-                value={proxyEnabled}
-                onValueChange={handleToggleProxy}
-                trackColor={{ false: '#2C2D35', true: GOLD_ACCENT }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-
-            {/* URL Input Row */}
-            <View style={styles.workerInputWrapper}>
-              <Text style={styles.inputLabel}>Cloudflare Worker URL:</Text>
-              <TextInput
-                style={styles.workerInput}
-                placeholder="https://booru-proxy.kullanici.workers.dev"
-                placeholderTextColor="#686E7D"
-                value={workerUrl}
-                onChangeText={handleSaveWorkerUrl}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="url"
-              />
-
-              {/* Test Button & Result */}
-              <View style={styles.testBtnRow}>
-                <TouchableOpacity
-                  style={[styles.testButton, isTestingProxy && styles.testButtonDisabled]}
-                  onPress={handleTestProxy}
-                  disabled={isTestingProxy}
-                  activeOpacity={0.7}
-                >
-                  {isTestingProxy ? (
-                    <ActivityIndicator size="small" color="#111216" />
-                  ) : (
-                    <>
-                      <Zap size={15} color="#111216" />
-                      <Text style={styles.testButtonText}>Bağlantıyı Test Et</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-
-                {proxyTestResult && (
-                  <Text style={styles.testResultText}>{proxyTestResult}</Text>
-                )}
-              </View>
-            </View>
-          </View>
-
-          {/* Gelbooru API Anahtarı */}
-          <View style={styles.workerInputWrapper}>
-            <Text style={styles.inputLabel}>Gelbooru API Anahtarı (DAPI & Rate Limit):</Text>
-            <Text style={styles.switchSub}>
-              gelbooru.com → Account Options / Profile sayfasından api_key ve user_id alın. DAPI erişimini açar ve istek kısıtlamalarını (rate limit) önler.
-            </Text>
-            <TextInput
-              style={styles.workerInput}
-              placeholder="user_id (örn: 123456)"
-              placeholderTextColor="#686E7D"
-              value={gelbooruUserId}
-              onChangeText={setGelbooruUserId}
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="numeric"
-            />
-            <TextInput
-              style={[styles.workerInput, { marginTop: 8 }]}
-              placeholder="api_key"
-              placeholderTextColor="#686E7D"
-              value={gelbooruApiKey}
-              onChangeText={setGelbooruApiKey}
-              autoCapitalize="none"
-              autoCorrect={false}
-              secureTextEntry
-            />
-            <View style={styles.testBtnRow}>
-              <TouchableOpacity style={styles.testButton} onPress={handleSaveGelbooruAuth} activeOpacity={0.7}>
-                <Check size={15} color="#111216" />
-                <Text style={styles.testButtonText}>Kaydet</Text>
-              </TouchableOpacity>
-              {gelbooruAuthSaved && (
-                <Text style={styles.testResultText}>✅ Kayıtlı — Gelbooru istekleri anahtarla gidiyor</Text>
-              )}
-            </View>
-            {(gelbooruUserId.length > 0 || gelbooruApiKey.length > 0) && (
-              <TouchableOpacity
-                style={[styles.actionRow, { marginTop: 4 }]}
-                onPress={handleClearGelbooruAuth}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.actionRowText}>Anahtarı Sil</Text>
-                <Text style={styles.actionRowSub}>Anonim limitlere dön</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-
-        {/* 6. About & iOS Build info */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Smartphone size={18} color={Colors.dark.primaryLight} />
-            <Text style={styles.sectionTitle}>Uygulama Bilgisi</Text>
-          </View>
-
-          <View style={styles.card}>
-            <View style={[styles.infoRow, styles.borderBottom]}>
-              <Text style={styles.infoLabel}>Platform</Text>
-              <Text style={styles.infoValue}>iOS / React Native (Expo SDK 57)</Text>
-            </View>
-
-            <View style={[styles.infoRow, styles.borderBottom]}>
-              <Text style={styles.infoLabel}>Sürüm</Text>
-              <Text style={styles.infoValue}>1.0.0</Text>
-            </View>
-
-            <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>Bypass Modu</Text>
-              <Text style={styles.infoValue}>{proxyEnabled ? 'Cloudflare Relay (Aktif)' : 'Doğrudan Bağlantı'}</Text>
-            </View>
-          </View>
-        </View>
-      </ScrollView>
-
-      {/* Passcode Management Modal */}
-      <PasscodeModal
-        visible={passcodeModalVisible}
-        mode={passcodeModalMode}
-        onClose={() => setPasscodeModalVisible(false)}
-        onSuccess={handlePasscodeModalSuccess}
-      />
+  return <KeyboardAvoidingView style={[styles.container, { paddingTop: insets.top }]} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <View style={styles.header}>
+      {page !== 'home' && <TouchableOpacity accessibilityRole="button" accessibilityLabel="Back to settings" onPress={back} style={styles.back}><ArrowLeft size={21} color="#E9EBF4" /></TouchableOpacity>}
+      <View style={styles.flex}><Text style={page === 'home' ? styles.title : styles.subpageTitle}>{page === 'source' ? configuringSource.name : TITLES[page]}</Text>
+        <Text style={styles.headerSubtitle}>{page === 'home' ? 'Sources, viewing & privacy' : page === 'sources' ? 'Choose where you browse.' : 'SETTINGS'}</Text>
+      </View>
+      {page === 'home' && <View style={styles.headerIcon}><SlidersHorizontal size={20} color="#9298CA" /></View>}
     </View>
-  );
+    {settings.loading ? <View style={styles.empty}><ActivityIndicator color={Colors.dark.primaryLight} /></View> : <ScrollView key={page} style={styles.scroll} showsVerticalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
+      {page === 'home' && renderHome()}
+      {page === 'sources' && <>
+        <View style={styles.catalogNotice}><Settings2 size={15} color={Colors.dark.textSecondary} /><Text style={styles.rowDescription}>Switch with a tap. Use the settings icon for account & API options.</Text></View>
+        <SourceCatalog activeSource={activeSource} onSelect={settings.changeSource} onConfigure={configure} busy={settings.busy === 'source'}
+          credentials={{ rule34: !!settings.savedAuth.rule34.apiKey && !!settings.savedAuth.rule34.userId }} />
+      </>}
+      {page === 'source' && renderSource()}
+      {page === 'appearance' && renderAppearance()}
+      {page === 'privacy' && renderPrivacy()}
+      {page === 'storage' && renderStorage()}
+      {page === 'network' && renderNetwork()}
+      {page === 'about' && <><View style={styles.detailHero}><View style={styles.appMark}><Layers size={32} color="#B1B5FF" strokeWidth={1.3} /></View>
+        <Text style={styles.detailName}>Booru Viewer</Text><Text style={styles.detailMeta}>Your library. Your way.</Text></View>
+        <SettingsSection title="Application"><SettingsRow title="Version" value="1.0.0" /><SettingsRow title="Platform" value="React Native · Expo 57" /><SettingsRow title="Connection" value={networkSummary} last /></SettingsSection>
+        <Text style={ui.hint}>An independent multi-source viewer. Not affiliated with any content source. Adults only (18+).</Text></>}
+    </ScrollView>}
+    <PasscodeModal visible={settings.passcodeModalVisible} mode={settings.passcodeModalMode} onClose={settings.closePasscode} onSuccess={settings.refreshSecurity} />
+  </KeyboardAvoidingView>;
 };
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.dark.background,
-  },
-  header: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.dark.divider,
-  },
-  headerTitle: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: Colors.dark.text,
-    letterSpacing: -0.5,
-  },
-  headerSubtitle: {
-    fontSize: 12,
-    color: Colors.dark.textMuted,
-    marginTop: 2,
-  },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-  section: {
-    marginBottom: 24,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 4,
-  },
-  sectionTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: Colors.dark.text,
-  },
-  sectionDescription: {
-    fontSize: 12,
-    color: Colors.dark.textMuted,
-    marginBottom: 10,
-    lineHeight: 16,
-  },
-  card: {
-    backgroundColor: Colors.dark.card,
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: Colors.dark.cardBorder,
-    overflow: 'hidden',
-  },
-  borderBottom: {
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.dark.divider,
-  },
-  borderTop: {
-    borderTopWidth: 1,
-    borderTopColor: Colors.dark.divider,
-  },
-  emptyCardContent: {
-    padding: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  emptyCardText: {
-    fontSize: 14,
-    color: Colors.dark.textMuted,
-  },
-  blacklistRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 13,
-  },
-  blacklistTagText: {
-    fontSize: 14,
-    color: Colors.dark.text,
-    flex: 1,
-    marginRight: 12,
-  },
-  blacklistRemoveBtn: {
-    padding: 4,
-  },
-
-  /* Proxy Section Styles */
-  switchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 14,
-  },
-  switchInfo: {
-    flex: 1,
-    marginRight: 12,
-  },
-  switchTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-    marginBottom: 2,
-  },
-  switchSub: {
-    fontSize: 12,
-    color: Colors.dark.textMuted,
-  },
-  workerInputWrapper: {
-    padding: 14,
-  },
-  inputLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.dark.textSecondary,
-    marginBottom: 6,
-  },
-  workerInput: {
-    backgroundColor: '#111216',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    color: '#FFFFFF',
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 13,
-    marginBottom: 10,
-  },
-  testBtnRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  testButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: GOLD_ACCENT,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 10,
-  },
-  testButtonDisabled: {
-    opacity: 0.6,
-  },
-  testButtonText: {
-    color: '#111216',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  testResultText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.dark.textSecondary,
-    flex: 1,
-  },
-
-  /* Sources Styles */
-  sourceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 14,
-  },
-  sourceRowSelected: {
-    backgroundColor: 'rgba(108, 99, 255, 0.08)',
-  },
-  sourceInfo: {
-    flex: 1,
-    marginRight: 12,
-  },
-  sourceNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 2,
-  },
-  sourceName: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: Colors.dark.text,
-  },
-  safeBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    backgroundColor: 'rgba(81, 207, 102, 0.12)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  safeBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: Colors.dark.safe,
-  },
-  sourceDesc: {
-    fontSize: 12,
-    color: Colors.dark.textMuted,
-  },
-  checkCircle: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: Colors.dark.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  actionRow: {
-    padding: 14,
-  },
-  actionRowText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: Colors.dark.danger,
-    marginBottom: 2,
-  },
-  actionRowSub: {
-    fontSize: 12,
-    color: Colors.dark.textMuted,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 14,
-  },
-  infoLabel: {
-    fontSize: 13,
-    color: Colors.dark.textMuted,
-  },
-  infoValue: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: Colors.dark.text,
-  },
+  container: { flex: 1, backgroundColor: Colors.dark.background },
+  flex: { flex: 1 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 22, paddingTop: 16, paddingBottom: 20 },
+  title: { fontSize: 32, fontWeight: '700', color: '#F2F3FA', letterSpacing: -1.1 },
+  subpageTitle: { fontSize: 23, fontWeight: '600', color: '#F2F3FA', letterSpacing: -0.6 },
+  headerSubtitle: { fontSize: 11, color: '#8B90A7', marginTop: 5, letterSpacing: 0.3 },
+  headerIcon: { width: 44, height: 44, borderRadius: 15, backgroundColor: '#1B1F31', alignItems: 'center', justifyContent: 'center' },
+  back: { width: 40, height: 44, justifyContent: 'center' },
+  scroll: { flex: 1 },
+  content: { paddingHorizontal: 20, maxWidth: 680, width: '100%', alignSelf: 'center' },
+  pageIntro: { color: '#A1A6BB', fontSize: 14, lineHeight: 21, marginBottom: 26, marginTop: 4 },
+  sourceHero: { backgroundColor: '#171B2C', borderWidth: 1, borderColor: '#343953', borderRadius: 22, padding: 18, marginBottom: 30 },
+  heroTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
+  eyebrow: { fontSize: 9, letterSpacing: 1.6, fontWeight: '700', color: '#9B9FBA' },
+  selectedPill: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#818CF80C', borderRadius: 20, paddingHorizontal: 8, paddingVertical: 5 },
+  selectedPillText: { color: '#AFB4E3', fontSize: 10, fontWeight: '500' },
+  dot: { width: 4, height: 4, borderRadius: 2, backgroundColor: '#A6ACFF' },
+  heroMain: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  heroName: { color: '#F2F3FA', fontSize: 23, fontWeight: '600', letterSpacing: -0.5 },
+  heroDetail: { color: '#959AB4', fontSize: 11, lineHeight: 17, marginTop: 5 },
+  heroBottom: { flexDirection: 'row', alignItems: 'center', gap: 7, paddingTop: 16, marginTop: 20, borderTopWidth: 1, borderTopColor: '#FFFFFF09' },
+  heroBottomText: { color: '#949AC4', fontSize: 11, flex: 1 },
+  footer: { flexDirection: 'row', alignItems: 'center', gap: 14, justifyContent: 'center', marginTop: 12, paddingHorizontal: 46 },
+  footerRule: { flex: 1, height: 1, backgroundColor: '#242839' },
+  footerText: { color: '#656B86', fontSize: 8, fontWeight: '700', letterSpacing: 2.4 },
+  footerNote: { textAlign: 'center', color: '#666C82', fontSize: 10, marginTop: 10, marginBottom: 10 },
+  catalogNotice: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 18 },
+  detailHero: { alignItems: 'center', gap: 10, marginTop: 12, marginBottom: 30 },
+  detailName: { color: '#F2F3FA', fontSize: 26, fontWeight: '600', letterSpacing: -0.6, marginTop: 6 },
+  detailMeta: { color: '#969BB3', fontSize: 12 },
+  detailDescription: { color: '#9CA1B8', fontSize: 12, lineHeight: 20, textAlign: 'center', maxWidth: 300, marginVertical: 4 },
+  currentLabel: { flexDirection: 'row', gap: 6, alignItems: 'center', paddingVertical: 8 },
+  currentLabelText: { color: '#A6ACFF', fontSize: 12 },
+  authHeading: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+  formTitle: { color: '#E5E7F0', fontSize: 14, fontWeight: '600' },
+  link: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 6, minHeight: 36 },
+  linkText: { color: '#A6ACFF', fontSize: 12, fontWeight: '500' },
+  qualityRow: { flexDirection: 'row', alignItems: 'center', padding: 18, gap: 12, minHeight: 82 },
+  divider: { borderBottomWidth: 1, borderBottomColor: Colors.dark.divider },
+  inline: { flexDirection: 'row', alignItems: 'center', gap: 7, flexWrap: 'wrap' },
+  recommended: { color: '#A5ABEA', fontSize: 8, fontWeight: '700', letterSpacing: 0.5, paddingHorizontal: 5, paddingVertical: 3, backgroundColor: '#818CF812', borderRadius: 4 },
+  rowDescription: { color: '#959BB2', fontSize: 11, lineHeight: 18, flexShrink: 1, marginTop: 4 },
+  radio: { width: 21, height: 21, borderRadius: 11, borderWidth: 1.5, borderColor: '#363C52', justifyContent: 'center', alignItems: 'center' },
+  radioSelected: { borderColor: Colors.dark.primary, backgroundColor: Colors.dark.primary },
+  empty: { padding: 30, alignItems: 'center', gap: 12 },
+  emptyTitle: { color: '#D9DCE9', fontSize: 14, fontWeight: '500' },
+  tags: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, padding: 16 },
+  tag: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#252A3C', borderRadius: 9, paddingLeft: 10, maxWidth: '100%' },
+  tagText: { color: '#D2D6E7', fontSize: 12, flexShrink: 1 },
+  removeTag: { minWidth: 36, minHeight: 40, alignItems: 'center', justifyContent: 'center' },
+  connectionBanner: { flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: '#818CF80B', padding: 18, borderRadius: 16, marginBottom: 26 },
+  results: { paddingHorizontal: 16, paddingBottom: 12 },
+  resultRow: { flexDirection: 'row', alignItems: 'center', gap: 5, borderTopWidth: 1, borderTopColor: Colors.dark.divider, paddingVertical: 12 },
+  resultName: { color: '#C2C6D9', flex: 1, fontSize: 10 },
+  resultValue: { color: '#999FB8', flex: 1, fontSize: 10, textAlign: 'right' },
+  resultHeader: { color: '#747B96', flex: 1, fontSize: 8, fontWeight: '700', letterSpacing: 0.7, textAlign: 'right' },
+  appMark: { width: 76, height: 76, borderRadius: 24, backgroundColor: '#1B1E39', alignItems: 'center', justifyContent: 'center' },
 });

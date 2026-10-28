@@ -1,5 +1,5 @@
 import type { NavigatorScreenParams } from '@react-navigation/native';
-import type { BooruPost, SearchFilterConfig } from '../types/booru';
+import type { BooruPost, BooruSource, SearchFilterConfig } from '../types/booru';
 
 export type SearchMode = 'replace' | 'add' | 'exclude';
 
@@ -7,7 +7,7 @@ export type TabParamList = {
   Feed: undefined;
   Search: { tag?: string; mode?: SearchMode } | undefined;
   Favorites: undefined;
-  Settings: undefined;
+  Settings: { section?: 'sources' | 'network' } | undefined;
 };
 
 export type RootStackParamList = {
@@ -17,10 +17,12 @@ export type RootStackParamList = {
     initialIndex: number;
     originTags?: string[];
     originFilter?: SearchFilterConfig;
+    originSource?: BooruSource;
   };
   SearchDetail: {
     tags: string[];
     baseFilter?: SearchFilterConfig;
+    source?: BooruSource;
   };
 };
 

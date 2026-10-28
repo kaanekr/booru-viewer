@@ -1,21 +1,21 @@
 import type { BooruPost, BooruSource } from '../types/booru';
 
 /**
- * XHamster (https://xhamster.com) entegrasyonu — saf yardımcılar.
+ * XHamster (https://xhamster.com) integration — pure helpers.
  *
- * Arama ve sayfalama yapısı (canlı doğrulandı):
- * - Arama: GET /search/<slug>?quality=720p[&sort=views|newest|best|longest][&date=latest|weekly|monthly|yearly][&page=N]
- * - Aramasız liste: GET /newest[/<sayfa>] veya /best[/<sayfa>]
- * - Kartlar: `div.video-thumb[data-video-id]`
+ * Search and pagination structure (verified live):
+ * - Search: GET /search/<slug>?quality=720p[&sort=views|newest|best|longest][&date=latest|weekly|monthly|yearly][&page=N]
+ * - Keywordless list: GET /newest[/<page>] or /best[/<page>]
+ * - Cards: `div.video-thumb[data-video-id]`
  *   - a[data-role="thumb-link"] -> href, data-previewvideo mp4, aria-label title
  *   - img[data-role="thumb-preview-img"] -> src thumbnail
- *   - [data-role="video-duration"] -> süre metni
- *   - [data-role="video-uploader-link"] / video-uploader__name -> yükleyici
- *   - video-thumb-views -> izlenme sayısı
- * - Detay: script#initials-script (window.initials) JSON + xplayerSettings.sources.hls
- *   (regex fallback: _TPL_.(h264|av1).mp4.m3u8) + noscript/standart mp4 alanları.
+ *   - [data-role="video-duration"] -> duration text
+ *   - [data-role="video-uploader-link"] / video-uploader__name -> uploader
+ *   - video-thumb-views -> view count
+ * - Detail: script#initials-script (window.initials) JSON + xplayerSettings.sources.hls
+ *   (regex fallback: _TPL_.(h264|av1).mp4.m3u8) + noscript/standard mp4 fields.
  *
- * React import'u YOK — saf bağımsız fonksiyonlar.
+ * No React import — pure standalone functions.
  */
 
 export const XHAMSTER_BASE = 'https://xhamster.com';
@@ -27,7 +27,7 @@ export type XHamsterSort = 'views' | 'newest' | 'best' | 'longest' | 'relevance'
 export type XHamsterDate = 'latest' | 'weekly' | 'monthly' | 'yearly';
 
 /**
- * Uygulamanın TimeRangeOption karşılığı:
+ * App's TimeRangeOption equivalent:
  * 1d -> latest, 1w -> weekly, 1m -> monthly, 1y -> yearly
  */
 export function xhamsterDateForTimeRange(timeRange: string | undefined): XHamsterDate | undefined {
@@ -49,8 +49,8 @@ export function buildXhamsterSearchUrl(
 }
 
 /**
- * Sırayla denenecek arama/gözatma aday URL'leri.
- * İlk dolu sonuç kazanır, 404 sonraki adayı tetikler.
+ * Candidate search/browse URLs to try in order.
+ * First non-empty result wins, a 404 triggers the next candidate.
  */
 export function buildXhamsterSearchCandidates(
   baseUrl: string,
@@ -63,7 +63,7 @@ export function buildXhamsterSearchCandidates(
   const keyword = (query || '').trim();
   const pageNum = Math.max(1, Math.floor(page || 1));
 
-  // Aramasız gözatma (browse)
+  // Keywordless browsing
   if (!keyword) {
     if (sort === 'best') {
       if (pageNum <= 1) return [`${base}/best`, `${base}/best/1`];
@@ -89,12 +89,12 @@ export function buildXhamsterSearchCandidates(
       if (pageNum <= 1) return [`${base}/newest`, base];
       return [`${base}/newest/${pageNum}`, `${base}/${pageNum}`];
     }
-    // Varsayılan / 'newest' — keşfet sayfa 1: anasayfa (günlük seçki) önce
+    // Default / 'newest' — discover page 1: homepage (daily picks) first
     if (pageNum <= 1) return [base, `${base}/newest`, `${base}/newest/1`];
     return [`${base}/newest/${pageNum}`, `${base}/newest?page=${pageNum}`, `${base}/${pageNum}`];
   }
 
-  // Arama URL'leri
+  // Search URLs
   const qp = new URLSearchParams();
   if (sort && sort !== 'relevance') qp.set('sort', sort);
   if (date) qp.set('date', date);
@@ -153,7 +153,7 @@ function parseViews(v: string | undefined): number {
 }
 
 /**
- * XHamster arama/liste HTML'inden gönderileri ayıklar.
+ * Extracts posts from XHamster search/list HTML.
  */
 export function parseXhamsterListing(html: string, source: BooruSource): BooruPost[] {
   const posts: BooruPost[] = [];
@@ -183,7 +183,7 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
     } catch {}
   }
 
-  // Kartlar data-video-id="..." içeren video-thumb düğümleridir
+  // Cards are video-thumb nodes containing data-video-id="..."
   const chunks = html.split(/<div[^>]*data-video-id="/);
   for (let i = 1; i < chunks.length; i++) {
     const c = chunks[i];
@@ -192,7 +192,7 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
     const videoId = idM[1];
     if (seen.has(videoId)) continue;
 
-    // Bağlantı (href)
+    // Link (href)
     const hrefM = c.match(/<a[^>]*href="([^"]+)"[^>]*data-role="thumb-link"/i) || c.match(/href="([^"]+)"/);
     let href = hrefM ? decodeEntities(hrefM[1]) : '';
     if (href.startsWith('/')) href = `${base}${href}`;
@@ -218,15 +218,15 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
       if (previewVideo.startsWith('//')) {
         previewVideo = `https:${previewVideo}`;
       }
-      // XHamster CDN hem av1 hem h264 üretir. iOS AVPlayer av1 çözemez (hata + donma).
-      // av1 token'ını h264'e çevir; her zaman birebir karşılığı olan akıcı mp4 açılır.
+      // XHamster CDN produces both av1 and h264. iOS AVPlayer cannot decode av1 (error + freeze).
+      // Rewrite the av1 token to h264; a directly matching smooth mp4 always opens.
       previewVideo = previewVideo
         .replace(/([._-])av1([._-])/gi, '$1h264$2')
         .replace(/\.av1\./gi, '.h264.');
     }
 
-    // Küçük resim: önce initials JSON (lazy kartlarda DOM'da img yok),
-    // sonra mevcut srcset/src mantığı.
+    // Thumbnail: initials JSON first (no img in DOM on lazy cards),
+    // then the existing srcset/src logic.
     let thumbUrl = '';
     if (initData?.thumbURL && typeof initData.thumbURL === 'string') {
       thumbUrl = initData.thumbURL.replace(/\\\//g, '/');
@@ -236,8 +236,8 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
     if (!thumbUrl) {
     const roleImgM =
       c.match(/<img[^>]*data-role="thumb-preview-img"[^>]*>/i) || c.match(/<img[^>]*>/i);
-    // Lazy-load varyantları (data-thumb-url / data-src / data-original) önce;
-    // placeholder data:image/* reddedilir; sonra grid dostu küçük srcset, en son src.
+    // Lazy-load variants (data-thumb-url / data-src / data-original) first;
+    // placeholder data:image/* is rejected; then grid-friendly small srcset, src last.
     const pickAttr = (tag: string): string => {
       const m =
         tag.match(/data-thumb-url="([^"]+)"/i) ||
@@ -247,7 +247,7 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
     };
     if (roleImgM) {
       const tag = roleImgM[0];
-      // Lazy-load gerçek URL varsa en önce o (placeholder data:image/* atlanır)
+      // The real lazy-load URL goes first if present (placeholder data:image/* skipped)
       const lazyRaw = pickAttr(tag);
       if (lazyRaw && !lazyRaw.startsWith('data:image/')) {
         thumbUrl = decodeEntities(lazyRaw);
@@ -286,7 +286,7 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
       }
     }
 
-    // Başlık (initData öncelikli)
+    // Title (initData takes priority)
     let title = '';
     if (initData?.title && typeof initData.title === 'string') {
       title = initData.title.trim();
@@ -303,7 +303,7 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
         : '';
     }
 
-    // Süre ([data-role="video-duration"])
+    // Duration ([data-role="video-duration"])
     const durM = c.match(/data-role="video-duration"[^>]*>([\s\S]*?)<\/div>/i);
     const duration = durM
       ? durM[1]
@@ -312,12 +312,12 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
           .trim()
       : '';
 
-    // Yükleyici (video-uploader__name / video-uploader-link)
+    // Uploader (video-uploader__name / video-uploader-link)
     const upM = c.match(/class="[^"]*video-uploader__name[^"]*"[^>]*>([\s\S]*?)<\/a>/i);
     const uploader = upM ? decodeEntities(upM[1].replace(/<!--[\s\S]*?-->/g, '').trim()) : '';
     const artist = uploader ? [uploader] : [];
 
-    // İzlenme sayısı (video-thumb-views)
+    // View count (video-thumb-views)
     const viewsM = c.match(/class="[^"]*video-thumb-views[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
     const viewsStr = viewsM ? viewsM[1].replace(/<[^>]+>/g, '').trim() : '';
     const score = parseViews(viewsStr);
@@ -333,8 +333,8 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
       previewThumbUrl: undefined,
       previewThumbs: undefined,
       sampleUrl: previewVideo || thumbUrl,
-      // Per-card data-previewvideo mp4: anlık sampleUrl/originalUrl fallback;
-      // tam dosya viewer açılışında detaydan tembel (lazy) çözülür.
+      // Per-card data-previewvideo mp4: instant sampleUrl/originalUrl fallback;
+      // the full file is lazily resolved from detail when the viewer opens.
       originalUrl: previewVideo || '',
       width: 1280,
       height: 720,
@@ -369,10 +369,10 @@ export interface XHamsterFiles {
 }
 
 /**
- * XHamster video detay sayfası HTML'inden oynatılabilir URL'leri ayıklar:
- * - window.initials JSON'ından xplayerSettings.sources.hls / standard mp4
+ * Extracts playable URLs from an XHamster video detail page HTML:
+ * - xplayerSettings.sources.hls / standard mp4 from the window.initials JSON
  * - Regex fallback: _TPL_.(h264|av1).mp4.m3u8
- * - noscript veya doğrudan HTML'e gömülü .mp4 alanları
+ * - noscript or .mp4 links embedded directly in the HTML
  */
 export function parseXhamsterDetail(html: string): XHamsterFiles {
   let high = '';
@@ -382,7 +382,7 @@ export function parseXhamsterDetail(html: string): XHamsterFiles {
   let uploader = '';
   const tags: string[] = [];
 
-  // 1. window.initials JSON ayıklama
+  // 1. window.initials JSON extraction
   try {
     const scriptM =
       html.match(/<script[^>]*id=['"]initials-script['"][^>]*>([\s\S]*?)<\/script>/i) ||
@@ -397,7 +397,7 @@ export function parseXhamsterDetail(html: string): XHamsterFiles {
       if (rawJson.startsWith('{')) {
         const data = JSON.parse(rawJson);
 
-        // Başlık
+        // Title
         if (typeof data.videoTitle === 'string' && data.videoTitle.trim()) {
           title = data.videoTitle.trim();
         } else if (data.videoTitle && typeof data.videoTitle.pageTitle === 'string') {
@@ -406,7 +406,7 @@ export function parseXhamsterDetail(html: string): XHamsterFiles {
           title = data.videoEntity.title.trim();
         }
 
-        // Etiketler
+        // Tags
         const tagList = data.videoTagsComponent?.tags || data.videoTagsComponent?.models;
         if (Array.isArray(tagList)) {
           for (const item of tagList) {
@@ -419,12 +419,12 @@ export function parseXhamsterDetail(html: string): XHamsterFiles {
           }
         }
 
-        // Yükleyici
+        // Uploader
         if (!uploader && data.videoEntity && data.videoEntity.author) {
           uploader = String(data.videoEntity.author).trim();
         }
 
-        // Video kaynakları (xplayerSettings.sources)
+        // Video sources (xplayerSettings.sources)
         const sources = data.xplayerSettings?.sources;
         if (sources) {
           const h264Hls = sources.hls?.h264?.url || sources.hls?.h264?.fallback;
@@ -449,7 +449,7 @@ export function parseXhamsterDetail(html: string): XHamsterFiles {
     }
   } catch {}
 
-  // 2. HLS için fallback: regex ile _TPL_.(h264|av1).mp4.m3u8 veya doğrudan .m3u8
+  // 2. Fallback for HLS: regex for _TPL_.(h264|av1).mp4.m3u8 or a direct .m3u8
   if (!hls) {
     const tplM = html.match(/(https?:[^\s"'<>]*(?:_TPL_\.(?:h264|av1)\.mp4\.m3u8)[^\s"'<>]*)/i);
     if (tplM) {
@@ -466,7 +466,7 @@ export function parseXhamsterDetail(html: string): XHamsterFiles {
     }
   }
 
-  // 3. MP4 için fallback: noscript video öğesi veya gömülü mp4 bağlantıları
+  // 3. Fallback for MP4: noscript video element or embedded mp4 links
   if (!high || !low) {
     const noscriptM =
       html.match(/<video[^>]*class="[^"]*player-container__no-script-video[^"]*"[^>]*src="([^"]+)"/i) ||
@@ -480,7 +480,7 @@ export function parseXhamsterDetail(html: string): XHamsterFiles {
     }
   }
 
-  // 4. Çözünürlüklü .h264.mp4 URL'leri
+  // 4. .h264.mp4 URLs with resolution
   if (!high || !low) {
     const allMp4s = [...html.matchAll(/(https?:[^\s"'<>]+\/\d+p\.h264\.mp4[^\s"'<>]*)/gi)].map((m) =>
       decodeScriptValue(m[1])

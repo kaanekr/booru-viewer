@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  BackHandler,
   Dimensions,
   FlatList,
   Linking,
@@ -10,12 +11,15 @@ import {
   PanResponder,
   Platform,
   ScrollView,
+  type ScrollViewInstance,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   TouchableWithoutFeedback,
   useWindowDimensions,
   View,
+  type ViewInstance,
 } from 'react-native';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import { useEvent, useEventListener } from 'expo';
@@ -26,15 +30,11 @@ import * as Haptics from 'expo-haptics';
 import {
   Heart,
   ChevronLeft,
-  ChevronUp,
-  ChevronDown,
   Info,
   Play,
   Pause,
   RotateCcw,
   RotateCw,
-  Image as ImageIcon,
-  Tag,
   Volume2,
   VolumeX,
   AlertCircle,
@@ -45,6 +45,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BooruPost } from '../types/booru';
 import { Colors } from '../theme/colors';
 import { StorageService, ImageQuality } from '../services/storage';
+import { getPostKey } from '../utils/postIdentity';
+import { isGifMediaPost } from '../utils/gifMedia';
 import { TagChip } from './TagChip';
 import { PostInfoModal } from './PostInfoModal';
 import { PornhubWebViewResolver } from './PornhubWebViewResolver';
@@ -55,8 +57,11 @@ import {
   getMediaUrl,
   getVideoCandidates,
   isUnsupportedOnIOS,
+  isImageMediaUrl,
   isVideoPost,
   resolveGelbooruOriginalUrl,
+  resolveRealbooruVideoUrls,
+  selectRealbooruPlayable,
   resolveRealDimensions,
   resolveXVideosVideoUrls,
   resolveXHamsterVideoUrls,
@@ -70,7 +75,7 @@ import { resolveNHentaiPages, resolveNHentaiGalleryDetail, rotateNhentaiImageHos
 const { width: DEFAULT_SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
 
-/** Bayt + toplamdan '1.2 / 4.5 MB' metni */
+/** '1.2 / 4.5 MB' text from bytes + total */
 function formatMediaBytes(loaded: number, total: number): string {
   const fmt = (b: number) =>
     b >= 1024 * 1024 ? `${(b / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
@@ -86,15 +91,15 @@ interface ImageViewerModalProps {
   onTagPress: (tag: string) => void;
   onAddTagToSearch?: (tag: string) => void;
   onExcludeTagFromSearch?: (tag: string) => void;
-  /** 'none' ise açılışta sağdan kayma animasyonu oynatılmaz (geri dönüşte kullanılır). */
+  /** When 'none', no slide-in animation plays on open (used when going back). */
   enterAnimation?: 'slide' | 'none';
-  /** Stack route olarak render ediliyorsa true: Modal sarmalayıcı yok,
-      açılış/kapanış ve kenar kaydırma native stack'e bırakılır. */
+  /** When rendered as a stack route: no Modal wrapper, open/close and
+      edge-swipe are left to the native stack. */
   asScreen?: boolean;
   suspended?: boolean;
   dismissOnTagPress?: boolean;
   onIndexChange?: (index: number) => void;
-  /** Video timeline scrub durumu üst katmana bildirilir (geri jesti kilidi için). */
+  /** Video timeline scrub state is reported up (for the back-gesture lock). */
   onScrubbingChange?: (isScrubbing: boolean) => void;
 }
 
@@ -120,18 +125,28 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   const [showControls, setShowControls] = useState(true);
   const [isPlayingSlideshow, setIsPlayingSlideshow] = useState(false);
   const [isFav, setIsFav] = useState(false);
+  const [savingFavorite, setSavingFavorite] = useState(false);
+  const favoriteWriteRef = useRef(false);
+  const favoriteRequestRef = useRef(0);
+  const mountedRef = useRef(true);
+  const [showPageJump, setShowPageJump] = useState(false);
+  const [pageInput, setPageInput] = useState('');
   const [showDetailsSheet, setShowDetailsSheet] = useState(false);
   const [isGalleryScrollEnabled, setIsGalleryScrollEnabled] = useState(true);
-  // Info modalındaki Original satırından gelen tek seferlik full önizleme isteği
+  // One-shot full-preview request from the Original row in the info modal
   const [previewOriginalId, setPreviewOriginalId] = useState<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   // Animated slide value for interactive edge swipe back
-  // asScreen'de 0'dan başlar: ilk karede ekran dışında flash olmasın.
+  // Starts at 0 with asScreen: no off-screen flash on the first frame.
   const translateX = useRef(new Animated.Value(asScreen ? 0 : DEFAULT_SCREEN_WIDTH)).current;
 
   useEffect(() => {
-    // Serbest mod sadece medya görüntüleyici açıkken verilir
+    // Free mode is only granted while the media viewer is open
     return () => {
       ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
     };
@@ -139,12 +154,12 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 
   useEffect(() => {
     onIndexChange?.(currentIndex);
-    // Sayfa değişince kaydırma kilidini sıfırla: zoom/scrub sırasında
-    // unmount olan sayfa kilidi takılı bırakabiliyordu.
+    // Reset the scroll lock on page change: a page unmounting mid
+    // zoom/scrub could leave the lock stuck on.
     setIsGalleryScrollEnabled(true);
   }, [currentIndex, onIndexChange]);
 
-  // Döndürmede sayfa genişliği değişince aktif sayfaya geri hizala
+  // On rotation the page width changes — snap back to the active page
   useEffect(() => {
     flatListRef.current?.scrollToOffset({
       offset: currentIndex * windowWidth,
@@ -153,11 +168,13 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   }, [windowWidth]);
 
   useEffect(() => {
-    if (suspended) {
+    if (suspended || !visible) {
       setIsPlayingSlideshow(false);
+      setShowDetailsSheet(false);
+      setShowPageJump(false);
     } else if (visible) {
-      // Odağa dönünce kontrolleri geri getir: gizli kalıp tap'in
-      // yutulduğu "kontroller gitti" durumunu sıfırlar.
+      // Bring controls back on refocus: resets the "controls are gone"
+      // state where taps were swallowed.
       setShowControls(true);
     }
   }, [suspended, visible]);
@@ -171,29 +188,43 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       setIsGalleryScrollEnabled(true);
       setPreviewOriginalId(null);
 
-      if (asScreen || enterAnimation === 'none') {
-        // Stack route: native stack owns the animation, stay put.
-        translateX.setValue(0);
-      } else {
-        // Slide in smoothly from right
-        translateX.setValue(0);
-      }
+      // Stack route and modal alike start at rest position.
+      translateX.setValue(0);
     }
   }, [visible, initialIndex, enterAnimation, asScreen]);
 
   const currentPost = posts[currentIndex] || posts[0];
-  // Video sayfalarında özel kenar geri alanı devrede (native jest kapalı);
-  // fotoğrafta native jest çalışır, bu alan kapalıdır.
+  const currentPostKey = currentPost ? getPostKey(currentPost) : '';
+  const currentPostKeyRef = useRef(currentPostKey);
+  currentPostKeyRef.current = currentPostKey;
+  // Dedicated edge back-area is live on video pages (native gesture off);
+  // on photos the native gesture works and this area is off.
   const currentIsVideo = isVideoPost(currentPost);
 
   useEffect(() => {
-    if (currentPost) {
-      StorageService.isFavorite(currentPost.id).then(setIsFav);
-    }
+    if (!visible || suspended || !showPageJump) return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      setShowPageJump(false);
+      return true;
+    });
+    return () => subscription.remove();
+  }, [visible, suspended, showPageJump]);
 
+  useEffect(() => {
+    const request = ++favoriteRequestRef.current;
+    setIsFav(false);
+    if (currentPost && visible && !suspended) {
+      StorageService.isFavorite(currentPost).then((value) => {
+        if (favoriteRequestRef.current === request) setIsFav(value);
+      });
+    }
+    return () => { favoriteRequestRef.current++; };
+  }, [currentPostKey, visible, suspended]);
+
+  useEffect(() => {
     // Prefetch next 2 and previous 1 images with sample resolution into disk cache to avoid OOM
-    // Arka plandaki (suspended) ekranlar prefetch yapmaz: üst üste binen
-    // istekler JS thread'ini kitleyip kontrolleri geciktiriyordu.
+    // Background (suspended) screens don't prefetch: overlapping
+    // requests were locking the JS thread and delaying controls.
     if (visible && !suspended && posts.length > 0) {
       const neighbors = [
         posts[currentIndex + 1],
@@ -203,13 +234,13 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 
       neighbors.forEach((p) => {
         const rawUrl = p.sampleUrl || p.previewUrl;
-        if (!rawUrl) return;
+        if (!isImageMediaUrl(rawUrl)) return;
         const url = getMediaUrl(rawUrl);
-        if (url && !url.endsWith('.mp4') && !url.endsWith('.webm')) {
+        if (url) {
           Image.prefetch(url, {
             headers: getMediaHeaders(url),
             cachePolicy: 'disk',
-          });
+          }).catch(() => {});
         }
       });
     }
@@ -217,26 +248,23 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 
   // Slideshow timer
   useEffect(() => {
-    if (!isPlayingSlideshow) return;
+    if (!isPlayingSlideshow || !visible || suspended || showDetailsSheet || showPageJump) return;
     const timer = setInterval(() => {
-      setCurrentIndex((prev) => {
-        const next = prev + 1;
-        if (next < posts.length) {
-          flatListRef.current?.scrollToIndex({ index: next, animated: true });
-          return next;
-        } else {
-          setIsPlayingSlideshow(false);
-          return prev;
-        }
-      });
+      const next = currentIndex + 1;
+      if (next >= posts.length) {
+        setIsPlayingSlideshow(false);
+        return;
+      }
+      flatListRef.current?.scrollToIndex({ index: next, animated: true });
+      setCurrentIndex(next);
     }, 3500);
     return () => clearInterval(timer);
-  }, [isPlayingSlideshow, posts.length]);
+  }, [isPlayingSlideshow, currentIndex, posts.length, visible, suspended, showDetailsSheet, showPageJump]);
 
-  // Stack route modunda native stack yönetir: kendi açılış animasyonu ve
-  // kenar kaydırma jesti devre dışı; translateX sabit 0'da durur.
+  // In stack-route mode the native stack is in charge: its own open animation
+  // and edge-swipe gesture are off; translateX stays pinned at 0.
   const isStackScreen = asScreen === true;
-  const handleDismissWithSlide = () => {
+  const handleDismissWithSlide = useCallback(() => {
     Haptics.selectionAsync();
     if (isStackScreen) {
       onClose();
@@ -249,12 +277,12 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     }).start(() => {
       onClose();
     });
-  };
+  }, [isStackScreen, onClose, translateX, windowWidth]);
 
-  // Interactive edge swipe gesture. Modal modda görünüm parmağı takip eder
-  // (arkada transparan backdrop + gerçek önceki ekran vardır). Stack modunda
-  // takip siyah boşluk gösterirdi: eşik beklenir, bırakınca native
-  // animasyonlu pop çalışır ve önceki ekran görünür.
+  // Interactive edge swipe gesture. In modal mode the view follows the finger
+  // (transparent backdrop + real previous screen behind). In stack mode
+  // following would show black emptiness: wait for the threshold, then the
+  // animated native pop runs on release and the previous screen appears.
   const edgePanResponder = useMemo(
     () =>
       PanResponder.create({
@@ -290,20 +318,29 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
           }
         },
       }),
-    [translateX, onClose, asScreen]
+    [translateX, onClose, asScreen, windowWidth]
   );
 
-  if (!visible || !posts || posts.length === 0) return null;
-
-  const handleToggleControls = () => {
+  const handleToggleControls = useCallback(() => {
     setShowControls((prev) => !prev);
-  };
+  }, []);
 
   const handleToggleFav = async () => {
-    if (!currentPost) return;
+    if (!currentPost || favoriteWriteRef.current) return;
+    favoriteWriteRef.current = true;
+    favoriteRequestRef.current++;
+    const key = currentPostKey;
+    setSavingFavorite(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    const newStatus = await StorageService.toggleFavorite(currentPost);
-    setIsFav(newStatus);
+    try {
+      const newStatus = await StorageService.toggleFavorite(currentPost);
+      if (mountedRef.current && currentPostKeyRef.current === key) setIsFav(newStatus);
+    } catch {
+      if (mountedRef.current) Alert.alert('Could not save favorite', 'Your saved posts have not been changed. Please try again.');
+    } finally {
+      favoriteWriteRef.current = false;
+      if (mountedRef.current) setSavingFavorite(false);
+    }
   };
 
   const toggleDetails = () => {
@@ -328,15 +365,30 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 
   const toggleSlideshow = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    if (!isPlayingSlideshow && currentIndex === posts.length - 1) {
+      setCurrentIndex(0);
+      flatListRef.current?.scrollToIndex({ index: 0, animated: true });
+    }
     setIsPlayingSlideshow((prev) => !prev);
   };
 
-  // Stabil callbackler: her render'da yeni kimlik üretilince PostPageItem
-  // içindeki effect'ler gereksiz tetikleniyordu.
-  // Senkron native kilit: scrub/zoom başlayınca state güncellemesi
-  // re-render köprüsünden geçene kadar yatay pager parmağı native tarafta
-  // kapıp sayfa kaydırabiliyor. setNativeProps köprüyü beklemeden native
-  // scroller'ı durdurur; state tutarlılık için aynen durur.
+  const jumpToPage = () => {
+    const page = Number(pageInput);
+    if (!/^\d+$/.test(pageInput.trim()) || !Number.isSafeInteger(page) || page < 1 || page > posts.length) {
+      Alert.alert('Invalid page', `Enter a page from 1 to ${posts.length}.`);
+      return;
+    }
+    setCurrentIndex(page - 1);
+    flatListRef.current?.scrollToIndex({ index: page - 1, animated: false });
+    setShowPageJump(false);
+  };
+
+  // Stable callbacks: freshly minted identities each render were
+  // retriggering effects inside PostPageItem for nothing.
+  // Synchronous native lock: once scrub/zoom starts, the horizontal pager
+  // can grab the finger natively and swipe the page before the state update
+  // crosses the re-render bridge. setNativeProps stops the native scroller
+  // without waiting for the bridge; state stays as-is for consistency.
   const setGalleryScrollSynchronously = useCallback((enabled: boolean) => {
     setIsGalleryScrollEnabled(enabled);
     try {
@@ -359,6 +411,10 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     [setGalleryScrollSynchronously, onScrubbingChange]
   );
 
+  // Keep every hook above the visibility guard: modal open/close must not
+  // change the number of hooks called by this mounted component.
+  if (!visible || !posts || posts.length === 0) return null;
+
   const viewerBody = (
     <View style={asScreen ? styles.container : styles.modalBackdrop}>
         {/* Animated Container */}
@@ -370,9 +426,9 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             },
           ]}
         >
-          {/* Sol kenar geri alanı: modal modunda ve video sayfalarında
-              (native jest kapalıyken). Alt 150px video timeline şeridi
-              kapsam dışı: şeritte başlayan parmak seek yapar, çıkış olmaz. */}
+          {/* Left-edge back area: in modal mode and on video pages
+              (while the native gesture is off). The bottom 150px video timeline
+              strip is excluded: a finger starting on the strip seeks, never exits. */}
           {(!asScreen || currentIsVideo) && (
             <View style={styles.leftEdgeGestureArea} {...edgePanResponder.panHandlers} />
           )}
@@ -381,7 +437,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
           <FlatList
             ref={flatListRef}
             data={posts}
-            keyExtractor={(item, index) => `${item.id}-${index}`}
+            keyExtractor={(item, index) => `${getPostKey(item)}-${index}`}
             horizontal
             pagingEnabled
             scrollEnabled={isGalleryScrollEnabled}
@@ -406,12 +462,12 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
               <PostPageItem
                 post={item}
                 isActive={index === currentIndex}
-                suspended={suspended}
-                forceFull={previewOriginalId === item.id}
+                suspended={suspended || showPageJump}
+                forceFull={previewOriginalId === getPostKey(item)}
                 onTagsResolved={(tags, allTags, numFavorites) => {
                   item.tags = tags;
                   item.allTags = allTags;
-                  // Skor = favori sayısı: liste HTML'inde yok, detayda gelir
+                  // Score = favorite count: absent from list HTML, arrives with detail
                   if (numFavorites) {
                     item.score = numFavorites;
                     item.favCount = numFavorites;
@@ -443,14 +499,18 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
               </TouchableOpacity>
 
               {/* Source & Position Badge */}
-              <View style={styles.sourceBadge}>
+              <TouchableOpacity
+                style={styles.sourceBadge}
+                accessibilityLabel="Jump to post"
+                onPress={() => { setPageInput(String(currentIndex + 1)); setShowPageJump(true); }}
+              >
                 <Text style={styles.sourceText} numberOfLines={1}>
                   {currentPost?.sourceName || 'Booru'}
                 </Text>
                 <Text style={styles.pageCountText}>
                   {currentIndex + 1} / {posts.length}
                 </Text>
-              </View>
+              </TouchableOpacity>
 
               {/* Top Right Info Button */}
               <TouchableOpacity
@@ -483,8 +543,18 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 
               {/* Right Heart '♡' Button */}
               <TouchableOpacity
+                style={styles.circleBtn}
+                onPress={toggleSlideshow}
+                disabled={posts.length < 2}
+                accessibilityLabel={isPlayingSlideshow ? 'Stop slideshow' : 'Start slideshow'}
+              >
+                {isPlayingSlideshow ? <Pause size={22} color={GOLD_ACCENT} /> : <Play size={22} color="#FFFFFF" />}
+              </TouchableOpacity>
+              <TouchableOpacity
                 style={[styles.circleBtn, isFav && styles.circleBtnFavActive]}
                 onPress={handleToggleFav}
+                disabled={savingFavorite}
+                accessibilityLabel={isFav ? 'Remove favorite' : 'Save favorite'}
                 activeOpacity={0.7}
               >
                 <Heart
@@ -498,10 +568,10 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 
           {/* 4. POST INFO MODAL (Screenshot Style & Menu) */}
           <PostInfoModal
-            visible={showDetailsSheet}
+            visible={showDetailsSheet && !suspended}
             post={currentPost}
             onClose={() => setShowDetailsSheet(false)}
-            onPreviewOriginal={(p) => setPreviewOriginalId(p.id)}
+            onPreviewOriginal={(p) => setPreviewOriginalId(getPostKey(p))}
             onSearchTag={(tag) => {
               setShowDetailsSheet(false);
               if (!asScreen && dismissOnTagPress) {
@@ -532,6 +602,32 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
               }
             }}
           />
+          {showPageJump && (
+            <View style={styles.jumpOverlay}>
+              <View style={styles.jumpPanel} accessibilityViewIsModal>
+                <Text style={styles.jumpTitle}>Jump to post (1–{posts.length})</Text>
+                <TextInput
+                  style={styles.jumpInput}
+                  value={pageInput}
+                  onChangeText={setPageInput}
+                  keyboardType="number-pad"
+                  returnKeyType="go"
+                  onSubmitEditing={jumpToPage}
+                  accessibilityLabel="Post number"
+                  autoFocus
+                  maxLength={String(posts.length).length}
+                />
+                <View style={styles.jumpActions}>
+                  <TouchableOpacity onPress={() => setShowPageJump(false)} accessibilityLabel="Cancel jump">
+                    <Text style={styles.jumpAction}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity onPress={jumpToPage} accessibilityLabel="Go to post">
+                    <Text style={styles.jumpAction}>Go</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          )}
         </Animated.View>
       </View>
   );
@@ -545,7 +641,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       visible={visible}
       transparent
       animationType="none"
-      onRequestClose={handleDismissWithSlide}
+      onRequestClose={() => showPageJump ? setShowPageJump(false) : handleDismissWithSlide()}
     >
       {viewerBody}
     </Modal>
@@ -553,10 +649,10 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 };
 
 /**
- * Manga tek sayfa görseli: hata verirse sıradaki CDN hostuna geçer
- * (i3->i2->i4->i1; bazı ağlar tekil hostları engeller). expo-image takılan
- * bağlantıda onError vermeden asılı kalır; 15sn stall-guard aynı rotasyonu
- * tetikler. Yüklenmeyen sayfa boş siyah kare yerine bilgi metni gösterir.
+ * Single manga page image: on error it moves to the next CDN host
+ * (i3->i2->i4->i1; some networks block individual hosts). expo-image hangs
+ * without onError on a stuck connection; a 15s stall-guard triggers the same
+ * rotation. An unloadable page shows an info text instead of an empty black square.
  */
 const MangaPageImage: React.FC<{
   uri: string;
@@ -583,10 +679,10 @@ const MangaPageImage: React.FC<{
       setFailed(true);
     }
   }, []);
-  // Stall-guard: ne onLoad ne onError ateşlenirse host değiştir. Süre KISA
-  // tutulur (4sn): ölü hostta beklemek yerine sıradaki host hemen denenir;
-  // hata verirse zaten anında geçilir (onError). Yavaş ama çalışan hostta
-  // 4sn dolmadan onLoad geleceği için erken geçiş olmaz.
+  // Stall-guard: switch hosts when neither onLoad nor onError fires. Kept SHORT
+  // (4s): try the next host immediately instead of waiting on a dead one;
+  // errors already switch instantly (onError). No early switch on a slow but
+  // working host because onLoad arrives before the 4s elapse.
   React.useEffect(() => {
     if (failed) return;
     const t = setTimeout(() => {
@@ -623,7 +719,7 @@ const MangaPageImage: React.FC<{
         />
       ) : (
         <Text style={{ color: '#666666', fontSize: 13 }}>
-          {`Sayfa ${pageLabel} yüklenemedi`}
+          {`Page ${pageLabel} could not be loaded`}
         </Text>
       )}
     </View>
@@ -634,7 +730,7 @@ interface PostPageItemProps {
   post: BooruPost;
   isActive: boolean;
   suspended?: boolean;
-  /** Info modalındaki Original satırından tek seferlik full önizleme */
+  /** One-shot full preview from the Original row in the info modal */
   forceFull?: boolean;
   showControls?: boolean;
   screenWidth: number;
@@ -675,31 +771,39 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const [fullProgress, setFullProgress] = useState<number | null>(null);
   const [fullLoadedBytes, setFullLoadedBytes] = useState(0);
   const [fullTotalBytes, setFullTotalBytes] = useState(0);
+  // Animated GIF layer (Realbooru & co): the full file is many MB, so it loads
+  // above the thumbnail cover and only fades in once a frame is ready.
+  const [gifLoaded, setGifLoaded] = useState(false);
+  const [gifFailed, setGifFailed] = useState(false);
+  const [gifError, setGifError] = useState('');
+  const [gifProgress, setGifProgress] = useState<number | null>(null);
+  const [gifProxyAttempt, setGifProxyAttempt] = useState(false);
   const [isDismissing, setIsDismissing] = useState(false);
   const [isScrubbingActive, setIsScrubbingActive] = useState(false);
   const [upgradedMp4Url, setUpgradedMp4Url] = useState<string | null>(null);
   const [isCheckingUpgrade, setIsCheckingUpgrade] = useState(false);
   const [quality, setQuality] = useState<ImageQuality>('auto');
   const [resolvedOriginalUrl, setResolvedOriginalUrl] = useState<string | null>(null);
-  // Çözümleme ölürse "Tekrar Dene" bu sayacı artırıp effect'i yeniden koşturur.
+  // If resolving dies, "Retry" bumps this counter and re-runs the effect.
   const [resolveNonce, setResolveNonce] = useState(0);
   const [pornhubWebviewOn, setPornhubWebviewOn] = useState(false);
   const [videoResolveFailed, setVideoResolveFailed] = useState(false);
   const [realDims, setRealDims] = useState<{ w: number; h: number } | null>(null);
-  // HentaiHaven: seri karti -> bolum listesi + secili bolum (EP secici).
+  // HentaiHaven: series card -> episode list + selected episode (EP picker).
   const [hhEpisodes, setHhEpisodes] = useState<HentaiHavenEpisode[]>([]);
   const [hhActiveEp, setHhActiveEp] = useState<number | null>(null);
   const [hhEpLoading, setHhEpLoading] = useState(false);
+  const hhEpisodeRequestRef = useRef<AbortController | null>(null);
   const sortedHhEpisodes = useMemo(
     () => [...hhEpisodes].sort((a, b) => a.ep - b.ep),
     [hhEpisodes]
   );
-  // nhentai: manga dikey okuyucu sayfaları ve aktif sayfa göstergesi
+  // nhentai: vertical-reader manga pages and the active page indicator
   const [mangaPages, setMangaPages] = useState<string[]>([]);
   const [mangaLoading, setMangaLoading] = useState(false);
   const [currentMangaPage, setCurrentMangaPage] = useState(1);
   const [isMangaZoomed, setIsMangaZoomed] = useState(false);
-  const mangaScrollRef = useRef<ScrollView>(null);
+  const mangaScrollRef = useRef<ScrollViewInstance>(null);
   const isMangaZoomedRef = useRef(false);
   const mangaLastTapRef = useRef<number>(0);
   const mangaSingleTapTimerRef = useRef<any>(null);
@@ -707,7 +811,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const mangaZoomScaleRef = useRef<number>(1);
   const [isZoomed, setIsZoomed] = useState(false);
   const [hasUpgradedToFull, setHasUpgradedToFull] = useState(false);
-  const scrollRef = useRef<ScrollView>(null);
+  const scrollRef = useRef<ScrollViewInstance>(null);
   const lastTapRef = useRef<number>(0);
   const isZoomedRef = useRef<boolean>(false);
   const dismissingRef = useRef<boolean>(false);
@@ -727,14 +831,15 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   }, []);
 
   useEffect(() => {
+    if (!isActive || suspended) return;
     let isMounted = true;
     StorageService.getImageQuality().then((q) => {
       if (isMounted) setQuality(q);
-    });
+    }).catch(() => {});
     return () => {
       isMounted = false;
     };
-  }, [isActive]);
+  }, [isActive, suspended]);
 
   useEffect(() => {
     let alive = true;
@@ -744,27 +849,19 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     setPornhubWebviewOn(false);
     setVideoResolveFailed(false);
 
-    // Arka plandaki ekran (üstte SearchDetail varken) detay çözümlemez:
-    // aynı anda N ekranın resolve etmesi thread'i kitleyip dokunmatiği öldürüyordu.
-    if (suspended) {
+    // Neighbors retain their covers, but only the visible foreground page
+    // resolves full media. Otherwise swiping fetches the same details twice.
+    if (suspended || !isActive) {
       return () => {
         alive = false;
         abortCtrl.abort();
       };
     }
 
-    // PH detay HTML'i ~1 MB: yalnız aktif sayfayı çöz. Komşuları aynı anda
-    // parse etmek JS thread'ini saniyelerce bloke edip kontrolleri geciktirir.
-    if (post.sourceId === 'pornhub' && !isActive) {
-      return () => {
-        alive = false;
-        abortCtrl.abort();
-      };
-    }
-
-    // Eğer post zaten sample'dan farklı gerçek bir originalUrl'e sahipse fetch etme
-    // Not: XHamster, XVideos, Sex.com ve HentaiHaven süreli token/geçici preview taşıdığı için her zaman detaydan taze çözülür
-    const needsFreshVideoResolution = post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom' || post.sourceId === 'hentaihaven';
+    // Skip the fetch when the post already owns a real originalUrl different from sample
+    // Note: XHamster, XVideos, Sex.com and HentaiHaven always re-resolve fresh from detail
+    // because they carry expiring tokens/temporary previews
+    const needsFreshVideoResolution = post.sourceId === 'realbooru' || post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom' || post.sourceId === 'hentaihaven';
     if (post.originalUrl && post.originalUrl !== post.sampleUrl && !needsFreshVideoResolution) {
       setResolvedOriginalUrl(post.originalUrl);
       return () => {
@@ -773,8 +870,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       };
     }
 
-    // Gelbooru/Realbooru/XVideos veya originalUrl eksik scrape gönderileri için
-    // post detayından çöz (XVideos mp4'leri süreli token taşır, taze çözülür)
+    // For Gelbooru/Realbooru/XVideos or scrape posts missing originalUrl,
+    // resolve from the post detail (XVideos mp4s carry expiring tokens, resolve fresh)
     if (post.sourceLink) {
       if (post.sourceId === 'xvideos') {
         resolveXVideosVideoUrls(post, abortCtrl.signal)
@@ -797,19 +894,19 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           .then((files) => {
             if (!alive) return;
             if (files) {
-              // Premium kilitli HLS anonim oynaticida acilmaz: sessizce
-              // onizlemeye dusulur (hata kartindan iyidir) ama sebebi
-              // Metro'da gorunur olsun. HLS'siz detay da aynidir.
+              // Premium-locked HLS won't open in the anonymous player: quietly
+              // fall back to the preview (better than an error card) but keep
+              // the reason visible in Metro. Same for detail without HLS.
               if (files.premium) {
-                console.warn('[Viewer] sexcom premium video, önizleme oynuyor');
+                console.warn('[Viewer] sexcom premium video, playing preview');
               } else if (!files.hls) {
-                console.warn('[Viewer] sexcom tam video bulunamadı, önizleme oynuyor');
+                console.warn('[Viewer] sexcom full video not found, playing preview');
               }
               setResolvedOriginalUrl(selectSexComPlayable(files));
             } else {
-              // Detay cekilemedi (direkt + worker ikisi de olmedi): izleyici
-              // karttaki onizlemede kalir. Metro'daki bu satir sebebini soyler.
-              console.warn('[Viewer] sexcom detay çözülemedi, önizleme oynuyor');
+              // Detail couldn't be fetched (both direct + worker failed): the viewer
+              // stays on the card's preview. This line in Metro tells why.
+              console.warn('[Viewer] sexcom detail not resolvable, playing preview');
             }
           })
           .catch(() => {});
@@ -818,7 +915,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           .then((savedEp) => {
             if (!alive) return;
             return resolveHentaiHavenEpisodeUrls(post, abortCtrl.signal, savedEp)
-              .then((files) => {
+              .then(async (files) => {
                 if (!alive) return;
                 const eps = files?.episodes;
                 if (eps && eps.length > 0) {
@@ -835,11 +932,19 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                 }
                 const playable = files?.hls || files?.mp4;
                 if (playable) {
-                  console.log('[Viewer] hentaihaven bölüm çözüldü, oynatılıyor');
+                  console.log('[Viewer] hentaihaven episode resolved, playing');
                   setResolvedOriginalUrl(playable);
                 } else {
-                  // Seri/bölüm çekilemedi ya da HLS yok: kapak fotoğrafta kalır.
-                  console.warn('[Viewer] hentaihaven bölüm çözülemedi, kapak kalıyor');
+                  // Series/episode couldn't be fetched or there is no HLS: the cover photo stays.
+                  console.warn('[Viewer] hentaihaven episode not resolvable, keeping cover');
+                }
+                // The primary response normally contains episodes. Only fetch
+                // the backup after it completes without them, never in parallel.
+                if (!eps?.length) {
+                  const fallbackEpisodes = await listHentaiHavenEpisodes(post, abortCtrl.signal);
+                  if (!alive || !fallbackEpisodes.length) return;
+                  setHhEpisodes(fallbackEpisodes);
+                  setHhActiveEp((current) => current ?? fallbackEpisodes[0].ep);
                 }
               });
           })
@@ -851,9 +956,20 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
             if (files) {
               setResolvedOriginalUrl(files.high || files.hls || files.low || null);
             } else {
-              // Hızlı yol bot-duvarına takıldı → gizli WebView yedeği
+              // Fast path hit the bot wall → hidden WebView fallback
               setPornhubWebviewOn(true);
             }
+          })
+          .catch(() => {});
+      } else if (post.sourceId === 'realbooru') {
+        // Listing tags carry no file extension (the scraper guesses .mp4),
+        // so resolve the real mp4/webm/gif from the detail page.
+        // GIFs land on the detail image and render as an animated image.
+        resolveRealbooruVideoUrls(post, abortCtrl.signal)
+          .then((files) => {
+            if (!alive || !files) return;
+            const playable = selectRealbooruPlayable(files);
+            if (playable) setResolvedOriginalUrl(playable);
           })
           .catch(() => {});
       } else if (post.sourceId === 'gelbooru' || post.sourceId === 'realbooru' || !post.originalUrl) {
@@ -873,29 +989,19 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     };
   }, [isActive, suspended, resolveNonce, post.id, post.sourceId, post.sourceLink, post.originalUrl, post.sampleUrl]);
 
-  // HentaiHaven: seri kartindaki tum bolumler (EP secici icin yedek).
-  // Ana resolve sirasinda zaten gelir; gelmediyse tek seferlik buradan denenir.
   useEffect(() => {
-    if (post.sourceId !== 'hentaihaven' || !isActive || suspended || !post.sourceLink) return;
-    if (hhEpisodes.length > 0) return;
-    let alive = true;
-    const ctrl = new AbortController();
-    listHentaiHavenEpisodes(post, ctrl.signal)
-      .then((eps) => {
-        if (!alive || eps.length === 0) return;
-        setHhEpisodes(eps);
-        setHhActiveEp((cur) => (cur === null ? eps[0].ep : cur));
-      })
-      .catch(() => {});
+    setHhEpLoading(false);
     return () => {
-      alive = false;
-      ctrl.abort();
+      hhEpisodeRequestRef.current?.abort();
+      hhEpisodeRequestRef.current = null;
     };
-  }, [isActive, suspended, post.id, post.sourceId, post.sourceLink, hhEpisodes.length]);
+  }, [isActive, suspended, post.id, post.sourceId, post.sourceLink]);
 
   const handleSelectHhEpisode = useCallback(
     (ep: HentaiHavenEpisode) => {
-      if (hhEpLoading || ep.ep === hhActiveEp) return;
+      if (!isActive || suspended || hhEpisodeRequestRef.current || ep.ep === hhActiveEp) return;
+      const ctrl = new AbortController();
+      hhEpisodeRequestRef.current = ctrl;
       const baseM = post.sourceLink?.match(/^https?:\/\/[^/]+/i);
       const base = baseM ? baseM[0] : 'https://hentaihaven.xxx';
       const targetUrl = ep.streamUrl || ep.url;
@@ -903,26 +1009,31 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       setHhActiveEp(ep.ep);
       setHhEpLoading(true);
       setResolvedOriginalUrl(null);
-      // Son izlenen / seçilen bölümü cihaz hafızasına kaydet (favoriden açıldığında da buradan başlar).
+      // Persist the last watched / selected episode to device memory (resumed here when opened from favorites).
       StorageService.setLastWatchedEpisode(post.id, ep.ep).catch(() => {});
-      resolveHentaiHavenEpisodeUrl(url)
+      resolveHentaiHavenEpisodeUrl(url, ctrl.signal)
         .then((files) => {
+          if (ctrl.signal.aborted || hhEpisodeRequestRef.current !== ctrl) return;
           const playable = files?.hls || files?.mp4;
           if (playable) {
-            console.log('[Viewer] hentaihaven bölüm çözüldü, oynatılıyor (EP ' + ep.ep + ')');
+            console.log('[Viewer] hentaihaven episode resolved, playing (EP ' + ep.ep + ')');
             setResolvedOriginalUrl(playable);
           } else {
-            console.warn('[Viewer] hentaihaven bölüm çözülemedi, kapak kalıyor (EP ' + ep.ep + ')');
+            console.warn('[Viewer] hentaihaven episode not resolvable, keeping cover (EP ' + ep.ep + ')');
           }
         })
         .catch(() => {})
-        .finally(() => setHhEpLoading(false));
+        .finally(() => {
+          if (hhEpisodeRequestRef.current !== ctrl) return;
+          hhEpisodeRequestRef.current = null;
+          setHhEpLoading(false);
+        });
     },
-    [hhEpLoading, hhActiveEp, post.id, post.sourceLink]
+    [isActive, suspended, hhActiveEp, post.id, post.sourceLink]
   );
 
-  // Sigorta: fetch + WebView toplamı 30 sn'yi geçerse spinner'ı öldürüp
-  // Tekrar Dene kartını göster. (Asılı bağlantıda hiçbir dal sonlanmayabiliyordu.)
+  // Fuse: if fetch + WebView exceed 30s total, kill the spinner and
+  // show the Retry card. (A hung connection could leave every branch unterminated.)
   useEffect(() => {
     if (post.sourceId !== 'pornhub' || !isActive || suspended) return;
     if (resolvedOriginalUrl || videoResolveFailed) return;
@@ -956,15 +1067,17 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     setFullProgress(null);
     setFullLoadedBytes(0);
     setFullTotalBytes(0);
+    setGifLoaded(false);
+    setGifFailed(false);
   }, [post.id]);
 
-  // Gerçek çözünürlük: zoom tavanı hesabı için (oturum cache'li, tek seferlik).
-  // Scrape placeholder (800x1000) yerine post sayfasındaki gerçek WxH.
+  // Real resolution: for the zoom-ceiling computation (session-cached, one-shot).
+  // Replaces the scrape placeholder (800x1000) with the real WxH from the post page.
   useEffect(() => {
     if (!isActive || suspended) return;
-    // Video sitelerinde (PH/XV/XH) izleme sayfasında boyut bilgisi yok;
-    // ölçü listeden gelir (PH 640x360). Bu fetch, video açılışındaki
-    // çift sayfa indirmenin yarısıydı — atlanınca kasma azalır.
+    // Video sites (PH/XV/XH) carry no size info on the watch page;
+    // dimensions come from the list (PH 640x360). This fetch was half of the
+    // double page download on video open — skipping it reduces stutter.
     if (post.sourceId === 'pornhub' || post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom' || post.sourceId === 'hentaihaven' || post.sourceId === 'nhentai') {
       return;
     }
@@ -980,7 +1093,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     };
   }, [isActive, suspended, post.id, post.sourceLink, post.originalUrl, post.sampleUrl]);
 
-  // nhentai: manga albümünün tüm sayfalarını ve etiketlerini çözer (dikey okuyucu için)
+  // nhentai: resolves all pages and tags of the manga album (for the vertical reader)
   useEffect(() => {
     if (post.sourceId !== 'nhentai' || !isActive || suspended) return;
     let alive = true;
@@ -992,7 +1105,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         if (detail.pages && detail.pages.length > 0) {
           setMangaPages(detail.pages);
         }
-        // Detaydan gelen kategorize etiketleri Info paneline aktar
+        // Forward detail-resolved categorized tags to the Info panel
         if (detail.allTags && detail.allTags.length > 0) {
           onTagsResolved?.(detail.tags, detail.allTags, detail.numFavorites);
         } else if (detail.numFavorites) {
@@ -1010,11 +1123,11 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   }, [isActive, suspended, post.id, post.sourceId, post.sourceLink, post.mediaId, post.pageCount]);
 
   /**
-   * Çözünürlüğe göre net zoom tavanı: contain-fit'te 1:1 piksele denk gelen
-   * oran = max(imgW/ekranW, imgH/ekranH). Üst sınır yok — ne kadar
-   * çözünürlük, o kadar zoom. Taban 2x (ekrandan küçük görselde bile
-   * biraz yakınlaşma). NOT: çok büyük görsel + derin zoom iOS'ta
-   * bellek baskısı yapar; limit aşımında fallback sample'dadır.
+   * Sharp zoom ceiling by resolution: the ratio matching 1:1 pixels in
+   * contain-fit = max(imgW/screenW, imgH/screenH). No upper cap — the more
+   * resolution, the more zoom. 2x floor (some zoom even on below-screen
+   * images). NOTE: huge images + deep zoom pressure memory on iOS;
+   * past the limit the fallback is the sample.
    */
   const maxZoom = useMemo(() => {
     const w = realDims?.w || post.width || 0;
@@ -1023,8 +1136,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     return Math.max(2, Math.max(w / screenWidth, h / screenHeight));
   }, [realDims, post.width, post.height, screenWidth, screenHeight]);
 
-  // Detaydan çözülen URL (XVideos taze mp4/HLS, Gelbooru original) video
-  // adaylarına katılır; çözülene dek post'un kendi URL'leri kullanılır.
+  // The detail-resolved URL (XVideos fresh mp4/HLS, Gelbooru original) joins
+  // the video candidates; the post's own URLs are used until it resolves.
   const videoCandidates = useMemo(
     () =>
       getVideoCandidates(
@@ -1032,9 +1145,9 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       ),
     [post, resolvedOriginalUrl]
   );
-  // Çözülmüş orijinal akış (PH HLS vb.) her zaman birincildir: sıralama
-  // mp4'ü m3u8'ten üstün tuttuğu için kapak flipbook'u (_fb.mp4) gerçek
-  // videoyu eziyor, sadece önizleme oynuyordu.
+  // The resolved original stream (PH HLS etc.) is always primary: ranking
+  // prefers mp4 over m3u8, so the cover flipbook (_fb.mp4) was crushing the
+  // real video and only the preview played.
   const primaryCandidate = selectPrimaryVideoCandidate(
     resolvedOriginalUrl,
     videoCandidates,
@@ -1043,16 +1156,27 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const mediaUrl = getMediaUrl(primaryCandidate);
 
   const cleanMedia = primaryCandidate ? primaryCandidate.split('?')[0].toLowerCase() : '';
+  // A resolved detail URL beats guessed list metadata: a Realbooru post scraped
+  // as video can resolve to a GIF image (mistagged), which must render as image.
+  const resolvedIsImage = Boolean(
+    resolvedOriginalUrl && /\.(jpe?g|png|webp|gif|avif|bmp)$/.test(resolvedOriginalUrl.split('?')[0].toLowerCase())
+  );
+  // A Realbooru post tagged `gif` (without `video`) is an animated image even
+  // when the listing scrape guessed an .mp4 extension (older saved records and
+  // mistagged posts), so it must never reach the video player.
+  const isGifPost = isGifMediaPost(post, resolvedOriginalUrl);
   const isVideo =
-    Boolean(post.fileExt && ['mp4', 'webm', 'mov', 'm4v', 'm3u8'].includes(post.fileExt.toLowerCase())) ||
-    Boolean(
-      cleanMedia &&
-        (cleanMedia.endsWith('.mp4') ||
-          cleanMedia.endsWith('.webm') ||
-          cleanMedia.endsWith('.mov') ||
-          cleanMedia.endsWith('.m3u8') ||
-          cleanMedia.endsWith('.m4v'))
-    );
+    !isGifPost &&
+    !resolvedIsImage &&
+    (Boolean(post.fileExt && ['mp4', 'webm', 'mov', 'm4v', 'm3u8'].includes(post.fileExt.toLowerCase())) ||
+      Boolean(
+        cleanMedia &&
+          (cleanMedia.endsWith('.mp4') ||
+            cleanMedia.endsWith('.webm') ||
+            cleanMedia.endsWith('.mov') ||
+            cleanMedia.endsWith('.m3u8') ||
+            cleanMedia.endsWith('.m4v'))
+      ));
 
   // iOS check: If on iOS and only .webm candidate is available, AVPlayer cannot play it
   const isWebmOnlyOnIOS =
@@ -1067,7 +1191,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   }, [primaryCandidate]);
 
   useEffect(() => {
-    // Sadece iOS'ta dene (Platform.OS check)
+    // Only try on iOS (Platform.OS check)
     if (Platform.OS !== 'ios' || !isWebmOnlyOnIOS || !primaryCandidate) {
       setUpgradedMp4Url(null);
       setIsCheckingUpgrade(false);
@@ -1110,17 +1234,38 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
 
   const uris = useMemo(() => getImageUris(post, quality), [post, quality]);
 
-  const baseImageRawUri = isVideo ? post.previewUrl : post.sampleUrl || uris.sampleUri;
-  const sampleMediaUrl = getMediaUrl(baseImageRawUri);
-  const placeholderMediaUrl = getMediaUrl(uris.placeholderUri || post.previewUrl);
-
   const fullRawUri = resolvedOriginalUrl || post.originalUrl || uris.fullUri;
   const fullMediaUrl = getMediaUrl(fullRawUri);
+
+  // GIFs get two layers: the cheap thumbnail cover paints first, then the full
+  // animated file fades in above it. Realbooru GIFs are tens of MB with no
+  // middle-size variant, so the cover must never wait on the full download.
+  // Never hand a stale .mp4 guess to expo-image while detail is still resolving.
+  const gifMediaUrl = isGifPost && /\.gif(?:[?#]|$)/i.test(fullRawUri) ? fullMediaUrl : '';
+  const gifRequestUrl = gifProxyAttempt ? proxyService.forceProxyUrl(fullRawUri) : gifMediaUrl;
+  // A stale record may first point the GIF layer at a guessed .mp4 (404); when
+  // the detail resolve lands on the real .gif the layer gets a fresh attempt.
+  useEffect(() => {
+    setGifLoaded(false);
+    setGifFailed(false);
+    setGifError('');
+    setGifProgress(null);
+    setGifProxyAttempt(false);
+  }, [gifMediaUrl]);
+  // Stale as-video records point sample at a guessed .mp4 that 404s, so the
+  // cover always falls back to the listing thumbnail on GIF/video posts.
+  const baseImageRawUri =
+    isVideo || (isGifPost && post.sourceId === 'realbooru')
+      ? post.previewUrl
+      : (post.sampleUrl || uris.sampleUri);
+  const sampleMediaUrl = getMediaUrl(baseImageRawUri);
+  const placeholderMediaUrl = getMediaUrl(uris.placeholderUri || post.previewUrl);
 
   const isFullQuality = quality === 'full' || forceFull;
   const isAutoZoomed = quality === 'auto' && (isZoomed || hasUpgradedToFull);
   const shouldMountFull =
     !isVideo &&
+    !isGifPost &&
     Boolean(fullMediaUrl) &&
     fullMediaUrl !== sampleMediaUrl &&
     (isFullQuality || isAutoZoomed);
@@ -1245,7 +1390,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         setIsZoomed(false);
         onZoomChange?.(false);
       } else {
-        // Double Tap: çözünürlüğe göre net zoom (3x'i geçmez, düşük çözünürlükte tavana uyar)
+        // Double Tap: sharp zoom by resolution (never past 3x, capped by ceiling at low resolution)
         const tapZoom = Math.min(3, maxZoom);
         const { locationX, locationY } = event.nativeEvent;
         const targetWidth = screenWidth / tapZoom;
@@ -1289,7 +1434,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
 
       if (isMangaZoomedRef.current) {
-        // 1x'e geri dön: o an bulunulan dikey sayfada kal (1. sayfaya sıçrama yapma)
+        // Back to 1x: stay on the current vertical page (no jump to page 1)
         const currentScale = mangaZoomScaleRef.current || 1;
         const targetY = Math.max(0, mangaOffsetYRef.current / currentScale);
         mangaScrollRef.current?.scrollResponderZoomTo({
@@ -1303,9 +1448,9 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         setIsMangaZoomed(false);
         onZoomChange?.(false);
       } else {
-        // Çift dokunulan sayfaya/noktaya 2.2x tümleşik zoom:
-        // pageY ekran üstü mutlak koordinattır. ScrollView'ın anlık kaydırma
-        // ofseti (mangaOffsetYRef.current) eklenerek tam dokunulan sayfaya zoom yapılır.
+        // 2.2x integrated zoom onto the double-tapped page/point:
+        // pageY is the absolute on-screen coordinate. Adding the ScrollView's
+        // live scroll offset (mangaOffsetYRef.current) zooms exactly onto the tapped page.
         const tapZoom = 2.2;
         const pageX = event.nativeEvent.pageX ?? event.nativeEvent.locationX ?? (screenWidth / 2);
         const pageY = event.nativeEvent.pageY ?? (screenHeight / 2);
@@ -1351,7 +1496,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       onZoomChange?.(zoomed);
     }
 
-    // Dikey kaydırmaya göre anlık sayfa göstergesi
+    // Live page indicator from vertical scroll
     const pageHeight = Math.round(screenWidth * 1.42);
     const offsetY = e.nativeEvent.contentOffset.y;
     const effectivePageHeight = pageHeight * scale;
@@ -1365,7 +1510,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     }
   };
 
-  // nhentai: manga okuyucu (tümleşik global canvas zoom)
+  // nhentai: manga reader (integrated global canvas zoom)
   if (post.sourceId === 'nhentai') {
     const pages = mangaPages.length > 0 ? mangaPages : [post.sampleUrl || post.previewUrl];
     const pageHeight = Math.round(screenWidth * 1.42);
@@ -1396,9 +1541,9 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           <TouchableWithoutFeedback onPress={handleMangaDoubleTap}>
             <View style={{ width: screenWidth, alignItems: 'center', backgroundColor: '#000000' }}>
               {pages.map((item, index) => {
-                // Pencereleme: yalnız görünen sayfa ±5 monte edilir. 50+ sayfanın
-                // hepsini aynı anda indirmek mobil hattı tıkayıp okuyucuyu
-                // kilitliyordu; uzak sayfalar yer tutucu olarak bekler.
+                // Windowing: only the visible page ±5 is mounted. Downloading all
+                // 50+ pages at once clogged mobile data and locked the reader;
+                // distant pages wait as placeholders.
                 const activeIdx = currentMangaPage - 1;
                 const nearActive = Math.abs(index - activeIdx) <= 5;
                 return (
@@ -1431,7 +1576,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           </TouchableWithoutFeedback>
         </ScrollView>
 
-        {/* Floating Page Indicator Pill: Sayfa X / Y */}
+        {/* Floating Page Indicator Pill: Page X / Y */}
         <View
           style={[
             styles.mangaPagePill,
@@ -1466,7 +1611,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       >
         <TouchableWithoutFeedback onPress={handleImageTouch}>
           <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
-            {/* PH bot-duvarı yedeği çözüm sırasında loader'ın arkasında çalışır. */}
+            {/* PH bot-wall fallback runs behind the loader while resolving. */}
             {pornhubWebviewOn &&
             !resolvedOriginalUrl &&
             isActive &&
@@ -1505,14 +1650,14 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
               />
             ) : (
               <>
-              {/* Sample ilk yükleme göstergesi: sample henüz boyanmamışken ve full yüklenmemişken */}
+              {/* Sample first-load indicator: while the sample hasn't painted yet and full hasn't loaded */}
               {sampleLoading && !sampleLoaded && !fullLoaded && (
                 <View style={styles.loaderCenter} pointerEvents="none">
                   <ActivityIndicator size="large" color={Colors.dark.primary} />
                 </View>
               )}
 
-              {/* Full original indirme göstergesi: altta sample zaten görünürken indirme yüzdesi/baytı */}
+              {/* Full original download indicator: download percent/bytes while the sample already shows below */}
               {shouldMountFull && fullLoading && !fullLoaded && (
                 <View style={styles.loaderCenter} pointerEvents="none">
                   <ActivityIndicator size="large" color={Colors.dark.primary} />
@@ -1531,12 +1676,11 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                 </View>
               )}
 
-              {/* Sample katmanı: hızlı ilk boya (düşük çözünürlüklü önizleme / sample) */}
+              {/* Sample layer: fast first paint (low-res preview / sample) */}
               <Image
                 source={{
                   uri: sampleMediaUrl,
                   headers: getMediaHeaders(sampleMediaUrl),
-                  cacheKey: `${sampleMediaUrl}:sample`,
                 }}
                 placeholder={{
                   uri: placeholderMediaUrl,
@@ -1558,7 +1702,56 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                 onError={() => setSampleLoading(false)}
               />
 
-              {/* Otoriter Full Original katmanı: sadece full modunda veya auto+zoom durumunda mount edilir */}
+              {/* Animated GIF layer: the full file (many MB) fades in above the
+                  thumbnail cover; if it never arrives the cover stays visible.
+                  Only the visible page downloads it — neighbors keep the cover. */}
+              {isGifPost && isActive && !suspended && gifMediaUrl && gifMediaUrl !== sampleMediaUrl && !gifFailed && (
+                <Image
+                  key={gifRequestUrl}
+                  source={{
+                    uri: gifRequestUrl,
+                    headers: getMediaHeaders(gifRequestUrl),
+                    isAnimated: true,
+                    cacheKey: `${gifRequestUrl}:gif`,
+                  }}
+                  style={[
+                    { width: screenWidth, height: screenHeight },
+                    styles.fullImageLayer,
+                    { opacity: gifLoaded ? 1 : 0 },
+                  ]}
+                  contentFit="contain"
+                  contentPosition="center"
+                  priority="high"
+                  cachePolicy="disk"
+                  autoplay
+                  allowDownscaling
+                  transition={150}
+                  onLoad={() => setGifLoaded(true)}
+                  onProgress={({ loaded, total }) => {
+                    if (total > 0) setGifProgress(Math.min(1, loaded / total));
+                  }}
+                  onError={({ error }) => {
+                    console.warn('[Viewer GIF] image load failed', post.id, error);
+                    if (!gifProxyAttempt && proxyService.hasWorker() && !proxyService.isProxiedUrl(gifMediaUrl)) {
+                      setGifProgress(null);
+                      setGifProxyAttempt(true);
+                      return;
+                    }
+                    setGifError(error);
+                    setGifFailed(true);
+                  }}
+                />
+              )}
+              {isGifPost && isActive && !suspended && gifMediaUrl && gifMediaUrl !== sampleMediaUrl && !gifLoaded && !gifFailed && (
+                <View style={styles.loaderCenter} pointerEvents="none">
+                  <ActivityIndicator size="small" color={Colors.dark.primary} />
+                  <Text style={styles.loaderProgressText}>
+                    {gifProgress === null ? 'Loading GIF…' : `Loading GIF ${Math.round(gifProgress * 100)}%`}
+                  </Text>
+                </View>
+              )}
+
+              {/* Authoritative Full Original layer: mounted only in full mode or auto+zoom state */}
               {shouldMountFull && (
                 <Image
                   source={{
@@ -1625,10 +1818,10 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                   <View style={styles.unsupportedCard}>
                     <View style={styles.unsupportedHeader}>
                       <AlertCircle size={22} color="#F5A623" />
-                      <Text style={styles.unsupportedTitle}>Bu video iOS'ta oynatılamıyor (WebM)</Text>
+                      <Text style={styles.unsupportedTitle}>This video cannot play on iOS (WebM)</Text>
                     </View>
                     <Text style={styles.unsupportedDescription}>
-                      iOS yerel olarak WebM biçimini desteklemez. Videoyu tarayıcınızda veya kaynak sitede izleyebilirsiniz.
+                      iOS does not natively support WebM. You can watch the video in your browser or on the source site.
                     </Text>
                     <TouchableOpacity
                       style={styles.unsupportedButton}
@@ -1636,12 +1829,50 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                       onPress={handleOpenSource}
                     >
                       <ExternalLink size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-                      <Text style={styles.unsupportedButtonText}>Kaynakta Aç</Text>
+                      <Text style={styles.unsupportedButtonText}>Open on Source</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
               )}
-              {/* PH çözümleme öldüyse sessiz kapak yerine kart: tekrar dene / kaynakta aç */}
+              {/* A GIF that never arrives keeps the cover; offer the browser/source path.
+                  Only once the layer points at a real .gif (a guessed .mp4 fails
+                  first on old records and is replaced by the detail resolve). */}
+              {isGifPost && isActive && !suspended && gifFailed &&
+                gifMediaUrl.split('?')[0].toLowerCase().endsWith('.gif') && (
+                <View style={styles.unsupportedCardContainer} pointerEvents="box-none">
+                  <View style={styles.unsupportedCard}>
+                    <View style={styles.unsupportedHeader}>
+                      <AlertCircle size={22} color="#F5A623" />
+                      <Text style={styles.unsupportedTitle}>GIF could not be loaded</Text>
+                    </View>
+                    <Text style={styles.unsupportedDescription}>
+                      {gifError || 'The animated file could not be downloaded.'}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.unsupportedButton}
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        setGifFailed(false);
+                        setGifError('');
+                        setGifProgress(null);
+                        setResolveNonce((n) => n + 1);
+                      }}
+                    >
+                      <RotateCcw size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.unsupportedButtonText}>Retry</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.unsupportedButton}
+                      activeOpacity={0.8}
+                      onPress={handleOpenSource}
+                    >
+                      <ExternalLink size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.unsupportedButtonText}>Open on Source</Text>
+                    </TouchableOpacity>
+                  </View>
+                </View>
+              )}
+              {/* If PH resolution dies show a card (retry / open on source) instead of a silent cover */}
               {post.sourceId === 'pornhub' &&
               isActive &&
               !suspended &&
@@ -1652,10 +1883,10 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                   <View style={styles.unsupportedCard}>
                     <View style={styles.unsupportedHeader}>
                       <AlertCircle size={22} color="#F5A623" />
-                      <Text style={styles.unsupportedTitle}>Video çözümlenemedi</Text>
+                      <Text style={styles.unsupportedTitle}>Video could not be resolved</Text>
                     </View>
                     <Text style={styles.unsupportedDescription}>
-                      Pornhub akışı alınamadı. Tekrar dene veya kaynak sitede izle.
+                      Could not fetch Pornhub stream. Retry or watch on the source site.
                     </Text>
                     <View style={{ flexDirection: 'row', gap: 8 }}>
                       <TouchableOpacity
@@ -1668,7 +1899,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                         }}
                       >
                         <RotateCcw size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.unsupportedButtonText}>Tekrar Dene</Text>
+                        <Text style={styles.unsupportedButtonText}>Retry</Text>
                       </TouchableOpacity>
                       <TouchableOpacity
                         style={[styles.unsupportedButton, { backgroundColor: '#2A2E3B' }]}
@@ -1676,7 +1907,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                         onPress={handleOpenSource}
                       >
                         <ExternalLink size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.unsupportedButtonText}>Kaynakta Aç</Text>
+                        <Text style={styles.unsupportedButtonText}>Open on Source</Text>
                       </TouchableOpacity>
                     </View>
                   </View>
@@ -1787,14 +2018,14 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     }),
     [url]
   );
-  // TLS düşüşünde (örn. api-cdn-mp4.rule34.xxx NSURLError -1200) tek seferlik
-  // seçici proxy fallback'i: sadece bu video Worker üzerinden tekrar denenir,
-  // diğer sonuçlar doğrudan kalır.
+  // On a TLS drop (e.g. api-cdn-mp4.rule34.xxx NSURLError -1200) a one-shot
+  // selective proxy fallback: only this video is retried via the Worker,
+  // the other candidates stay direct.
   const proxyFallbackDoneRef = useRef(false);
-  // Proxy yedeği de ölürse siyah ekranda kalmasın diye terminal hata durumu.
+  // If the proxy fallback also dies, go to a terminal error state instead of a black screen.
   const [loadFailed, setLoadFailed] = useState(false);
-  // Unmount sonrası biten async devamları bırakılmış oyuncuya dokunmasın
-  // (NotFoundException gürültüsü + unmount sonrası setState).
+  // Async continuations finishing after unmount must not touch the released player
+  // (NotFoundException noise + setState after unmount).
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -1802,8 +2033,8 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       mountedRef.current = false;
     };
   }, []);
-  // iOS AVPlayer'ın açamadığı format (WebM) oyuncuya hiç verilmez:
-  // -11828 uyarı fırtınası yerine doğrudan hata kartı.
+  // A format iOS AVPlayer cannot open (WebM) is never handed to the player:
+  // show the error card directly instead of a -11828 warning storm.
   const blockedUrl = Platform.OS === 'ios' && isUnsupportedOnIOS(url);
   useEffect(() => {
     proxyFallbackDoneRef.current = false;
@@ -1822,7 +2053,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         player.pause();
         (player as { release?: () => void }).release?.();
       } catch (e) {
-        // Zaten serbest bırakılmışsa sessizce geç
+        // Skip silently if it is already released
       }
     };
   }, [player]);
@@ -1834,7 +2065,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     }
     if (payload.status !== 'error' || proxyFallbackDoneRef.current) return;
     if (!proxyService.hasWorker() || proxyService.isProxiedUrl(url)) {
-      // Yedek yol yok: sessiz siyah ekranda kalmasın, hata kartını göster.
+      // No fallback left: show the error card instead of staying on a silent black screen.
       setLoadFailed(true);
       return;
     }
@@ -1890,8 +2121,8 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         player.pause();
       } catch {}
     } else {
-      // Odağa dönünce kontrolleri geri getir + oynatılıyorsa devam et.
-      // Donmuş video + gizli kontrol "kontroller gitti" hissi veriyordu.
+      // Bring the controls back on focus and resume if it was playing.
+      // A frozen video with hidden controls felt like "the controls vanished".
       setShowControls(true);
       if (wasPlayingRef.current && !loadFailed) {
         wasPlayingRef.current = false;
@@ -1937,8 +2168,8 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
     }
     if (isPlaying) {
       hideTimerRef.current = setTimeout(() => {
-        // Scrub ortasında gizleme: overlay unmount olur, gesture terminate
-        // olur, pager kilidi açılıp parmağı takip ederdi.
+        // Hiding mid-scrub: the overlay unmounts, the gesture terminates
+        // and the pager lock would release, letting the finger scroll pages.
         if (isScrubbingRef.current) return;
         setShowControls(false);
       }, 3500);
@@ -2004,7 +2235,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
   isScrubbingRef.current = isScrubbing;
 
   const trackLayoutRef = useRef<{ pageX: number; width: number }>({ pageX: 0, width: 0 });
-  const trackWrapperRef = useRef<View>(null);
+  const trackWrapperRef = useRef<ViewInstance>(null);
 
   const measureTrack = useCallback(() => {
     trackWrapperRef.current?.measure((_x, _y, width, _height, pageX) => {
@@ -2063,7 +2294,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
 
         onPanResponderMove: (evt) => {
           updateScrubFromPageX(evt.nativeEvent.pageX, false);
-          // Native taraf kilidi düşürürse her harekette yeniden vur.
+          // If the native side drops the lock, re-assert it on every movement.
           onScrubbingChange?.(true);
         },
 
@@ -2117,16 +2348,16 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         pointerEvents="none"
       />
 
-      {/* Yükleme iki yoldan da öldüyse siyah ekran yerine hata kartı + tekrar dene */}
+      {/* If loading dies on both paths show an error card + retry instead of a black screen */}
       {loadFailed && (
         <View style={styles.unsupportedCardContainer} pointerEvents="box-none">
           <View style={styles.unsupportedCard}>
             <View style={styles.unsupportedHeader}>
               <AlertCircle size={22} color="#F5A623" />
-              <Text style={styles.unsupportedTitle}>Video yüklenemedi</Text>
+              <Text style={styles.unsupportedTitle}>Video failed to load</Text>
             </View>
             <Text style={styles.unsupportedDescription}>
-              Doğrudan ve proxy bağlantısı başarısız oldu. Bağlantını kontrol edip tekrar dene.
+              Direct and proxy connections failed. Check your connection and retry.
             </Text>
             <TouchableOpacity
               style={styles.unsupportedButton}
@@ -2134,7 +2365,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
               onPress={handleRetryLoad}
             >
               <RotateCcw size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
-              <Text style={styles.unsupportedButtonText}>Tekrar Dene</Text>
+              <Text style={styles.unsupportedButtonText}>Retry</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -2236,6 +2467,17 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
 };
 
 const styles = StyleSheet.create({
+  jumpOverlay: {
+    position: 'absolute', top: 0, right: 0, bottom: 0, left: 0,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  jumpPanel: { backgroundColor: '#1C1D24', borderRadius: 16, padding: 24, width: '80%', maxWidth: 360 },
+  jumpTitle: { color: '#FFFFFF', fontSize: 16, fontWeight: '600', marginBottom: 16 },
+  jumpInput: { color: '#FFFFFF', borderColor: GOLD_ACCENT, borderWidth: 1, borderRadius: 8, padding: 12, fontSize: 20 },
+  jumpActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 28, marginTop: 20 },
+  jumpAction: { color: GOLD_ACCENT, fontSize: 16, paddingVertical: 8 },
   modalBackdrop: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.4)',
@@ -2252,8 +2494,8 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     top: 75,
-    // Alt 150px video timeline şerididir: geri alanı burayı kapsamaz,
-    // şerit üstünde başlayan parmak scrub'a gider, çıkış olmaz.
+    // The bottom 150px is the video timeline strip: the edge-back area does not
+    // cover it, a finger starting on the strip scrubs and does not trigger exit.
     bottom: 150,
     width: 28,
     zIndex: 999,

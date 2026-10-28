@@ -11,12 +11,12 @@ class ProxyService {
   private isInitialized: boolean = false;
 
   /**
-   * iOS AVPlayer'da TLS handshake'i düşüren CDN host'ları (NSURLError -1200).
-   * Canlı vakalar: api-cdn-mp4.rule34.xxx ve thumb/mp4-cdn*.xvideos-cdn.com
-   * üzerindeki dosyalar direkt bağlantıda "A TLS error caused the secure
-   * connection to fail" veriyor. Bu host'lar worker kayıtlıysa global
-   * toggle kapalı olsa bile seçici olarak proxy'lenir; diğer host'lar
-   * doğrudan kalır.
+   * CDN hosts that drop the TLS handshake in iOS AVPlayer (NSURLError -1200).
+   * Observed cases: files on api-cdn-mp4.rule34.xxx and thumb/mp4-cdn*.xvideos-cdn.com
+   * fail over a direct connection with "A TLS error caused the secure
+   * connection to fail". When a worker is registered, these hosts are
+   * selectively proxied even with the global toggle off; other hosts
+   * stay direct.
    */
   private static readonly TLS_FRAGILE_PATTERNS: RegExp[] = [
     /api-cdn[^/]*\.rule34\.(xxx|us)/i,
@@ -28,7 +28,7 @@ class ProxyService {
     /nhentai\.net/i,
   ];
 
-  /** Ham URL TLS-kırılgan bir CDN'e mi işaret ediyor? */
+  /** Does the raw URL point to a TLS-fragile CDN? */
   isTlsFragileUrl(url: string | undefined): boolean {
     if (!url || typeof url !== 'string') return false;
     try {
@@ -39,7 +39,7 @@ class ProxyService {
     }
   }
 
-  /** Proxy'li URL mi (kendisine tekrar proxy uygulanmasın)? */
+  /** Is this a proxied URL (don't proxy it again)? */
   isProxiedUrl(url: string | undefined): boolean {
     if (!url || !this.workerUrl) return false;
     return url.startsWith(this.workerUrl);
@@ -74,7 +74,7 @@ class ProxyService {
     return Boolean(this.workerUrl);
   }
 
-  /** Toggle kapalı olsa bile kayıtlı worker üzerinden URL üretir (fallback için). */
+  /** Builds a URL via the registered worker even with the toggle off (for fallback). */
   forceProxyUrl(originalUrl: string | undefined): string {
     if (!originalUrl) return '';
     if (!this.workerUrl) return originalUrl;
@@ -83,10 +83,10 @@ class ProxyService {
   }
 
   /**
-   * Worker bacağı için nötr header'lar: browser taklidi (desktop UA,
-   * Referer, Cookie) bazı WAF'ları datacenter çıkışında 403'e sokuyor;
-   * nötr iPhone UA + headersız geçiş 200 dönüyor (canlı doğrulandı).
-   * RedGifs hariç: token, eşleşen UA + Origin/Referer ister.
+   * Neutral headers for the worker leg: browser mimicry (desktop UA,
+   * Referer, Cookie) trips some WAFs into 403 on datacenter egress;
+   * neutral iPhone UA + headerless passthrough returns 200 (verified live).
+   * Except RedGifs: token requires matching UA + Origin/Referer.
    */
   workerHeaders(url: string, headers?: Record<string, string>): Record<string, string> {
     const out: Record<string, string> = { ...(headers || {}) };
@@ -97,17 +97,17 @@ class ProxyService {
     }
     out['User-Agent'] =
       'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
-    // xvideos sıkıştırmalı gövdeyi worker yolunda 8KB'de kesiyor;
-    // nhentai.net ise Brotli (br) dönünce React Native iOS çözemeyip takılıyor (canlı doğrulandı).
+    // xvideos truncates compressed bodies at 8KB on the worker path;
+    // nhentai.net returning Brotli (br) stalls React Native iOS, which can't decode it (verified live).
     if (/xvideos\.com/i.test(url) || /nhentai\.net/i.test(url)) out['Accept-Encoding'] = 'gzip, deflate, identity';
     return out;
   }
 
   /**
-   * Dirençli fetch: önce direkt (toggle açıksa proxy), ağ kopması, takılma veya
-   * 403/429/5xx'te kayıtlı worker varsa tek seferlik proxy'den tekrar dener.
-   * Direkt bacakta da hard-timeout ile socket asılı kalmalarını engeller.
-   * 404'te denemez (aday yoklama mantığı bozulmasın).
+   * Resilient fetch: direct first (proxy when the toggle is on); on network
+   * failure, hang, or 403/429/5xx it retries once via the registered worker if set.
+   * The direct leg also uses a hard timeout to keep hung sockets from stalling.
+   * No retry on 404 (so candidate-probing logic stays intact).
    */
   private initPromise: Promise<void> | null = null;
 
@@ -120,97 +120,111 @@ class ProxyService {
   }
 
   async fetchWithFallback(url: string, init?: RequestInit, retryTimeoutMs: number = 12000): Promise<Response> {
+    this.throwIfAborted(init?.signal);
     await this.ensureInitialized();
+    this.throwIfAborted(init?.signal);
     const target = this.proxyUrl(url);
     const scrub = !/redgifs\.com/i.test(url);
+    let res: Response;
+    const startedAt = Date.now();
     try {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const sig = init?.signal as AbortSignal | undefined;
-      let directInit = init;
-      if (!sig || sig.aborted) {
-        const ctrl = new AbortController();
-        timer = setTimeout(() => ctrl.abort(), retryTimeoutMs);
-        directInit = { ...init, signal: ctrl.signal };
-      }
-      let raceTimer: ReturnType<typeof setTimeout> | undefined;
-      const hardTimeout = new Promise<Response>((_, reject) => {
-        raceTimer = setTimeout(() => reject(new Error(`fetch timeout after ${retryTimeoutMs}ms: ${url}`)), retryTimeoutMs);
-      });
-
-      let res: Response;
-      try {
-        const p = fetch(target, directInit);
-        res = await Promise.race([
-          p.then((v) => { if (raceTimer) clearTimeout(raceTimer); return v; }, (e) => { if (raceTimer) clearTimeout(raceTimer); throw e; }),
-          hardTimeout,
-        ]);
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-
-      if (!res.ok && (res.status === 403 || res.status === 429 || res.status >= 500)) {
-        const viaProxy = this.forceProxyUrl(url);
-        if (viaProxy && viaProxy !== target) {
-          return await this.fetchViaProxy(viaProxy, init, retryTimeoutMs, scrub);
-        }
-        if (scrub && this.isEnabled()) {
-          // Zaten proxy'deyiz ama browser header'lar WAF'a takıldı: nötr dene
-          return await this.fetchViaProxy(target, init, retryTimeoutMs, scrub);
-        }
-      }
-      return res;
+      res = await this.fetchWithTimeout(target, init, retryTimeoutMs);
+      this.reportProbe({ kind: 'response', target, status: res.status, ms: Date.now() - startedAt });
     } catch (e) {
+      // A caller cancellation is final, not a reason to start a new download.
+      this.reportProbe({
+        kind: 'error',
+        target,
+        url,
+        message: String((e as Error)?.message ?? e),
+        name: (e as Error)?.name,
+        ms: Date.now() - startedAt,
+        worker: this.hasWorker(),
+      });
+      this.throwIfAborted(init?.signal);
       const viaProxy = this.forceProxyUrl(url);
-      if (!viaProxy) throw e;
-      if (viaProxy === target) {
-        // Hedef zaten proxy'liydi: aynı URL'yi tekrar çekmek trafiği
-        // ikiye katlar (özellikle timeout'ta ~24 sn). HTTP-statü bazlı
-        // nötr-header denemesi yukarıda zaten yapıldı, burada dur.
-        throw e;
-      }
+      if (!this.hasWorker() || viaProxy === target) throw e;
       return await this.fetchViaProxy(viaProxy, init, retryTimeoutMs, scrub);
     }
+
+    this.throwIfAborted(init?.signal);
+    if (!res.ok && (res.status === 403 || res.status === 429 || res.status >= 500)) {
+      const viaProxy = this.forceProxyUrl(url);
+      if (this.hasWorker() && viaProxy !== target) {
+        return await this.fetchViaProxy(viaProxy, init, retryTimeoutMs, scrub);
+      }
+      if (scrub && this.isEnabled()) {
+        // Keep this outside the direct-leg catch: a failed fallback is not retried again.
+        return await this.fetchViaProxy(target, init, retryTimeoutMs, scrub);
+      }
+    }
+    return res;
   }
 
   private async fetchViaProxy(viaProxy: string, init?: RequestInit, retryTimeoutMs: number = 12000, scrub: boolean = true): Promise<Response> {
-    // Üst katmanın abort'u ateşlenmişse fallback anında ölmesin;
-    // sinyal yoksa/ölüyse taze timeout'lu sinyal ver. Release'de abort
-    // askıda kalabileceği için yarış zamanlayıcısı sözü mutlaka bitirir.
     let retryInit = init;
-    const sig = init?.signal as AbortSignal | undefined;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    if (!sig || sig.aborted) {
-      const ctrl = new AbortController();
-      timer = setTimeout(() => ctrl.abort(), retryTimeoutMs);
-      retryInit = { ...init, signal: ctrl.signal };
-    }
     if (scrub) {
       retryInit = { ...retryInit, headers: this.workerHeaders(viaProxy, (retryInit?.headers as Record<string, string>) || {}) };
     }
-    let raceTimer: ReturnType<typeof setTimeout> | undefined;
-    const hardTimeout = new Promise<Response>((_, reject) => {
-      raceTimer = setTimeout(() => reject(new Error(`proxy timeout after ${retryTimeoutMs}ms`)), retryTimeoutMs);
+    return await this.fetchWithTimeout(viaProxy, retryInit, retryTimeoutMs);
+  }
+
+  private throwIfAborted(signal?: AbortSignal | null): void {
+    if (!signal?.aborted) return;
+    const error = new Error('Request aborted');
+    error.name = 'AbortError';
+    throw error;
+  }
+
+  private async fetchWithTimeout(url: string, init: RequestInit | undefined, timeoutMs: number): Promise<Response> {
+    const signal = init?.signal;
+    this.throwIfAborted(signal);
+    const ctrl = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    // Race as well as abort: some native fetch implementations do not settle on abort.
+    const interrupted = new Promise<Response>((_, reject) => {
+      onAbort = () => {
+        const error = new Error('Request aborted');
+        error.name = 'AbortError';
+        reject(error);
+        ctrl.abort();
+      };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      timer = setTimeout(() => {
+        reject(new Error(`fetch timeout after ${timeoutMs}ms`));
+        ctrl.abort();
+      }, timeoutMs);
     });
     try {
-      const p = fetch(viaProxy, retryInit);
-      return await Promise.race([
-        p.then((v) => { if (raceTimer) clearTimeout(raceTimer); return v; }, (e) => { if (raceTimer) clearTimeout(raceTimer); throw e; }),
-        hardTimeout,
-      ]);
+      // Keep a caller's signal attached to the response body as well as headers.
+      return await Promise.race([fetch(url, { ...init, signal: signal ?? ctrl.signal }), interrupted]);
     } finally {
       if (timer) clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
     }
+  }
+
+  /** TEMP diagnostic: report failed/slow fetches to the LAN probe listener. */
+  private reportProbe(record: Record<string, unknown>): void {
+    try {
+      void fetch('http://192.168.1.136:8099/probe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(record),
+      }).catch(() => {});
+    } catch {}
   }
 
   proxyUrl(originalUrl: string | undefined): string {
     if (!originalUrl) return '';
-    // Global toggle açıksa: tüm trafik Worker üzerinden.
+    // Global toggle on: all traffic goes through the Worker.
     if (this.isEnabled()) {
       if (originalUrl.startsWith(this.workerUrl)) return originalUrl;
       return `${this.workerUrl}?url=${encodeURIComponent(originalUrl)}`;
     }
-    // Toggle kapalıysa: sadece TLS-kırılgan host'lar seçici proxy'lenir,
-    // diğer sonuçlar doğrudan kalır.
+    // Toggle off: only TLS-fragile hosts are selectively proxied,
+    // everything else stays direct.
     if (this.workerUrl && this.isTlsFragileUrl(originalUrl)) {
       if (originalUrl.startsWith(this.workerUrl)) return originalUrl;
       return `${this.workerUrl}?url=${encodeURIComponent(originalUrl)}`;

@@ -39,30 +39,30 @@ export const PasscodeModal: React.FC<PasscodeModalProps> = ({
 
   // Compute title & subtitle based on current mode and step
   let title = 'Passcode';
-  let subtitle = 'PIN kodunuzu girin';
+  let subtitle = 'Enter your PIN code';
 
   if (mode === 'setup') {
     if (step === 1) {
-      title = 'Yeni Passcode Belirleyin';
-      subtitle = 'Uygulamayı kilitlemek için 4 haneli bir PIN girin';
+      title = 'Set a New Passcode';
+      subtitle = 'Enter a 4-digit PIN to lock the app';
     } else {
-      title = 'Passcode\'u Doğrulayın';
-      subtitle = 'Belirlediğiniz 4 haneli PIN kodunu tekrar girin';
+      title = 'Verify Passcode';
+      subtitle = 'Re-enter the 4-digit PIN you set';
     }
   } else if (mode === 'change') {
     if (step === 1) {
-      title = 'Mevcut Passcode';
-      subtitle = 'Devam etmek için mevcut PIN kodunuzu girin';
+      title = 'Current Passcode';
+      subtitle = 'Enter your current PIN to continue';
     } else if (step === 2) {
-      title = 'Yeni Passcode';
-      subtitle = 'Yeni 4 haneli PIN kodunuzu belirleyin';
+      title = 'New Passcode';
+      subtitle = 'Set your new 4-digit PIN';
     } else {
-      title = 'Yeni Passcode\'u Doğrulayın';
-      subtitle = 'Yeni PIN kodunu onaylamak için tekrar girin';
+      title = 'Verify New Passcode';
+      subtitle = 'Re-enter to confirm your new PIN';
     }
   } else if (mode === 'disable') {
-    title = 'Kilidi Kapat';
-    subtitle = 'Passcode kilidini kaldırmak için mevcut PIN kodunuzu girin';
+    title = 'Turn Off Lock';
+    subtitle = 'Enter your current PIN to remove the passcode lock';
   }
 
   const handlePinSubmit = async (pin: string) => {
@@ -83,7 +83,7 @@ export const PasscodeModal: React.FC<PasscodeModalProps> = ({
         } else {
           setFirstPin('');
           setStep(1);
-          return { success: false, error: 'Passcode eşleşmedi! Yeniden girin.' };
+          return { success: false, error: 'Passcodes did not match! Enter again.' };
         }
       }
     }
@@ -96,7 +96,7 @@ export const PasscodeModal: React.FC<PasscodeModalProps> = ({
           setStep(2);
           return { success: true };
         } else {
-          return { success: false, error: 'Mevcut Passcode hatalı!' };
+          return { success: false, error: 'Current passcode is incorrect!' };
         }
       } else if (step === 2) {
         setFirstPin(pin);
@@ -111,7 +111,7 @@ export const PasscodeModal: React.FC<PasscodeModalProps> = ({
         } else {
           setFirstPin('');
           setStep(2);
-          return { success: false, error: 'Yeni Passcode eşleşmedi! Tekrar deneyin.' };
+          return { success: false, error: 'New passcodes did not match! Try again.' };
         }
       }
     }
@@ -125,11 +125,11 @@ export const PasscodeModal: React.FC<PasscodeModalProps> = ({
         onClose();
         return { success: true };
       } else {
-        return { success: false, error: 'Mevcut Passcode hatalı!' };
+        return { success: false, error: 'Current passcode is incorrect!' };
       }
     }
 
-    return { success: false, error: 'Bilinmeyen işlem' };
+    return { success: false, error: 'Unknown operation' };
   };
 
   return (
