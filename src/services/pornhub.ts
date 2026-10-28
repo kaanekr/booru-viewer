@@ -1,20 +1,20 @@
 import type { BooruPost, BooruSource } from '../types/booru';
 
 /**
- * Pornhub entegrasyonu — saf yardımcılar.
+ * Pornhub integration — pure helpers.
  *
- * Kaynak: Derfirm/pornhub-api'nin kullandığı resmi Webmasters API
- * (https://www.pornhub.com/webmasters), canlı doğrulandı:
- * - Arama: GET /webmasters/search?search=<kelime>&page=<N>&thumbsize=medium
+ * Source: the official Webmasters API used by Derfirm/pornhub-api
+ * (https://www.pornhub.com/webmasters), verified live:
+ * - Search: GET /webmasters/search?search=<word>&page=<N>&thumbsize=medium
  *   [&ordering=featured|newest|mostviewed|rating][&period=weekly|monthly|alltime]
- *   [&tags[]=<a,b>][&category=<ad>]
- * - Kart başına video meta (başlık, süre, izlenme, rating, thumb, tags,
- *   categories, pornstars) JSON döner; oynatılabilir dosya YOKTUR.
- * - Oynatma: detay sayfasındaki (view_video.php) `mediaDefinitions`
- *   JSON'undan HLS master URL'leri çıkarılır; viewer açılışında taze
- *   çözülür (URL'ler süreli token taşır, cache'lenmez).
+ *   [&tags[]=<a,b>][&category=<name>]
+ * - Per-card video meta (title, duration, views, rating, thumb, tags,
+ *   categories, pornstars) comes as JSON; NO playable file.
+ * - Playback: HLS master URLs are extracted from the `mediaDefinitions`
+ *   JSON on the detail page (view_video.php); resolved fresh when the
+ *   viewer opens (URLs carry time-limited tokens, never cached).
  *
- * React import'u YOK — saf bağımsız fonksiyonlar.
+ * No React import — pure standalone functions.
  */
 
 export const PORNHUB_BASE = 'https://www.pornhub.com';
@@ -50,7 +50,7 @@ export interface PornhubVideo {
   pornstars?: { pornstar_name?: string }[];
 }
 
-/** Uygulamanın TimeRangeOption karşılığı: 1w->weekly, 1m->monthly, 1y/1d->alltime */
+/** App's TimeRangeOption equivalent: 1w->weekly, 1m->monthly, 1y/1d->alltime */
 export function pornhubPeriodForTimeRange(timeRange: string | undefined): PornhubPeriod {
   if (timeRange === '1d') return 'daily';
   if (timeRange === '1w') return 'weekly';
@@ -87,11 +87,11 @@ function parseDurationToSeconds(duration: string | undefined): number {
 }
 
 /**
- * Pornhub kapak URL'sinden 8 sıralı zaman çizelgesi karesi (1..15) üretir.
- * Pornhub CDN'i her video için baştan sona 16 adet sıralı kare üretir.
- * URL'deki dosya adı (ör. "(m=...)(mh=...)1_medium.jpg", "(m=...)1.jpg",
- * "default.jpg", "medium.jpg", "1_small.webp") çözülerek 1, 3, 5, 7, 9, 11, 13, 15
- * kareleri türetilir.
+ * Builds 8 sequential timeline frames (1..15) from a Pornhub cover URL.
+ * The Pornhub CDN produces 16 sequential frames per video from start to end.
+ * The filename in the URL (e.g. "(m=...)(mh=...)1_medium.jpg", "(m=...)1.jpg",
+ * "default.jpg", "medium.jpg", "1_small.webp") is resolved to derive frames
+ * 1, 3, 5, 7, 9, 11, 13, 15.
  */
 export function generatePornhubSequentialThumbs(url: string | undefined): string[] | undefined {
   if (!url || typeof url !== 'string') return undefined;
@@ -113,7 +113,7 @@ export function generatePornhubSequentialThumbs(url: string | undefined): string
   const ext = extMatch[1];
   const fileBase = file.slice(0, -extMatch[0].length);
 
-  // 1. Dosya sonundaki boyut ekini ayır (_small, _medium, _large veya standalone small, medium, large)
+  // 1. Split off the size suffix at the end of the file (_small, _medium, _large or standalone small, medium, large)
   let sizeSuffix = '';
   let baseWithoutSize = fileBase;
   const sizeMatch = fileBase.match(/^(.*?)(_small|_medium|_large)$/i);
@@ -134,7 +134,7 @@ export function generatePornhubSequentialThumbs(url: string | undefined): string
     }
   }
 
-  // 2. Kalan kısım bir numara veya "default" / "original" içeriyor mu?
+  // 2. Does the rest contain a number or "default" / "original"?
   let filePrefix = '';
   const numMatch = baseWithoutSize.match(/^(.*?)(\d+)$/);
   if (numMatch) {
@@ -148,15 +148,15 @@ export function generatePornhubSequentialThumbs(url: string | undefined): string
     }
   }
 
-  // Pornhub CDN her video için baştan sona 16 adet sıralı kare üretir.
-  // 1, 3, 5, 7, 9, 11, 13, 15 kareleri (8 eşit aralıklı zaman çizelgesi karesi) döner.
+  // Pornhub CDN produces 16 sequential frames per video from start to end.
+  // Frames 1, 3, 5, 7, 9, 11, 13, 15 are returned (8 evenly spaced timeline frames).
   return [1, 3, 5, 7, 9, 11, 13, 15].map((n) => `${dir}${filePrefix}${n}${sizeSuffix}.${ext}${suffix}`);
 }
 
 /**
- * Webmasters API videosunu BooruPost'a çevirir. Site tamamen videodur;
- * oynatılabilir URL süreli token'lıdır, liste anında gömülmez —
- * viewer açılışında detaydan taze çözülür (xvideos ile aynı desen).
+ * Converts a Webmasters API video into a BooruPost. The site is all video;
+ * the playable URL is time-tokened so it is not embedded at list time —
+ * it is freshly resolved from the detail when the viewer opens (same pattern as xvideos).
  */
 export function mapPornhubVideoToPost(v: PornhubVideo, source: BooruSource): BooruPost | null {
   if (!v || !v.video_id) return null;
@@ -197,7 +197,7 @@ export function mapPornhubVideoToPost(v: PornhubVideo, source: BooruSource): Boo
     if (!Number.isNaN(d.getTime())) createdAt = d.toISOString();
   }
 
-  // Thumbs listesindeki farklı sahne kareleri
+  // Different scene frames from the thumbs list
   let previewThumbs: string[] | undefined = generatePornhubSequentialThumbs(thumb);
   if (!previewThumbs || previewThumbs.length <= 1) {
     if (Array.isArray(v.thumbs) && v.thumbs.length > 0) {
@@ -266,15 +266,15 @@ function decodeScriptValue(s: string): string {
 }
 
 /**
- * Detay sayfası HTML'indeki `mediaDefinitions` JSON'undan oynatılabilir
- * HLS URL'lerini çıkarır (öncelik: defaultQuality → en yüksek quality).
+ * Extracts playable HLS URLs from the `mediaDefinitions` JSON in the detail
+ * page HTML (priority: defaultQuality → highest quality).
  */
 export function parsePornhubDetail(html: string): PornhubFiles {
   const out: PornhubFiles = { high: '', low: '', hls: '' };
   if (!html || !html.includes('mediaDefinitions')) return out;
 
-  // Detay sayfası mediaDefinitions'ı çift-kaçışlı bir JS stringinin içinde
-  // gömer (\"group\"...); tek-kaçışlı varyanta normalize et.
+  // The detail page embeds mediaDefinitions inside a double-escaped JS string
+  // (\"group\"...); normalize it to the single-escaped variant.
   let src = html;
   if (src.includes('mediaDefinitions\\":')) {
     src = src.replace(/\\"/g, '"');
@@ -312,14 +312,14 @@ export function parsePornhubDetail(html: string): PornhubFiles {
 }
 
 /**
- * Pornhub HTML arama veya browse sayfasından video kartlarını ayrıştırır.
- * Her karttan hover önizleme videosu (anchor'daki `data-webm` flipbook mp4,
- * iOS'ta oynatılabilir) ve poster/thumb çekilir.
+ * Parses video cards from a Pornhub HTML search or browse page.
+ * Each card yields a hover preview video (the anchor's `data-webm` flipbook mp4,
+ * playable on iOS) plus poster/thumb.
  *
- * Not (2026): eski `data-mediabook` (.webm) özniteliği siteden kalktı;
- * yerini `data-webm="..._fb.mp4"` + `data-poster` + `data-path` aldı.
- * Süre `<span class="bgEffect time">`, izlenme `<div class="videoViews">`,
- * başlık `<a class="thumbnailTitle">` içindedir.
+ * Note (2026): the old `data-mediabook` (.webm) attribute is gone from the site;
+ * it was replaced by `data-webm="..._fb.mp4"` + `data-poster` + `data-path`.
+ * Duration lives in `<span class="bgEffect time">`, views in `<div class="videoViews">`,
+ * title in `<a class="thumbnailTitle">`.
  */
 export function parsePornhubHtmlListing(html: string, source: BooruSource): BooruPost[] {
   const posts: BooruPost[] = [];
@@ -335,7 +335,7 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
     const vkey = c.slice(0, quoteEnd).trim();
     if (!vkey || seen.has(vkey)) continue;
 
-    // Önizleme videosu: önce yeni data-webm (mp4 flipbook), sonra data-previewvideo, sonra data-mediabook
+    // Preview video: new data-webm (mp4 flipbook) first, then data-previewvideo, then data-mediabook
     const webmM =
       c.match(/data-webm="([^"]+)"/i) ||
       c.match(/data-previewvideo="([^"]+)"/i) ||
@@ -420,7 +420,7 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
   return posts;
 }
 
-/** Başlık metnindeki HTML entity'lerini çözer (&#039;, &amp; ...). */
+/** Decodes HTML entities in title text (&#039;, &amp; ...). */
 function decodeHtmlEntities(s: string): string {
   return s
     .replace(/&#(\d+);/g, (_, n) => {

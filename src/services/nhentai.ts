@@ -2,13 +2,13 @@ import type { BooruPost, BooruSource, BooruTagGroups, BooruTagSuggestion, TagCat
 import { proxyService } from './proxyService';
 
 /**
- * nhentai entegrasyonu - saf yardimcilar.
- * YALNIZCA resmi v2 API (https://nhentai.net/api/v2/docs, openapi.json projededir).
- * Ayna (nhentai.xxx) ve HTML kazıma tamamen kaldırıldı.
- * - Liste/detay: /api/v2/galleries, /api/v2/search, /api/v2/galleries/{id}
- * - Etiket: POST /api/v2/tags/search
- * - Görsel CDN: t1/i1.nhentai.net (API'nin verdiği path'ler kullanılır)
- * - Skor = num_favorites (puan favori sayısına birebir eşlenir)
+ * nhentai integration - pure helpers.
+ * ONLY the official v2 API (https://nhentai.net/api/v2/docs, vendored at docs/vendor/openapi-nhentai.json).
+ * Mirrors (nhentai.xxx) and HTML scraping were removed entirely.
+ * - List/detail: /api/v2/galleries, /api/v2/search, /api/v2/galleries/{id}
+ * - Tags: POST /api/v2/tags/search
+ * - Image CDN: t1/i1.nhentai.net (paths provided by the API are used)
+ * - Score = num_favorites (score maps one-to-one to the favorite count)
  */
 
 export const NHENTAI_BASE = 'https://nhentai.net';
@@ -16,13 +16,13 @@ export const NHENTAI_IMAGE_BASE = 'https://i3.nhentai.net';
 export const NHENTAI_THUMB_BASE = 'https://t2.nhentai.net';
 
 /**
- * Resmi v2 API (https://nhentai.net/api/v2/docs).
- * Puan/skor doğrudan `num_favorites` değerine eşlenir.
+ * Official v2 API (https://nhentai.net/api/v2/docs).
+ * Score maps directly to the `num_favorites` value.
  *
- * CDN NOTU (cihazda doğrulandı): t1/i1 hostları bazı ağlarda engelli/çözümsüz
- * (Safari'de t1 açılmıyor, t2/t3 açılıyor). Bu yüzden varsayılan kapak t3,
- * yedek kapak t2, tam sayfalar i3 üzerinden alınır; tek host kesintisinde
- * kartlar yine de görsel gösterir (PostCard thumb->cover fallback'i).
+ * CDN NOTE (verified on device): t1/i1 hosts are blocked/unresolvable on some networks
+ * (t1 does not open in Safari, t2/t3 do). So the default cover is t3,
+ * the fallback cover is t2, full pages come via i3; cards still show images
+ * when a single host is down (PostCard thumb->cover fallback).
  */
 export const NHENTAI_API_BASE = 'https://nhentai.net/api/v2';
 export const NHENTAI_API_THUMB_BASE = 'https://t2.nhentai.net';
@@ -30,19 +30,19 @@ export const NHENTAI_API_THUMB_FALLBACK_BASE = 'https://t3.nhentai.net';
 export const NHENTAI_API_IMAGE_BASE = 'https://i3.nhentai.net';
 
 /**
- * v2 API istekleri Safari'yi birebir taklit eder (cihazda doğrulandı: aynı URL
- * Safari'de açılırken uygulamada takılıyordu — bot koruması istek parmak izini
- * bayraklayıp gövdeyi akıtmıyordu).
- * - Tam Safari formu (`Version/18.x ... Safari/604.1` token'larıyla): tokensiz
- *   WKWebView-kokulu formdan ayırt edilir.
- * - Referer YOK (doğrudan gezinme gibi).
- * - Accept-Encoding müdahalesi YOK (RN/NSURLSession varsayılanı + şeffaf çözüm;
- *   elle header gövde akışını bozabiliyordu).
+ * v2 API requests mimic Safari exactly (verified on device: the same URL
+ * opened in Safari but stalled in the app — bot protection flagged the request
+ * fingerprint and would not stream the body).
+ * - Full Safari form (`Version/18.x ... Safari/604.1` tokens): distinguished from
+ *   a tokenless WKWebView-smelling form.
+ * - No Referer (like direct navigation).
+ * - No Accept-Encoding interference (RN/NSURLSession default + transparent handling;
+ *   a manual header could break body streaming).
  */
 export const NHENTAI_API_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 18_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.3 Mobile/15E148 Safari/604.1';
 
-/** Tüm v2 API JSON çağrılarında kullanılan tek header seti. */
+/** The single header set used in all v2 API JSON calls. */
 export function nhentaiApiHeaders(extra?: Record<string, string>): Record<string, string> {
   return {
     'User-Agent': NHENTAI_API_UA,
@@ -93,8 +93,8 @@ export interface NHentaiGalleryDetail {
 }
 
 /**
- * Filtre sıralaması -> v2 API `sort` değeri.
- * v2 zaman aralıklı popülerliği de destekler (canlı doğrulandı):
+ * Filter order -> v2 API `sort` value.
+ * v2 also supports time-ranged popularity (verified live):
  * popular / popular-today / popular-week / popular-month / date
  */
 export function nhentaiApiSort(sortBy?: string, timeRange?: string): string {
@@ -107,27 +107,27 @@ export function nhentaiApiSort(sortBy?: string, timeRange?: string): string {
   return 'date';
 }
 
-/** Bilinen dil etiketleri (meta kategoride `language:` öneki alır). */
+/** Known language tags (take a `language:` prefix in the meta category). */
 const NHENTAI_LANGUAGE_TAGS = new Set([
   'english', 'japanese', 'chinese', 'translated', 'spanish', 'french',
   'portuguese', 'german', 'italian', 'russian', 'korean', 'vietnamese',
   'thai', 'indonesian', 'polish', 'dutch',
 ]);
 
-/** Bilinen kategori etiketleri (meta kategoride `category:` öneki alır). */
+/** Known category tags (take a `category:` prefix in the meta category). */
 const NHENTAI_CATEGORY_TAGS = new Set([
   'doujinshi', 'manga', 'doujin', 'oneshot', 'anthology', 'magazine',
 ]);
 
 /**
- * Etiket adı + kategoriden v2 API `önek:"ad"` sorgusu üretir
+ * Builds a v2 API `prefix:"name"` query from a tag name + category
  * (https://nhentai.net/api/v2/docs: keywords, "exact phrase", -negation,
  * `artist:name`, `language:english`, `tag:"big breasts"`, `favorites:>=100`).
- * Düz anahtar kelime araması başlıklarda full-text eşleşir; `tag:` öneki GERÇEK
- * etiket eşleşmesi yapar (örn. `big breasts` 237.388, `tag:"big breasts"` 236.569
- * ama farklı ilk sonuç — canlı doğrulandı).
- * Zaten önekli girdi normalize edilir (`tag:big breasts` -> `tag:"big breasts"`).
- * Bilinmeyen meta kategori öneksiz bırakılır (yanlış önek = boş sonuç riski).
+ * Plain keyword search full-text matches titles; the `tag:` prefix does a REAL
+ * tag match (e.g. `big breasts` 237,388 vs `tag:"big breasts"` 236,569
+ * with a different first result — verified live).
+ * Already-prefixed input is normalized (`tag:big breasts` -> `tag:"big breasts"`).
+ * Unknown meta categories stay unprefixed (a wrong prefix risks empty results).
  */
 export function nhentaiTagQuery(name: string, category?: TagCategory | string): string {
   const clean = (name || '').trim().replace(/^"+|"+$/g, '').trim();
@@ -162,17 +162,17 @@ export function nhentaiTagQuery(name: string, category?: TagCategory | string): 
 }
 
 /**
- * v2 API aday URL'leri (resmi dokümantasyona göre: https://nhentai.net/api/v2/docs).
- * - En yeniler (filtresiz): GET /api/v2/galleries?page={p}&per_page=25
- * - Günün popülerleri (kelimesiz): GET /api/v2/galleries/popular (yalnız 1. sayfa,
- *   94ms — `query=*&sort=popular-today` ile aynı havuz ama katbekat hızlı)
- * - Popüler akış (kelimesiz): GET /api/v2/search?query=*&sort={sort}&page={p}
- *   (dokümana göre query=* tüm arşivi döner; 650.000+ galeri sayfalanabilir).
- *   NOT: `*` + zaman aralıklı sıralama sunucuda saniyeler sürer (popular-month
- *   ~4s ölçüldü); istemci timeout'u buna göre cömert tutulur, retry YAPILMAZ
- *   (her retry rate-limit bütçesini yakar: search anonim 10 req/dk).
- * - Arama: GET /api/v2/search?query={q}&sort={sort}&page={p}
- *   (doküman: keywords, "exact phrase", -negation, artist:x, tag:x, favorites:>=X).
+ * v2 API candidate URLs (per the official docs: https://nhentai.net/api/v2/docs).
+ * - Newest (unfiltered): GET /api/v2/galleries?page={p}&per_page=25
+ * - Today's popular (keywordless): GET /api/v2/galleries/popular (page 1 only,
+ *   94ms — same pool as `query=*&sort=popular-today` but many times faster)
+ * - Popular stream (keywordless): GET /api/v2/search?query=*&sort={sort}&page={p}
+ *   (per docs, query=* returns the whole archive; 650,000+ galleries pageable).
+ *   NOTE: `*` + time-ranged sorts take seconds server-side (popular-month
+ *   measured ~4s); the client timeout is generously sized accordingly, NO retry
+ *   (each retry burns rate-limit budget: anonymous search 10 req/min).
+ * - Search: GET /api/v2/search?query={q}&sort={sort}&page={p}
+ *   (docs: keywords, "exact phrase", -negation, artist:x, tag:x, favorites:>=X).
  */
 export function buildNHentaiApiCandidates(
   page: number,
@@ -183,7 +183,7 @@ export function buildNHentaiApiCandidates(
   const p = Math.max(1, page);
   let q = (keyword || '').trim();
 
-  // Sunucu tarafı favori (skor) filtresi: API dokümantasyonu `favorites:>=100` destekler
+  // Server-side favorite (score) filter: API docs support `favorites:>=100`
   if (minScore && minScore > 0 && !q.includes('favorites:')) {
     q = q ? `${q} favorites:>=${minScore}` : `favorites:>=${minScore}`;
   }
@@ -193,7 +193,7 @@ export function buildNHentaiApiCandidates(
       return p <= 1 ? [`${NHENTAI_API_BASE}/galleries/popular`] : [];
     }
     if (sort !== 'date') {
-      // Kelimesiz popüler akış: query=* ile tüm arşiv popülerliğe göre sayfalanır (25/sayfa)
+      // Keywordless popular stream: query=* pages the whole archive by popularity (25/page)
       return [`${NHENTAI_API_BASE}/search?query=*&sort=${sort}&page=${p}`];
     }
     return [`${NHENTAI_API_BASE}/galleries?page=${p}&per_page=25`];
@@ -205,8 +205,8 @@ export function buildNHentaiApiCandidates(
 }
 
 /**
- * v2 liste ayrıştırıcı. `num_favorites` -> score/favCount (puan = favori sayısı).
- * Görseller t1/i1 CDN'inden gelir; liste yalnız tag_id verir (adlar detayda çözülür).
+ * v2 list parser. `num_favorites` -> score/favCount (score equals the favorite count).
+ * Images come from the t1/i1 CDN; the list only gives tag_ids (names resolve in detail).
  */
 export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): BooruPost[] {
   const posts: BooruPost[] = [];
@@ -227,12 +227,12 @@ export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): Bo
       const thumb = thumbPath.startsWith('http')
         ? thumbPath
         : `${NHENTAI_API_THUMB_BASE}/${thumbPath.replace(/^\//, '')}`;
-      // Uzantı CDN'de korunur (thumb.webp vs thumb.jpg) — 1. sayfa URL'si
-      // sabit .webp olursa jpg galerilerde 404 veriyor (canlı doğrulandı).
+      // The extension is preserved on the CDN (thumb.webp vs thumb.jpg) — the page-1 URL
+      // gives a 404 on jpg galleries if hardcoded to .webp (verified live).
       const extMatch = thumb.match(/\.(jpg|jpeg|png|webp|gif)(?:\?|$)/i);
       const ext = (extMatch ? extMatch[1].toLowerCase() : 'webp').replace('jpeg', 'jpg');
-      // Yedek kapak farklı host'tan (t2): birincil CDN hostu kesilirse
-      // PostCard'in thumb->cover fallback'i yine de görsel getirir.
+      // Fallback cover from a different host (t2): if the primary CDN host is down,
+      // PostCard's thumb->cover fallback still brings an image.
       const cover = thumb
         .replace(/\/thumb\./i, '/cover.')
         .replace(NHENTAI_API_THUMB_BASE, NHENTAI_API_THUMB_FALLBACK_BASE);
@@ -266,14 +266,14 @@ export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): Bo
       });
     }
   } catch (e) {
-    console.warn('[nhentai] v2 JSON parse hatası:', e);
+    console.warn('[nhentai] v2 JSON parse error:', e);
   }
   return posts;
 }
 
 /**
- * Galeri detay JSON'undan (v2: /api/v2/galleries/{id}) manganın TÜM sayfa
- * URL'lerini çıkarır. v1 JSON (`images.pages`) geriye uyumlu olarak desteklenir.
+ * Extracts ALL page URLs of a manga from gallery detail JSON (v2: /api/v2/galleries/{id}).
+ * v1 JSON (`images.pages`) is supported for backward compatibility.
  */
 export function parseNHentaiGalleryPages(
   raw: string,
@@ -321,11 +321,11 @@ export interface NHentaiResolvedGallery {
   tags: BooruTagGroups;
   allTags: string[];
   pageCount: number;
-  /** v2 detaydan gelen favori sayısı (skor); yoksa undefined */
+  /** Favorite count from v2 detail (score); undefined if absent */
   numFavorites?: number;
 }
 
-/** v2 detay JSON'undan etiket gruplarını ayıklar (adlar + tipler gelir). */
+/** Extracts tag groups from v2 detail JSON (names + types are included). */
 export function parseNHentaiV2DetailTags(jsonText: string): { tags: BooruTagGroups; allTags: string[]; numFavorites: number } {
   const tags: BooruTagGroups = { artist: [], character: [], copyright: [], general: [], meta: ['manga'] };
   const allTags: string[] = [];
@@ -353,8 +353,8 @@ export function parseNHentaiV2DetailTags(jsonText: string): { tags: BooruTagGrou
 }
 
 /**
- * nhentai galeri detayını (sayfalar + etiketler + favori sayısı) doğrudan
- * resmi v2 API'den (https://nhentai.net/api/v2/docs) çözer.
+ * Resolves nhentai gallery detail (pages + tags + favorite count) directly
+ * from the official v2 API (https://nhentai.net/api/v2/docs).
  */
 export async function resolveNHentaiGalleryDetail(
   post: { id?: string; sourceLink?: string; mediaId?: string; pageCount?: number; fileExt?: string },
@@ -388,7 +388,7 @@ export async function resolveNHentaiGalleryDetail(
     }
   };
 
-  // 1. Resmi v2 API detay: GET /api/v2/galleries/{id}
+  // 1. Official v2 API detail: GET /api/v2/galleries/{id}
   const v2Text = await fetchWithTimeout(`${NHENTAI_API_BASE}/galleries/${rawId}`, 12000);
   if (v2Text) {
     const pages = parseNHentaiGalleryPages(v2Text, rawId);
@@ -404,7 +404,7 @@ export async function resolveNHentaiGalleryDetail(
     }
   }
 
-  // 2. Ağ hatası durumunda sentetik CDN güvenlik ağı (i1.nhentai.net)
+  // 2. Synthetic CDN safety net on network failure (i1.nhentai.net)
   if (post.mediaId && post.pageCount && post.pageCount > 0) {
     const ext = (post.fileExt || 'webp').toLowerCase().replace('jpeg', 'jpg');
     const synthetic: string[] = [];
@@ -418,7 +418,7 @@ export async function resolveNHentaiGalleryDetail(
 }
 
 /**
- * nhentai manga sayfalarını çözer (MangaReaderView için geriye uyumlu).
+ * Resolves nhentai manga pages (backward compatible for MangaReaderView).
  */
 export async function resolveNHentaiPages(
   post: { id?: string; sourceLink?: string; mediaId?: string; pageCount?: number },
@@ -429,7 +429,7 @@ export async function resolveNHentaiPages(
 }
 
 /**
- * Popüler nhentai etiketleri ve terimleri (arama çubuğunda anlık otomatik tamamlama).
+ * Popular nhentai tags and terms (instant autocomplete in the search bar).
  */
 const COMMON_NHENTAI_TAGS: Array<{ name: string; category: TagCategory; postCount: number }> = [
   // Parodies (Copyright)
@@ -494,7 +494,7 @@ const COMMON_NHENTAI_TAGS: Array<{ name: string; category: TagCategory; postCoun
   { name: 'color', category: 'meta', postCount: 16000 },
 ];
 
-/** v2 etiket tipi -> uygulama kategorisi */
+/** v2 tag type -> app category */
 function nhentaiTagCategory(type: string): TagCategory {
   switch (type.toLowerCase()) {
     case 'artist':
@@ -513,9 +513,9 @@ function nhentaiTagCategory(type: string): TagCategory {
 }
 
 /**
- * v2 etiket araması (resmi POST /api/v2/tags/search endpoint'i).
- * Tek çağrıda tüm türleri (parody, character, artist, group, tag) gerçek gönderi
- * sayılarıyla döner.
+ * v2 tag search (official POST /api/v2/tags/search endpoint).
+ * Returns all types (parody, character, artist, group, tag) in a single call
+ * with real post counts.
  */
 export async function searchNHentaiApiTags(
   query: string,
@@ -554,8 +554,8 @@ export async function searchNHentaiApiTags(
 }
 
 /**
- * nhentai etiket araması / otomatik tamamlama.
- * Sıra: yerel havuz (anında) -> resmi v2 POST /api/v2/tags/search.
+ * nhentai tag search / autocomplete.
+ * Order: local pool (instant) -> official v2 POST /api/v2/tags/search.
  */
 export async function searchNHentaiTags(
   query: string,
@@ -567,7 +567,7 @@ export async function searchNHentaiTags(
   const results: BooruTagSuggestion[] = [];
   const seen = new Set<string>();
 
-  // 1. Yerel hızlı eşleşme (anında yanıt)
+  // 1. Local fast match (instant response)
   for (const tag of COMMON_NHENTAI_TAGS) {
     if (tag.name.toLowerCase().includes(q)) {
       results.push(tag);
@@ -576,7 +576,7 @@ export async function searchNHentaiTags(
     }
   }
 
-  // 2. Resmi v2 API etiket araması (POST /api/v2/tags/search)
+  // 2. Official v2 API tag search (POST /api/v2/tags/search)
   if (results.length < limit) {
     const apiResults = await searchNHentaiApiTags(q, limit);
     for (const r of apiResults) {
@@ -591,10 +591,10 @@ export async function searchNHentaiTags(
 }
 
 /**
- * Tam sayfa CDN host rotasyonu. Bazı ağlar tekil hostları engeller/çözemez
- * (cihazda doğrulandı: i1 ölü, i2/i3 yaşıyor). Sayfa hatasında sıradaki host
- * denenir; liste biterse null (vazgeç).
- * Sıralama i3 önden: i1/i2 bazı ağlarda engelli, i3 en geniş erişilebilir olandır.
+ * Full-page CDN host rotation. Some networks block/fail to resolve individual hosts
+ * (verified on device: i1 dead, i2/i3 alive). On a page error the next host
+ * is tried; null when the list is exhausted (give up).
+ * i3 goes first: i1/i2 are blocked on some networks, i3 is the most widely reachable.
  */
 export const NHENTAI_API_IMAGE_HOSTS = [
   'https://i3.nhentai.net',

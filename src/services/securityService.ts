@@ -18,7 +18,7 @@ const DEFAULT_CONFIG: SecurityConfig = {
   autoLockImmediately: true,
 };
 
-export type BiometryType = 'Face ID' | 'Touch ID' | 'Parmak İzi' | 'Biyometrik';
+export type BiometryType = 'Face ID' | 'Touch ID' | 'Fingerprint' | 'Biometric';
 
 export const SecurityService = {
   /**
@@ -139,7 +139,7 @@ export const SecurityService = {
         } else if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) {
           biometryType = 'Touch ID';
         } else if (types.length > 0) {
-          biometryType = 'Biyometrik';
+          biometryType = 'Biometric';
         }
       }
 
@@ -161,7 +161,7 @@ export const SecurityService = {
    * Prompt biometric authentication (Face ID / Touch ID)
    */
   async authenticateWithBiometrics(
-    promptMessage: string = 'Uygulamanın kilidini açmak için doğrulayın'
+    promptMessage: string = 'Verify to unlock the app'
   ): Promise<boolean> {
     try {
       const status = await this.getBiometricStatus();
@@ -171,8 +171,8 @@ export const SecurityService = {
 
       const result = await LocalAuthentication.authenticateAsync({
         promptMessage,
-        cancelLabel: 'Passcode Kullan',
-        fallbackLabel: 'Passcode ile Aç',
+        cancelLabel: 'Use Passcode',
+        fallbackLabel: 'Open with Passcode',
         disableDeviceFallback: true, // We have our own custom PIN pad fallback
       });
 

@@ -2,8 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
+  Platform,
   RefreshControl,
   ScrollView,
+  type ScrollViewInstance,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -14,30 +16,27 @@ import { Layers, RefreshCw, AlertCircle, Flame } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { booruApi } from '../services/booruApi';
-import { BooruPost, BooruSource, DEFAULT_FILTER_CONFIG, HentaiHavenFeedSection, SearchFilterConfig, RedGifsTrendingTag } from '../types/booru';
+import { BooruPost, BooruSource, DEFAULT_FILTER_CONFIG, SearchFilterConfig, RedGifsTrendingTag } from '../types/booru';
 import { PostCard } from '../components/PostCard';
 import { TagChip } from '../components/TagChip';
+import { SourceSheet } from '../components/SourceSheet';
 import { pushViewer, pushSearchDetail } from '../navigation/rootNavigation';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
-import { getMediaHeaders, getMediaUrl, isVideoPost } from '../utils/media';
+import { getMediaHeaders, getMediaUrl, isImageMediaUrl } from '../utils/media';
 import { useVisibleIds, useMountedIds, useFocusedCardIds, CardLayout } from '../utils/gridVisibility';
 import { useSource } from '../context/SourceContext';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { StorageService, FeedOrder } from '../services/storage';
-import { HENTAIHAVEN_FEED_SECTIONS } from '../services/hentaihavens';
+import { getSourceQuickFilters, isQuickFilterActive, normalizeFeedQuickFilter } from '../utils/sourceQuickFilters';
 import { updateFreezeProbe } from '../utils/freezeProbe';
+import { getPostKey } from '../utils/postIdentity';
+import { getGridPreviewVideoCandidates } from '../utils/gridPreviewMedia';
+import { useScrollAwayHeader } from '../utils/scrollAwayHeader';
+import { ScrollAwayHeader } from '../components/ScrollAwayHeader';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
-
-/** Keşfet sırası seçenekleri. RedGifs order=değerlerine birebir karşılık gelir. */
-const FEED_ORDER_OPTIONS: { key: string; label: string; order: FeedOrder }[] = [
-  { key: 'trending', label: 'Trend', order: { sortBy: 'default', timeRange: 'all' } },
-  { key: 'latest', label: 'En Yeni', order: { sortBy: 'id', timeRange: 'all' } },
-  { key: 'top7', label: 'Haftalık Top', order: { sortBy: 'score', timeRange: '1w' } },
-  { key: 'top28', label: 'Aylık Top', order: { sortBy: 'score', timeRange: '1m' } },
-];
 
 function feedOrderKey(order: FeedOrder): string {
   return `${order.sortBy}|${order.timeRange}|${order.hentaiHavenSection ?? ''}`;
@@ -58,16 +57,22 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 }) => {
   const hookNavigation = useNavigation<any>();
   const navigation = propNavigation ?? hookNavigation;
+  const [isSourceSheetOpen, setIsSourceSheetOpen] = useState(false);
+
+  const handleManageSources = () => {
+    setIsSourceSheetOpen(false);
+    navigation?.navigate?.('Settings', { section: 'sources' });
+  };
 
   const handleOpenSourcePicker = () => {
     if (onOpenSourcePicker) {
       onOpenSourcePicker();
-    } else if (navigation?.navigate) {
-      navigation.navigate('Settings');
+    } else {
+      setIsSourceSheetOpen(true);
     }
   };
 
-  const showSourcePicker = Boolean(onOpenSourcePicker) || Boolean(navigation?.navigate);
+  const showSourcePicker = true;
   const { activeSource: contextSource } = useSource();
   const activeSource = propSource ?? contextSource;
   const insets = useSafeAreaInsets();
@@ -78,15 +83,25 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
-  // Keşfet sırası: yalnız RedGifs'te seçilebilir (order parametresi orada anlamlı)
-  const [feedOrder, setFeedOrder] = useState<FeedOrder>(FEED_ORDER_OPTIONS[0].order);
-  // RedGifs trend etiketleri: sabit trending akışına çeşitlilik katan satır
+  const [feedOrder, setFeedOrder] = useState<FeedOrder>({ sortBy: 'default', timeRange: 'all' });
+  // RedGifs trending tags: row adding variety to the fixed trending feed
   const [trendingTags, setTrendingTags] = useState<RedGifsTrendingTag[]>([]);
   const isFocused = useIsFocused();
   const mediaAllowed = useMediaPlaybackAllowed();
   const isRedGifs = activeSource.type === 'redgifs';
-  const isHentaiHaven = activeSource.type === 'hentaihaven';
-  const feedKey = `${activeSource.id}|${feedOrderKey(feedOrder)}`;
+  const feedOptions = getSourceQuickFilters(activeSource, 'feed');
+  // A global saved RedGifs/HH preset must not leak into another provider.
+  const normalizedOrder = normalizeFeedQuickFilter(activeSource, feedOrder);
+  const selectedOrder: FeedOrder = {
+    sortBy: normalizedOrder.sortBy ?? 'default', timeRange: normalizedOrder.timeRange ?? 'all',
+    hentaiHavenSection: normalizedOrder.hentaiHavenSection,
+  };
+  const feedKey = `${activeSource.id}|${feedOrderKey(selectedOrder)}`;
+  const header = useScrollAwayHeader({
+    enabled: !loading && !error && posts.length > 0,
+    resetKey: feedKey,
+    pinned: !isFocused || refreshing || isSourceSheetOpen,
+  });
   const feedKeyRef = useRef(feedKey);
   feedKeyRef.current = feedKey;
   const requestIdRef = useRef(0);
@@ -109,19 +124,19 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
     };
   }, [isRedGifs, activeSource.id]);
 
-  // Video kapaklar sadece ekrandayken oynar (kasılmayı önler)
+  // Video covers play only while on screen (prevents stutter)
   const [visibleIds, updateVisible] = useVisibleIds();
-  // Odaklı oyuncu mimarisi: ekrandaki merkeze en yakın 2-4 kart video açar
+  // Focused-player architecture: the 2-4 cards nearest the on-screen center play video
   const [focusedIds, updateFocused] = useFocusedCardIds(80, 4);
-  // Mount penceresi: uzak kartlar yer tutucuya düşer, oyuncu/timer/resim bırakır.
-  // null = henüz hesaplanmadı (ilk boya), tüm kartlar render edilir.
+  // Mount window: distant cards fall back to placeholders, releasing player/timer/image.
+  // null = not computed yet (first paint), all cards render.
   const [mountedIds, updateMounted] = useMountedIds();
 
-  // Kapağa dönünce fav setini tazele — viewer'da favlanan anında rozetlenir
+  // Refresh the fav set when returning to the cover — faved items badge instantly in viewer
   useEffect(() => {
     if (isFocused) {
       StorageService.getFavorites().then((favs) => {
-        setFavoriteIds(new Set(favs.map((p) => p.id)));
+        setFavoriteIds(new Set(favs.map(getPostKey)));
       });
     }
   }, [isFocused]);
@@ -139,29 +154,28 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
         const feedFilter: SearchFilterConfig = {
           ...DEFAULT_FILTER_CONFIG,
-          sortBy: feedOrder.sortBy,
-          timeRange: feedOrder.timeRange,
-          hentaiHavenSection: feedOrder.hentaiHavenSection,
+          ...selectedOrder,
         };
-        const newPosts = await booruApi.fetchPosts(pageNum, 24, '', feedFilter);
-        // Kaynak/sıra değişirken biten eski istek yeni listenin üstüne yazamaz.
+        const queryTags = booruApi.buildQueryTags(feedFilter, activeSource);
+        const newPosts = await booruApi.fetchPosts(pageNum, 24, queryTags, feedFilter, activeSource);
+        // A stale request finishing during a source/order change must not overwrite the new list.
         if (!isCurrent()) return;
 
-        // 429/boş sayfada sessizce dur: footer loader takılı kalmasın
+        // Stop quietly on 429/empty pages: keep the footer loader from sticking
         if (newPosts.length === 0 && pageNum > 1) {
           hasMoreRef.current = false;
           return;
         }
 
-        // Pre-warm: grid'in okuyacağı AYNI entry (getMediaUrl + URL key).
-        // prefetch cacheKey desteklemez, o yüzden grid de URL key kullanır.
-        // MP4 kapaklar video yoldan yüklenir; Image.prefetch boşa indirme yapmasın.
+        // Pre-warm: the SAME entry the grid will read (getMediaUrl + URL key).
+        // prefetch does not support cacheKey, so the grid uses the URL key too.
+        // Video/archive URLs cannot warm an image cache.
         newPosts.slice(0, 10).forEach((p) => {
           const raw = p.previewUrl || p.sampleUrl;
-          if (raw && /\.mp4($|\?)/i.test(raw.split('?')[0])) return;
+          if (!isImageMediaUrl(raw)) return;
           const u = getMediaUrl(raw);
           if (u) {
-            Image.prefetch(u, { headers: getMediaHeaders(u) });
+            Image.prefetch(u, { headers: getMediaHeaders(u) }).catch(() => {});
           }
         });
 
@@ -179,9 +193,9 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
       } catch (err: any) {
         if (!isCurrent()) return;
         console.warn('[FeedScreen] loadPosts error:', err);
-        // Sayfa yalnız başarıda ilerler; hata sonrası aynı sayfa denenebilir.
+        // The page advances only on success; the same page can be retried after an error.
         if (pageNum === 1) {
-          setError(err?.message || 'Görseller yüklenirken bir hata oluştu.');
+          setError(err?.message || 'An error occurred while loading images.');
         }
       } finally {
         if (isCurrent()) {
@@ -192,14 +206,16 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
         }
       }
     },
-    [feedOrder, feedKey]
+    [feedKey]
   );
 
-  const scrollViewRef = useRef<ScrollView>(null);
+  const scrollViewRef = useRef<ScrollViewInstance>(null);
   const scrollOffsetRef = useRef(0);
-  // Kaynak veya sıra değiştiyse baştan yükle. Saklanan sıra async okunduğu
-  // için "hazır" olmadan ilk istek atılmaz (aksi halde her açılışta Trend
-  // yüklenip kullanıcının tercihi ikinci turda gelirdi).
+  const gridTopRef = useRef(0);
+  const viewportHeightRef = useRef(SCREEN_HEIGHT);
+  // Reload from scratch when the source or order changes. The stored order is read
+  // async, so no first request fires before it is "ready" (otherwise every launch
+  // would load Trending and the user preference would arrive on the second round).
   const [feedOrderReady, setFeedOrderReady] = useState(false);
 
   useEffect(() => {
@@ -211,7 +227,6 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
   useEffect(() => {
     if (!feedOrderReady) return;
-    booruApi.resetFeedSeen();
     postsRef.current = [];
     setPosts([]);
     setPage(1);
@@ -223,26 +238,18 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   }, [feedKey, feedOrderReady]);
 
   const handleSelectOrder = (order: FeedOrder) => {
-    if (feedOrderKey(order) === feedOrderKey(feedOrder)) return;
+    if (feedOrderKey(order) === feedOrderKey(selectedOrder)) return;
     Haptics.selectionAsync();
-    setFeedOrder(order);
-    StorageService.setFeedOrder(order);
-  };
-
-  const handleSelectHentaiHavenSection = (section: HentaiHavenFeedSection) => {
-    if (feedOrder.hentaiHavenSection === section && feedOrder.sortBy === 'default') return;
-    Haptics.selectionAsync();
-    const order: FeedOrder = { sortBy: 'default', timeRange: 'all', hentaiHavenSection: section };
     setFeedOrder(order);
     StorageService.setFeedOrder(order);
   };
 
   const handleRefresh = async () => {
+    header.reset();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRefreshing(true);
     setPage(1);
     scrollOffsetRef.current = 0;
-    booruApi.resetFeedSeen();
     await loadPosts(1, true);
   };
 
@@ -260,15 +267,15 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
     return layoutMeasurement.height + contentOffset.y >= contentSize.height - 900;
   };
 
-  // Yükseklik dengeli masonry: her kart o an kısa olan sütuna gider.
-  // İki sütun aynı hizada biter; kısa sütun altında ölü boşluk kalmaz,
-  // kullanıcı boşlukta kaydırıp dibi beklemek zorunda kalmaz.
-  // (Greedy deterministiktir: yeni sayfa eklenince eski atamalar değişmez.)
+  // Height-balanced masonry: each card goes to the currently shorter column.
+  // Both columns end level; no dead space remains under the short column,
+  // so the user never scrolls through emptiness waiting for the bottom.
+  // (Greedy is deterministic: adding a new page never reshuffles old assignments.)
   const leftColumn: BooruPost[] = [];
   const rightColumn: BooruPost[] = [];
   const layoutMap = new Map<string, CardLayout>();
   {
-    const colW = (SCREEN_WIDTH - 36) / 2; // PostCard ile aynı genişlik
+    const colW = (SCREEN_WIDTH - 36) / 2; // same width as PostCard
     let leftH = 0;
     let rightH = 0;
     posts.forEach((post) => {
@@ -291,7 +298,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const playableIds = React.useMemo(() => {
     const set = new Set<string>();
     posts.forEach((p) => {
-      if (p.previewVideoUrl || isVideoPost(p) || p.fileExt === 'mp4' || p.fileExt === 'webm') {
+      if (getGridPreviewVideoCandidates(p, Platform.OS).length > 0) {
         set.add(p.id);
       }
     });
@@ -299,24 +306,32 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   }, [posts]);
   const playableIdsRef = useRef(playableIds);
   playableIdsRef.current = playableIds;
+  const lastGridUpdateRef = useRef(0);
+  const updateGridViewport = useCallback((immediate = false) => {
+    const covered = header.occlusionRef.current;
+    const offset = scrollOffsetRef.current - gridTopRef.current + covered;
+    const height = Math.max(0, viewportHeightRef.current - covered);
+    updateVisible(layoutMapRef.current, offset, height);
+    updateMounted(layoutMapRef.current, offset, height);
+    updateFocused(layoutMapRef.current, offset, height, playableIdsRef.current, immediate);
+  }, [updateVisible, updateMounted, updateFocused]);
 
-  // Liste değişince ilk ekranın videoları hemen oynasın
+  // Play the first screen's videos immediately when the list changes
   useEffect(() => {
-    updateVisible(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT);
-    updateMounted(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT);
-    updateFocused(layoutMapRef.current, scrollOffsetRef.current, SCREEN_HEIGHT, playableIdsRef.current, true);
+    updateGridViewport(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [posts]);
+  }, [posts, header.height, header.enabled]);
 
   const handleCardPress = useCallback((post: BooruPost) => {
     const idx = posts.findIndex((p) => p.id === post.id);
     if (idx >= 0) {
-      pushViewer(posts, idx, [], undefined);
+      pushViewer(posts, idx, [], undefined, activeSource);
     }
-  }, [posts]);
+  }, [posts, activeSource]);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
+      <ScrollAwayHeader controller={header} top={insets.top}>
       {/* Top Header */}
       <View style={styles.header}>
         <TouchableOpacity
@@ -325,14 +340,16 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
             scrollViewRef.current?.scrollTo({ y: 0, animated: true });
           }}
         >
-          <Text style={styles.headerTitle}>Keşfet</Text>
+          <Text style={styles.headerTitle}>Explore</Text>
           <Text style={styles.headerSubtitle}>
-            {isRedGifs ? 'Video klipleri ve animasyonlar' : 'En yeni anime ve çizimler'}
+            {isRedGifs ? 'Video clips and animations' : 'Latest anime and illustrations'}
           </Text>
         </TouchableOpacity>
 
         {showSourcePicker && (
           <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={`Current source: ${activeSource.name}. Change source`}
             activeOpacity={0.8}
             onPress={() => {
               Haptics.selectionAsync();
@@ -348,22 +365,24 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
         )}
       </View>
 
-      {/* HentaiHaven bölüm seçici: En Yeni (sayfalı) + Trend/Son Bölümler/Türler (home/genre) */}
-      {isHentaiHaven && (
+      {/* Source-aware order presets. A single Discover choice is not a filter. */}
+      {feedOptions.length > 1 && (
         <View style={styles.orderBar}>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.orderBarContent}
           >
-            {HENTAIHAVEN_FEED_SECTIONS.map((opt) => {
-              const activeSection = feedOrder.hentaiHavenSection ?? 'latest';
-              const isSelected = activeSection === opt.key;
+            {feedOptions.map((opt) => {
+              const isSelected = isQuickFilterActive(opt, selectedOrder);
               return (
                 <TouchableOpacity
-                  key={opt.key}
+                  key={opt.id}
+                  accessibilityRole="button"
+                  accessibilityLabel={opt.label}
+                  accessibilityState={{ selected: isSelected }}
                   style={[styles.orderChip, isSelected && styles.orderChipActive]}
-                  onPress={() => handleSelectHentaiHavenSection(opt.key)}
+                  onPress={() => handleSelectOrder({ sortBy: opt.patch.sortBy ?? 'default', timeRange: opt.patch.timeRange ?? 'all', hentaiHavenSection: opt.patch.hentaiHavenSection })}
                   activeOpacity={0.7}
                 >
                   <Text style={[styles.orderChipText, isSelected && styles.orderChipTextActive]}>
@@ -375,39 +394,12 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           </ScrollView>
         </View>
       )}
-      {/* Sıra seçici: yalnız RedGifs'te anlamlı (order= trending/latest/top7/top28) */}
-      {isRedGifs && (
-        <View style={styles.orderBar}>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.orderBarContent}
-          >
-            {FEED_ORDER_OPTIONS.map((opt) => {
-              const isSelected = feedOrderKey(opt.order) === feedOrderKey(feedOrder);
-              return (
-                <TouchableOpacity
-                  key={opt.key}
-                  style={[styles.orderChip, isSelected && styles.orderChipActive]}
-                  onPress={() => handleSelectOrder(opt.order)}
-                  activeOpacity={0.7}
-                >
-                  <Text style={[styles.orderChipText, isSelected && styles.orderChipTextActive]}>
-                    {opt.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-        </View>
-      )}
-
-      {/* Trend etiketleri: günlük değişen sıcak aramalar, tek dokunuşla akışa */}
+      {/* Trending tags: daily hot searches, one tap to feed */}
       {isRedGifs && trendingTags.length > 0 && (
         <View style={styles.trendingBar}>
           <View style={styles.trendingHeaderRow}>
             <Flame size={13} color={GOLD_ACCENT} />
-            <Text style={styles.trendingHeaderText}>Trend Etiketler</Text>
+            <Text style={styles.trendingHeaderText}>Trending Tags</Text>
           </View>
           <ScrollView
             horizontal
@@ -422,27 +414,28 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                 size="sm"
                 onPress={(name) => {
                   Haptics.selectionAsync();
-                  pushSearchDetail([name]);
+                  pushSearchDetail([name], undefined, activeSource);
                 }}
               />
             ))}
           </ScrollView>
         </View>
       )}
+      </ScrollAwayHeader>
 
       {/* Main Content */}
       {loading ? (
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color={Colors.dark.primary} />
-          <Text style={styles.loadingText}>Gönderiler getiriliyor...</Text>
+          <Text style={styles.loadingText}>Loading posts...</Text>
         </View>
       ) : error ? (
         <View style={styles.centerContainer}>
           <AlertCircle size={44} color={Colors.dark.danger} />
-          <Text style={styles.errorTitle}>Bağlantı Hatası</Text>
+          <Text style={styles.errorTitle}>Connection Error</Text>
           <Text style={styles.errorText}>
             {error.includes('certificate') || error.includes('timed out')
-              ? `${activeSource.name} kaynağına internet servis sağlayıcısı veya SSL engeli nedeniyle ulaşılamadı.`
+              ? `Could not reach the ${activeSource.name} source due to ISP or SSL blocking.`
               : error}
           </Text>
           <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
@@ -454,11 +447,13 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
               }}
             >
               <RefreshCw size={16} color="#FFFFFF" />
-              <Text style={styles.retryText}>Tekrar Dene</Text>
+              <Text style={styles.retryText}>Retry</Text>
             </TouchableOpacity>
 
             {showSourcePicker && (
               <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel="Change source"
                 style={[
                   styles.retryButton,
                   {
@@ -474,7 +469,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
               >
                 <Layers size={16} color={Colors.dark.primaryLight} />
                 <Text style={[styles.retryText, { color: Colors.dark.text }]}>
-                  Kaynak Değiştir
+                  Change Source
                 </Text>
               </TouchableOpacity>
             )}
@@ -484,7 +479,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
         <ScrollView
           ref={scrollViewRef}
           style={styles.scrollView}
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[styles.scrollContent, header.enabled && { paddingTop: header.height + 12 }]}
           showsVerticalScrollIndicator={false}
           maintainVisibleContentPosition={{
             minIndexForVisible: 0,
@@ -496,32 +491,27 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
               tintColor={Colors.dark.primary}
             />
           }
-          onScroll={({ nativeEvent }) => {
+          onScroll={(event) => {
+            const changed = header.onScroll(event);
+            const { nativeEvent } = event;
             scrollOffsetRef.current = nativeEvent.contentOffset.y;
-            updateVisible(
-              layoutMapRef.current,
-              nativeEvent.contentOffset.y,
-              nativeEvent.layoutMeasurement.height
-            );
-            updateMounted(
-              layoutMapRef.current,
-              nativeEvent.contentOffset.y,
-              nativeEvent.layoutMeasurement.height
-            );
-            updateFocused(
-              layoutMapRef.current,
-              nativeEvent.contentOffset.y,
-              nativeEvent.layoutMeasurement.height,
-              playableIdsRef.current
-            );
+            viewportHeightRef.current = nativeEvent.layoutMeasurement.height;
+            const now = Date.now();
+            if (changed || now - lastGridUpdateRef.current >= 100) {
+              lastGridUpdateRef.current = now;
+              updateGridViewport(changed);
+            }
             if (isCloseToBottom(nativeEvent)) {
               handleLoadMore();
             }
           }}
-          scrollEventThrottle={100}
+          onMomentumScrollEnd={() => updateGridViewport(true)}
+          onScrollEndDrag={() => updateGridViewport(true)}
+          onLayout={({ nativeEvent }) => { viewportHeightRef.current = nativeEvent.layout.height; updateGridViewport(true); }}
+          scrollEventThrottle={32}
         >
           {/* 2-Column Masonry Grid */}
-          <View style={styles.gridContainer}>
+          <View style={styles.gridContainer} onLayout={({ nativeEvent }) => { gridTopRef.current = nativeEvent.layout.y; updateGridViewport(true); }}>
             <View style={styles.column}>
               {leftColumn.map((post) =>
                 mountedIds && !mountedIds.has(post.id) ? (
@@ -536,7 +526,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                     onPress={handleCardPress}
                     favoriteIds={favoriteIds}
                     column="left"
-                    screenActive={isFocused && mediaAllowed}
+                    screenActive={isFocused && mediaAllowed && !isSourceSheetOpen}
                     videoActive={focusedIds.has(post.id)}
                     onScreen={visibleIds.has(post.id)}
                   />
@@ -557,7 +547,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                     onPress={handleCardPress}
                     favoriteIds={favoriteIds}
                     column="right"
-                    screenActive={isFocused && mediaAllowed}
+                    screenActive={isFocused && mediaAllowed && !isSourceSheetOpen}
                     videoActive={focusedIds.has(post.id)}
                     onScreen={visibleIds.has(post.id)}
                   />
@@ -570,13 +560,18 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           {loadingMore && (
             <View style={styles.footerLoader}>
               <ActivityIndicator size="small" color={Colors.dark.primary} />
-              <Text style={styles.footerText}>Daha fazla yükleniyor...</Text>
+              <Text style={styles.footerText}>Loading more...</Text>
             </View>
           )}
         </ScrollView>
       )}
 
 
+      <SourceSheet
+        visible={isSourceSheetOpen}
+        onClose={() => setIsSourceSheetOpen(false)}
+        onManage={handleManageSources}
+      />
     </View>
   );
 };
@@ -609,9 +604,9 @@ const styles = StyleSheet.create({
   sourcePill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 20,
     backgroundColor: Colors.dark.surface,
     borderWidth: 1,
@@ -619,7 +614,7 @@ const styles = StyleSheet.create({
   },
   sourceText: {
     color: Colors.dark.text,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
   },
   orderBar: {

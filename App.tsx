@@ -82,7 +82,7 @@ function MainTabsNavigator() {
         name="Feed"
         component={FeedScreen}
         options={{
-          tabBarLabel: 'Keşfet',
+          tabBarLabel: 'Explore',
           tabBarIcon: ({ color }) => <Compass size={22} color={color} />,
         }}
       />
@@ -90,7 +90,7 @@ function MainTabsNavigator() {
         name="Search"
         component={SearchScreen}
         options={{
-          tabBarLabel: 'Arama',
+          tabBarLabel: 'Search',
           tabBarIcon: ({ color }) => <Search size={22} color={color} />,
         }}
       />
@@ -98,7 +98,7 @@ function MainTabsNavigator() {
         name="Favorites"
         component={FavoritesScreen}
         options={{
-          tabBarLabel: 'Favoriler',
+          tabBarLabel: 'Favorites',
           tabBarActiveTintColor: '#FF4D4F',
           tabBarIcon: ({ color, focused }) => (
             <Heart
@@ -113,7 +113,7 @@ function MainTabsNavigator() {
         name="Settings"
         component={SettingsScreen}
         options={{
-          tabBarLabel: 'Ayarlar',
+          tabBarLabel: 'Settings',
           tabBarIcon: ({ color }) => <SlidersHorizontal size={22} color={color} />,
         }}
       />
@@ -125,11 +125,12 @@ function MainApp() {
   const { isReady: isSourceReady, activeSource } = useSource();
   const [isAppReady, setIsAppReady] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
+  const [checkingBackgroundLock, setCheckingBackgroundLock] = useState(false);
   const isForeground = useAppForeground();
 
   useEffect(() => startFreezeProbe(), []);
   useEffect(() => {
-    updateFreezeProbe({ appState: AppState.currentState, locked: isLocked, source: activeSource.id });
+    updateFreezeProbe({ appState: AppState.currentState ?? 'unknown', locked: isLocked, source: activeSource.id });
     recordFreezeEvent(`app=${AppState.currentState} locked=${isLocked} source=${activeSource.id}`);
   }, [isForeground, isLocked, activeSource.id]);
 
@@ -137,7 +138,7 @@ function MainApp() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
-    // Izgara önizleme tercihi: kartlar açılıştan itibaren doğru davransın
+    // Grid preview preference: cards behave correctly from launch
     StorageService.getGridPreviews().then(setGridPreviewsEnabled).catch(() => {});
     async function initApp() {
       try {
@@ -145,12 +146,6 @@ function MainApp() {
           proxyService.init(),
           SecurityService.isPasscodeEnabled(),
         ]);
-
-        // RedGifs her istekte geçici token ister; kaynak hazır olur olmaz
-        // ısıtılırsa Keşfet auth turunu beklemez.
-        if (activeSource.type === 'redgifs') {
-          booruApi.warmupRedGifs();
-        }
 
         if (isPasscodeSet) {
           setIsLocked(true);
@@ -162,18 +157,36 @@ function MainApp() {
     initApp();
   }, []);
 
+  useEffect(() => {
+    // The saved source is restored asynchronously, after the launch effect.
+    if (isSourceReady && activeSource.type === 'redgifs') {
+      void booruApi.warmupRedGifs();
+    }
+  }, [isSourceReady, activeSource.type]);
+
   // Listen to AppState transitions for instant auto-lock
   useEffect(() => {
+    let disposed = false;
+    let lockRequestId = 0;
     const subscription = AppState.addEventListener('change', async (nextAppState: AppStateStatus) => {
-      if (nextAppState === 'background' || nextAppState === 'inactive') {
-        const isPasscodeSet = await SecurityService.isPasscodeEnabled();
-        if (isPasscodeSet) {
-          setIsLocked(true);
+      // iOS system prompts also emit inactive. Cover content there, but don't
+      // mount a biometric lock on top of an existing system dialog.
+      if (nextAppState === 'background') {
+        const requestId = ++lockRequestId;
+        setCheckingBackgroundLock(true);
+        try {
+          const isPasscodeSet = await SecurityService.isPasscodeEnabled();
+          if (!disposed && requestId === lockRequestId && isPasscodeSet) setIsLocked(true);
+        } catch {
+          if (!disposed && requestId === lockRequestId) setIsLocked(true);
+        } finally {
+          if (!disposed && requestId === lockRequestId) setCheckingBackgroundLock(false);
         }
       }
     });
 
     return () => {
+      disposed = true;
       subscription.remove();
     };
   }, []);
@@ -193,7 +206,7 @@ function MainApp() {
       onTouchEnd={() => recordRootTouch('end')}
       onTouchCancel={() => recordRootTouch('end')}
     >
-      <MediaPlaybackContext.Provider value={isForeground && !isLocked}>
+      <MediaPlaybackContext.Provider value={isForeground && !isLocked && !checkingBackgroundLock}>
         <NavigationContainer
           ref={navigationRef}
           onReady={() => updateFreezeProbe({ route: navigationRef.getCurrentRoute()?.name || 'unknown' })}
@@ -243,6 +256,9 @@ function MainApp() {
             }}
           />
         </View>
+      )}
+      {(!isForeground || checkingBackgroundLock) && (
+        <View style={styles.lockOverlay} testID="app-privacy-cover" accessibilityViewIsModal />
       )}
     </View>
   );

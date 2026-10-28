@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useIsFocused } from '@react-navigation/native';
 import type { RootStackParamList } from '../navigation/types';
@@ -8,21 +8,24 @@ import { ImageViewerModal } from '../components/ImageViewerModal';
 import { StorageService } from '../services/storage';
 import { isVideoPost } from '../utils/media';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
+import { AVAILABLE_SOURCES } from '../services/sources';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Viewer'>;
 
 /**
- * Paylaşılan içerik görüntüleyici: Keşfet / Arama / Favoriler gridlerinden
- * push edilir. Geri kaydırma native stack gestürüdür — altta gerçek önceki
- * ekran durur, sahte underlay gerekmez. İçerikten yapılan arama yeni bir
- * SearchDetail route'u push'lar, böylece geri önce içeriğe döner.
+ * Shared content viewer: pushed from the Explore / Search / Favorites grids.
+ * Swipe-back is the native stack gesture — the real previous screen sits
+ * underneath, no fake underlay needed. A search from content pushes a new
+ * SearchDetail route, so back returns to content first.
  */
 export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
-  const { postsKey, initialIndex, originTags, originFilter } = route.params;
+  const { postsKey, initialIndex, originTags, originFilter, originSource } = route.params;
   const posts = getCachedPosts(postsKey);
   const isFocused = useIsFocused();
   const mediaAllowed = useMediaPlaybackAllowed();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
+  const closingRef = useRef(false);
+  useEffect(() => { if (isFocused) closingRef.current = false; }, [isFocused]);
 
   useEffect(() => {
     if (posts.length === 0 && navigation.canGoBack()) {
@@ -30,7 +33,7 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
     }
   }, [posts.length, navigation]);
 
-  // Kapanınca cache girişini sil — gir-çık tekrarında harita şişmez.
+  // Delete the cache entry on close — repeat visits never grow the map.
   useEffect(() => {
     return () => {
       deleteCachedPosts(postsKey);
@@ -41,23 +44,38 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
     setCurrentIndex(initialIndex);
   }, [initialIndex]);
 
-  // Fotoğrafta native geri jesti (eskisi gibi). Videoda native jest kapalı:
-  // kenar şeridi timeline'ın üzerine de uzanıp yanlış çıkış yaratıyordu;
-  // onun yerine timeline'ı dışlayan özel kenar alanı çalışır.
+  // Native back gesture for photos (as before). Disabled for videos:
+  // the edge strip also overlapped the timeline and caused accidental exits;
+  // a dedicated edge area excluding the timeline is used instead.
   const currentIsVideo = isVideoPost(posts[currentIndex]);
   useEffect(() => {
     navigation.setOptions({ gestureEnabled: !currentIsVideo });
   }, [currentIsVideo, navigation]);
 
   useEffect(() => {
-    if (posts[currentIndex]) {
+    if (isFocused && mediaAllowed && posts[currentIndex]) {
       StorageService.addRecentView(posts[currentIndex]);
     }
-  }, [currentIndex, posts]);
+  }, [currentIndex, posts, isFocused, mediaAllowed]);
+
+  const currentSourceId = posts[currentIndex]?.sourceId;
+  const source = originSource?.id === currentSourceId
+    ? originSource : AVAILABLE_SOURCES.find((item) => item.id === currentSourceId);
+  const handleClose = useCallback(() => {
+    if (!closingRef.current && navigation.canGoBack()) {
+      closingRef.current = true;
+      navigation.goBack();
+    }
+  }, [navigation]);
+  const handleTagPress = useCallback((tag: string) => pushSearchDetail([tag], originFilter, source), [originFilter, source]);
+  const handleAddTag = useCallback((tag: string) => {
+    pushSearchDetail([...(originTags ?? []), tag], originFilter, source);
+  }, [originTags, originFilter, source]);
+  const handleExcludeTag = useCallback((tag: string) => {
+    pushSearchDetail([...(originTags ?? []), tag.startsWith('-') ? tag : `-${tag}`], originFilter, source);
+  }, [originTags, originFilter, source]);
 
   if (posts.length === 0) return null;
-
-  const base = originTags ?? [];
 
   return (
     <ImageViewerModal
@@ -68,17 +86,10 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
       onIndexChange={setCurrentIndex}
       suspended={!isFocused || !mediaAllowed}
       dismissOnTagPress={false}
-      onClose={() => {
-        // Çift dokunma/kaydırma yarışında ikinci goBack boşa düşerdi.
-        if (navigation.canGoBack()) {
-          navigation.goBack();
-        }
-      }}
-      onTagPress={(tag) => pushSearchDetail([tag], originFilter)}
-      onAddTagToSearch={(tag) => pushSearchDetail([...base, tag], originFilter)}
-      onExcludeTagFromSearch={(tag) =>
-        pushSearchDetail([...base, tag.startsWith('-') ? tag : `-${tag}`], originFilter)
-      }
+      onClose={handleClose}
+      onTagPress={handleTagPress}
+      onAddTagToSearch={handleAddTag}
+      onExcludeTagFromSearch={handleExcludeTag}
     />
   );
 };

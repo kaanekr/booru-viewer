@@ -4,14 +4,16 @@ import { ImageQuality } from '../services/storage';
 import { parseXVideosFiles, XVIDEOS_BASE, XVIDEOS_UA } from '../services/xvideos';
 import { parseXhamsterDetail, XHAMSTER_BASE, XHAMSTER_UA } from '../services/xhamster';
 import { parsePornhubDetail, PORNHUB_BASE, PORNHUB_UA } from '../services/pornhub';
+import { getPostKey } from './postIdentity';
+import { urlEndsWith } from './guards';
 
 const DIMS_CACHE = new Map<string, { w: number; h: number; bytes?: number }>();
 
 /**
- * Post sayfasındaki orijinal görsel linkinden gerçek ölçüleri çözer.
- * Gelbooru liste HTML'inde boyut bilgisi yoktur (scrape 800x1000 placeholder
- * bırakır); Info modalı bu fonksiyonla gerçek WxH'yi doldurur.
- * Sonuçlar oturum boyunca cache'lenir, aynı post iki kez fetch edilmez.
+ * Resolves the real dimensions from the original-image link on the post page.
+ * The Gelbooru list HTML carries no size info (scrape leaves an 800x1000
+ * placeholder); the Info modal fills in the real WxH via this function.
+ * Results are cached for the session — the same post is never fetched twice.
  */
 export async function resolveRealDimensions(post: {
   id?: string;
@@ -22,7 +24,9 @@ export async function resolveRealDimensions(post: {
   [key: string]: any;
 } | null | undefined): Promise<{ w: number; h: number; bytes?: number } | null> {
   if (!post) return null;
-  const cacheKey = post.id || post.originalUrl || '';
+  const cacheKey = post.sourceId && post.id
+    ? getPostKey({ sourceId: post.sourceId, id: post.id })
+    : post.sourceLink || post.originalUrl || '';
   if (cacheKey && DIMS_CACHE.has(cacheKey)) return DIMS_CACHE.get(cacheKey)!;
   const pageUrl = post.sourceLink;
   if (!pageUrl || typeof pageUrl !== 'string' || !/^https?:\/\//i.test(pageUrl)) return null;
@@ -36,8 +40,8 @@ export async function resolveRealDimensions(post: {
     clearTimeout(t);
     if (!res.ok) return null;
     const html = await res.text();
-    // Dosya boyutu: post sayfasındaki orijinal linkin yanında yazar
-    // (örn. "2.4 MB", "850 KB", "1,234,567 bytes")
+    // File size: written next to the original link on the post page
+    // (e.g. "2.4 MB", "850 KB", "1,234,567 bytes")
     let foundBytes: number | undefined;
     const mbMatch = html.match(/(?:file size|size)?\s*:?\s*([\d.,]+)\s*MB\b/i);
     const kbMatch = !mbMatch && html.match(/(?:file size|size)?\s*:?\s*([\d.,]+)\s*KB\b/i);
@@ -49,8 +53,8 @@ export async function resolveRealDimensions(post: {
       if (Number.isFinite(v) && v > 0 && v < 500 * 1024) foundBytes = Math.round(v * 1024);
     }
 
-    // Gelbooru gibi sitelerde post sayfasında dosya boyutu metin olarak bulunmayabilir;
-    // Orijinal görsel URL'ine hafif bir HEAD isteği atarak Content-Length'i alıyoruz
+    // On sites like Gelbooru the post page may not carry the file size as text;
+    // a light HEAD request to the original image URL fetches the Content-Length
     if (!foundBytes && (post.originalUrl || post.sampleUrl)) {
       try {
         const rawMediaUrl = post.originalUrl || post.sampleUrl;
@@ -71,12 +75,12 @@ export async function resolveRealDimensions(post: {
           }
         }
       } catch {
-        // HEAD fallback opsiyoneldir, hata fırlatmaz
+        // HEAD fallback is optional, never throws
       }
     }
 
-    // 1) Orijinal link: .../images/<d1>/<d2>/<hash>.<ext> — boyut post sayfasında
-    //    "Size: 1456 x 2048" / "1456x2048" / image width/height attribute'ları
+    // 1) Original link: .../images/<d1>/<d2>/<hash>.<ext> — size is on the post page as
+    //    "Size: 1456 x 2048" / "1456x2048" / image width/height attributes
     const sizeMatch =
       html.match(/Size:\s*(\d{2,5})\s*[x×]\s*(\d{2,5})/i) ||
       html.match(/(\d{3,5})\s*[x×]\s*(\d{3,5})\s*(?:px)?\s*(?:<|\)|\||,)/i);
@@ -89,7 +93,7 @@ export async function resolveRealDimensions(post: {
         return dims;
       }
     }
-    // 2) Fallback: sayfadaki ana görselin width/height attribute'u
+    // 2) Fallback: width/height attributes of the main image on the page
     const imgMatch = html.match(/<img[^>]*id=["']image["'][^>]*>/i);
     if (imgMatch) {
       const wM = imgMatch[0].match(/width=["']?(\d+)/i);
@@ -173,6 +177,13 @@ export function normalizeBooruMediaUrl(url: string | undefined): string {
   let u = url.trim();
   if (u.startsWith('//')) u = 'https:' + u;
 
+  // HH's API wraps some new covers in a broken himg.nl path (404).
+  // The embedded filename lives directly under /images/ on the active CDN.
+  u = u.replace(
+    /^https?:\/\/himg\.nl\/images\/hh\/images\/([^?#]+\.(?:jpe?g|png|webp))\/s_poster\.jpg([?#].*)?$/i,
+    'https://img.hentaihaven.xxx/images/$1$2'
+  );
+
   // 1. Gelbooru CDN Fixes:
   // img1, img2, img3, video-cdn1..4, and apex gelbooru.com/thumbnails/ have broken SSL, DNS, or 404s.
   // img4.gelbooru.com is the active, valid CDN with full SSL.
@@ -184,7 +195,7 @@ export function normalizeBooruMediaUrl(url: string | undefined): string {
     u = u.replace('http://', 'https://');
   }
 
-  // 2. XHamster CDN: iOS AVPlayer av1 çözemez; h264'e normalize et
+  // 2. XHamster CDN: iOS AVPlayer can't decode av1; normalize to h264
   if (u.includes('xhcdn') || u.includes('xhamster')) {
     u = u.replace(/([._-])av1([._-])/gi, '$1h264$2').replace(/\.av1\./gi, '.h264.');
   }
@@ -193,9 +204,9 @@ export function normalizeBooruMediaUrl(url: string | undefined): string {
 }
 
 /**
- * Gets the ready-to-load media URL. Global toggle açıksa tüm trafik Worker
- * üzerinden geçer; toggle kapalıysa sadece TLS-kırılgan host'lar
- * (örn. api-cdn-mp4.rule34.xxx) worker kayıtlıysa seçici proxy'lenir.
+ * Gets the ready-to-load media URL. When the global toggle is on, all traffic
+ * goes via the Worker; when off, only TLS-fragile hosts
+ * (e.g. api-cdn-mp4.rule34.xxx) are selectively proxied if a worker is registered.
  */
 export function getMediaUrl(url: string | undefined): string {
   if (!url) return '';
@@ -204,27 +215,9 @@ export function getMediaUrl(url: string | undefined): string {
 }
 
 /**
- * Returns an expo-image compatible source object with distinct cacheKey per decode policy
- * (e.g. grid downscaled vs full original un-downscaled).
- */
-export function getMediaSource(
-  rawUrl: string | undefined,
-  purpose: 'grid' | 'sample' | 'full' = 'sample'
-): { uri: string; headers: Record<string, string>; cacheKey: string } | null {
-  if (!rawUrl) return null;
-  const url = getMediaUrl(rawUrl);
-  if (!url) return null;
-  return {
-    uri: url,
-    headers: getMediaHeaders(url),
-    cacheKey: `${url}:${purpose}`,
-  };
-}
-
-/**
- * Gelbooru/Realbooru scrape sonucunda liste küçük resmi üzerinden orijinal
- * görsel uzantısı tahmin edilemez (.jpg/.jpeg/.png/.webp CDN'e göre değişir).
- * Gerçek original URL'yi post detay sayfasından çözer (cache'li, abortable).
+ * The original image extension can't be guessed from the list thumbnail in a
+ * Gelbooru/Realbooru scrape (.jpg/.jpeg/.png/.webp varies by CDN).
+ * Resolves the real original URL from the post detail page (cached, abortable).
  */
 const ORIGINAL_RESOLVE_CACHE = new Map<string, string | null>();
 
@@ -238,7 +231,7 @@ export async function resolveGelbooruOriginalUrl(
   },
   signal?: AbortSignal
 ): Promise<string | null> {
-  // Eğer post zaten geçerli ve sample'dan farklı bir originalUrl'e sahipse fetch etme
+  // Skip the fetch if the post already has a valid originalUrl different from sample
   if (post.originalUrl && post.originalUrl !== post.sampleUrl) {
     return post.originalUrl;
   }
@@ -264,7 +257,7 @@ export async function resolveGelbooruOriginalUrl(
     if (!response.ok) throw new Error(`Post view status ${response.status}`);
     const html = await response.text();
 
-    // 1) "Original image" veya "View larger size" bağlantısını ara
+    // 1) Look for the "Original image" or "View larger size" link
     const originalLinkMatch =
       html.match(/<a\s+[^>]*href=["']([^"']+)["'][^>]*>(?:Original image|View larger size|High resolution)<\/a>/i) ||
       html.match(/<a\s+[^>]*href=["']([^"']+\/images\/[^"']+)["']/i);
@@ -274,7 +267,7 @@ export async function resolveGelbooruOriginalUrl(
       resolved = originalLinkMatch[1].replace(/&amp;/g, '&').trim();
     }
 
-    // 2) Sayfadaki /images/ dosya yollarını tara
+    // 2) Scan the page for /images/ file paths
     if (!resolved) {
       const imageUrls = Array.from(
         html.matchAll(/https?:\\?\/\\?\/[^'"\s<>]+\/images\/[^'"\s<>]+\.(?:jpe?g|png|webp|gif)(?:\?[^'"\s<>]*)?/gi),
@@ -326,7 +319,8 @@ export function getMediaHeaders(url: string | undefined): Record<string, string>
   };
   if (!url) return headers;
 
-  const target = decodeURIComponent(url);
+  let target = url;
+  try { target = decodeURIComponent(url); } catch { /* Keep malformed escaped URLs usable. */ }
 
   if (target.includes('realbooru.com')) {
     headers['Referer'] = 'https://realbooru.com/';
@@ -351,13 +345,13 @@ export function getMediaHeaders(url: string | undefined): Record<string, string>
   } else if (target.includes('hentaihaven.xxx') || target.includes('coverlanyvd.org') || target.includes('octopusmanifest.org')) {
     headers['Referer'] = 'https://hentaihaven.xxx/';
   } else if (target.includes('redgifs.com')) {
-    // RedGifs CDN (media.redgifs.com) Referer olmadan 403 dönebiliyor
+    // RedGifs CDN (media.redgifs.com) may return 403 without a Referer
     headers['Referer'] = 'https://www.redgifs.com/';
     headers['Origin'] = 'https://www.redgifs.com';
   } else if (target.includes('nhentai.net')) {
-    // v2 API + t1/i1 CDN: aynı site Referer'ı (Safari doğrudan gezinmede
-    // göndermez ama API dışı kapak isteklerinde zararsız ve bazı CF
-    // kurallarını yumuşatır)
+    // v2 API + t1/i1 CDN: same-site Referer (harmless on non-API cover
+    // requests and softens some CF rules, though Safari doesn't send it
+    // on direct navigation)
     headers['Referer'] = 'https://nhentai.net/';
   }
 
@@ -380,10 +374,10 @@ export function isUnsupportedOnIOS(url: string | undefined): boolean {
 }
 
 /**
- * XVideos detay sayfasından oynatılabilir video URL'lerini çözer
- * (setVideoUrlHigh/Low mp4 + HLS, öncelik: high → low → hls).
- * mp4 URL'leri süreli secure-token taşır; BİLİNÇLİ olarak cache'lenmez —
- * her viewer açılışında taze çözülür.
+ * Resolves playable video URLs from an XVideos detail page
+ * (setVideoUrlHigh/Low mp4 + HLS, priority: high → low → hls).
+ * mp4 URLs carry expiring secure tokens; deliberately NOT cached —
+ * resolved fresh on every viewer open.
  */
 export async function resolveXVideosVideoUrls(
   post: {
@@ -422,8 +416,8 @@ export async function resolveXVideosVideoUrls(
 }
 
 /**
- * Post'un video olup olmadığı (uzantı + URL). Viewer'da geri-jest
- * seçimi ve kenar alanı koşulu için tek kaynak.
+ * Whether a post is a video (extension + URL). Single source for the
+ * back-gesture choice and edge-area condition in the viewer.
  */
 export function isVideoPost(
   post: { fileExt?: string; originalUrl?: string; sampleUrl?: string } | null | undefined
@@ -436,8 +430,8 @@ export function isVideoPost(
 }
 
 /**
- * XHamster video linkinden tam çözünürlüklü oynatılabilir video dosyalarını çözer.
- * (mp4 + HLS, öncelik: high → low → hls).
+ * Resolves full-resolution playable video files from an XHamster video link.
+ * (mp4 + HLS, priority: high → low → hls).
  */
 export async function resolveXHamsterVideoUrls(
   post: {
@@ -476,10 +470,10 @@ export async function resolveXHamsterVideoUrls(
 }
 
 /**
- * Pornhub video linkinden oynatılabilir HLS akışlarını çözer
+ * Resolves playable HLS streams from a Pornhub video link
  * (mediaDefinitions: high → hls → low).
- * Akış URL'leri süreli token taşır; BİLİNÇLİ olarak cache'lenmez —
- * her viewer açılışında taze çözülür.
+ * Stream URLs carry expiring tokens; deliberately NOT cached —
+ * resolved fresh on every viewer open.
  */
 export async function resolvePornhubVideoUrls(
   post: {
@@ -505,9 +499,9 @@ export async function resolvePornhubVideoUrls(
     Cookie: 'accessAgeDisclaimerPH=1; accessPH=1;',
   };
 
-  // 1) Hafif embed sayfası önce (viewkey varsa), 2) tam izleme sayfası.
-  // Embed yüzlerce KB daha küçüktür: indirme + parse maliyeti düşer,
-  // video daha erken başlar. Embed'de mediaDefinitions yoksa watch'a düşülür.
+  // 1) Light embed page first (when a viewkey exists), 2) full watch page.
+  // Embed is hundreds of KB smaller: cheaper download + parse, so the
+  // video starts earlier. Falls back to watch when embed has no mediaDefinitions.
   const urls: string[] = [];
   const keyM = post.sourceLink.match(/viewkey=([a-z0-9]+)/i);
   if (keyM && keyM[1]) urls.push(`${PORNHUB_BASE}/embed/${keyM[1]}`);
@@ -530,6 +524,121 @@ export async function resolvePornhubVideoUrls(
     clearTimeout(timeout);
     return null;
   }
+}
+
+/**
+ * Normalizes Realbooru file URLs (the detail page emits `//images/`
+ * with a double slash; both forms serve, single slash is canonical).
+ */
+export function normalizeRealbooruFileUrl(url: string | undefined): string {
+  if (!url || typeof url !== 'string') return '';
+  return url
+    .replace(/&amp;/g, '&')
+    .trim()
+    .replace(/^\/\//, 'https://')
+    .replace(/^(https?:\/\/[^/]+)\/{2,}/, '$1/');
+}
+
+/**
+ * Extracts playable video files from a Realbooru post detail page.
+ * The listing carries no file extension (video-ness comes from tags),
+ * so the list scraper guesses `.mp4` — but some posts are webm-only.
+ * The detail `<video><source>` tags carry the real files (mp4 preferred).
+ * GIF posts have no `<video>` tag; their full file comes from the detail
+ * `<img>` instead (`image`).
+ */
+export function parseRealbooruDetail(html: string): { mp4: string; webm: string; image: string } {
+  const out = { mp4: '', webm: '', image: '' };
+  if (!html) return out;
+  const sourceRe = /<source\s+[^>]*src="([^"]+)"[^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = sourceRe.exec(html)) !== null) {
+    const raw = normalizeRealbooruFileUrl(m[1]);
+    if (!raw) continue;
+    const clean = raw.split('?')[0].toLowerCase();
+    if (clean.endsWith('.mp4') && !out.mp4) out.mp4 = raw;
+    else if (clean.endsWith('.webm') && !out.webm) out.webm = raw;
+    if (out.mp4 && out.webm) break;
+  }
+  if (!out.mp4 && !out.webm) {
+    const imgRe = /<img[^>]+src="([^"]*\/images\/[^"]+)"[^>]*>/gi;
+    while ((m = imgRe.exec(html)) !== null) {
+      const raw = normalizeRealbooruFileUrl(m[1]);
+      if (!raw) continue;
+      const clean = raw.split('?')[0].toLowerCase();
+      if (/\.(gif|jpe?g|png|webp)$/.test(clean)) {
+        out.image = raw;
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** mp4 first, then webm, then the full-size image (GIF posts). */
+export function selectRealbooruPlayable(files: { mp4: string; webm: string; image: string } | null | undefined): string {
+  if (!files) return '';
+  return files.mp4 || files.webm || files.image || '';
+}
+
+/**
+ * Resolves the real playable file for a Realbooru video post from its
+ * detail page. File URLs are permanent (no expiring tokens), so results
+ * are cached per post for the session.
+ */
+const REALBOORU_RESOLVE_CACHE = new Map<string, { mp4: string; webm: string; image: string }>();
+
+export async function resolveRealbooruVideoUrls(
+  post: {
+    id?: string;
+    sourceLink?: string;
+  },
+  signal?: AbortSignal
+): Promise<{ mp4: string; webm: string; image: string } | null> {
+  const detailUrl = post.sourceLink?.replace(/&amp;/gi, '&');
+  if (!detailUrl || !/^https?:\/\//i.test(detailUrl) || signal?.aborted) return null;
+  const cacheKey = detailUrl;
+  if (REALBOORU_RESOLVE_CACHE.has(cacheKey)) {
+    return REALBOORU_RESOLVE_CACHE.get(cacheKey) ?? null;
+  }
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 10000);
+  const abort = () => ctrl.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+
+  try {
+    const response = await proxyService.fetchWithFallback(detailUrl, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
+        Referer: 'https://realbooru.com/',
+        Accept: 'text/html,application/xhtml+xml',
+      },
+      signal: ctrl.signal,
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const files = parseRealbooruDetail(await response.text());
+    if (ctrl.signal.aborted) return null;
+    if (!files.mp4 && !files.webm && !files.image) {
+      return null;
+    }
+    REALBOORU_RESOLVE_CACHE.set(cacheKey, files);
+    return files;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', abort);
+  }
+}
+
+/** Known video/archive formats cannot be prefetched or rendered as an image. */
+export function isImageMediaUrl(url: string | undefined): boolean {
+  return !!url && !isUnsupportedOnIOS(url)
+    && !urlEndsWith(url, '.mp4', '.webm', '.mov', '.m4v', '.m3u8', '.mpd', '.zip');
 }
 
 /**
@@ -589,12 +698,12 @@ export function getVideoCandidates(
 }
 
 /**
- * Birincil oynatılabilir aday seçimi (viewer + testler için tek kaynak).
- * Çözülmüş orijinal URL önceliklidir ANCAK iOS'ta açılamayan bir formatsa
- * (örn. WebM) atlanır — yoksa guard listedeki oynatılabilir bir adayı görüp
- * geçerken oynatıcıya desteklenmeyen URL gider (AVFoundation -11828).
- * Hepsi desteklenmiyorsa webm döner; çağıran taraftaki webm-guard + mp4
- * yükseltme akışı devreye girer.
+ * Primary playable-candidate selection (single source for viewer + tests).
+ * The resolved original URL wins BUT is skipped when iOS can't open its
+ * format (e.g. WebM) — otherwise the guard would see a playable candidate
+ * in the list and pass while an unsupported URL reaches the player
+ * (AVFoundation -11828). Returns webm when nothing is supported; the
+ * caller's webm-guard + mp4-upgrade flow takes over.
  */
 export function selectPrimaryVideoCandidate(
   resolvedOriginalUrl: string | null | undefined,
@@ -660,8 +769,8 @@ export async function checkMp4UpgradeAvailable(
       const targetUrl = getMediaUrl(mp4Url);
       const headers = getMediaHeaders(mp4Url);
 
-      // Direkt HEAD yerine seçici fallback'li fetch: TLS-kırılgan host'ta
-      // direkt koparsa kayıtlı worker üzerinden tek seferlik tekrar dener.
+      // Selective fallback fetch instead of a direct HEAD: on a TLS-fragile
+      // host, retry once via the registered worker if the direct leg breaks.
       const response = await proxyService.fetchWithFallback(targetUrl, {
         method: 'HEAD',
         headers,
