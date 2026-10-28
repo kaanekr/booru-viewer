@@ -6,11 +6,11 @@ import { SearchScreen } from './SearchScreen';
 type Props = NativeStackScreenProps<RootStackParamList, 'SearchDetail'>;
 
 /**
- * İçerikten / gridden zincirleme açılan arama sonucu: stack'e push edilir,
- * geri gidince bir önceki içeriğe (veya gride) dönülür. Sahte history yok.
+ * Search result opened in a chain from content/grid: pushed onto the stack,
+ * going back returns to the previous content (or grid). No fake history.
  */
 export const SearchDetailScreen: React.FC<Props> = ({ route, navigation }) => {
-  const { tags, baseFilter } = route.params;
+  const { tags, baseFilter, source } = route.params;
   const [clearedTag, setClearedTag] = React.useState(false);
 
   const initialFilter = useMemo(() => {
@@ -21,6 +21,7 @@ export const SearchDetailScreen: React.FC<Props> = ({ route, navigation }) => {
 
   return (
     <SearchScreen
+      activeSource={source}
       initialTag={clearedTag ? undefined : tags.join(' ')}
       initialMode="replace"
       initialFilter={clearedTag ? undefined : initialFilter}
@@ -33,4 +34,3 @@ export const SearchDetailScreen: React.FC<Props> = ({ route, navigation }) => {
     />
   );
 };
-

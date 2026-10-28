@@ -2,18 +2,18 @@
 import { proxyService } from './proxyService';
 
 /**
- * Sex.com (https://www.sex.com) entegrasyonu - saf yardimcilar.
- * Next.js SSR: liste kartlari data-testid video-card dugumleridir.
- * - Kesfet: GET /en/videos (sayfa 1), /en/videos?page=N (N>=2)
- * - Arama: GET /en/videos?search=<kelime> (sayfa 1), /en/videos?page=N&search=<kelime>
- * - Siralama parametresi yok; kartta onizleme mp4 + sure/izlenme/kanal var.
- * - Detay: JSON-LD VideoObject -> contentUrl (HLS m3u8) + thumbnailUrl.
- * React importu YOK - node ile dogrudan test edilebilir.
+ * Sex.com (https://www.sex.com) integration - pure helpers.
+ * Next.js SSR: list cards are data-testid video-card nodes.
+ * - Discover: GET /en/videos (page 1), /en/videos?page=N (N>=2)
+ * - Search: GET /en/videos?search=<word> (page 1), /en/videos?page=N&search=<word>
+ * - No sort parameter; cards carry preview mp4 + duration/views/channel.
+ * - Detail: JSON-LD VideoObject -> contentUrl (HLS m3u8) + thumbnailUrl.
+ * No React import - can be tested directly with node.
  */
 
 export const SEXCOM_BASE = 'https://www.sex.com';
 
-/** Arama/liste HTML'i icin iPhone UA (sitenin mobil varyanti ayni markup dondurur). */
+/** iPhone UA for search/list HTML (the site's mobile variant returns the same markup). */
 export const SEXCOM_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
 
@@ -38,7 +38,7 @@ function decodeEntities(s: string): string {
     .replace(/&gt;/g, '>');
 }
 
-/** '<1K' / '2.4M' / '850' bicimi izlenme metnini sayiya cevirir (rozet/siralama icin). */
+/** Converts a '<1K' / '2.4M' / '850' style view text into a number (for badge/sorting). */
 export function parseSexComViewsCount(raw: string | undefined): number {
   if (!raw) return 0;
   const clean = decodeEntities(raw).trim().replace(/,/g, '');
@@ -52,9 +52,9 @@ export function parseSexComViewsCount(raw: string | undefined): number {
 }
 
 /**
- * Liste/arama HTML'inden kartlari cikarir. Her kart bir videodur:
- * statik kapak (images.sxccdn.com ... thumbnail.N.jpg.webp) + hover onizleme
- * mp4 (videos*.sex.com ... preview_240p.mp4) + sure + kanal + izlenme.
+ * Extracts cards from list/search HTML. Each card is one video:
+ * static cover (images.sxccdn.com ... thumbnail.N.jpg.webp) + hover preview
+ * mp4 (videos*.sex.com ... preview_240p.mp4) + duration + channel + views.
  */
 export function parseSexComListing(html: string, source: BooruSource): BooruPost[] {
   const posts: BooruPost[] = [];
@@ -94,7 +94,7 @@ export function parseSexComListing(html: string, source: BooruSource): BooruPost
     const viewsRaw = viewsM ? decodeEntities(viewsM[1]).trim() : '';
     const rateM = c.match(/>([0-9]{1,3})%<\/span>/);
     const ratingPct = rateM ? rateM[1] : '';
-    // Karttaki video etiketinde premium isareti (yoksa bilinmiyor -> dahil).
+    // Premium marker on the card's video tag (if absent, unknown -> included).
     const premiumM = c.match(/data-premium="([01])"/);
     const isPremium = premiumM ? premiumM[1] === '1' : false;
 
@@ -116,7 +116,7 @@ export function parseSexComListing(html: string, source: BooruSource): BooruPost
       previewThumbUrl: undefined,
       previewThumbs: undefined,
       sampleUrl: previewVideo || thumb,
-      // Tam dosya sureli olabilir; liste aninda gomulmez - viewer acilisinda detaydan taze cozulur.
+      // The full file may be time-limited; not embedded at list time - freshly resolved from detail when the viewer opens.
       originalUrl: '',
       width: 1280,
       height: 720,
@@ -146,13 +146,13 @@ export interface SexComFiles {
   hls: string;
   mp4: string;
   thumb: string;
-  /** contentUrl premium kilitli hosttaysa (premium-*) true: anonim oynatıcı açamaz. */
+  /** True when contentUrl sits on a premium-locked host (premium-*): the anonymous player cannot open it. */
   premium: boolean;
   title?: string;
   durationSec?: number;
 }
 
-/** 'P0Y0M0DT0H0M601S' bicimi ISO8601 sureyi saniyeye cevirir. */
+/** Converts a 'P0Y0M0DT0H0M601S' style ISO8601 duration into seconds. */
 export function parseSexComISODuration(raw: string | undefined): number | null {
   if (!raw || typeof raw !== 'string') return null;
   const m = raw.match(/T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/i);
@@ -161,9 +161,9 @@ export function parseSexComISODuration(raw: string | undefined): number | null {
 }
 
 /**
- * Video detay HTML'inden oynatilabilir dosyalari ayiklar:
- * JSON-LD VideoObject contentUrl (HLS m3u8) + thumbnailUrl; yedek olarak
- * sayfadaki video etiketi mp4'u. HLS iOS'ta native oynar.
+ * Extracts playable files from video detail HTML:
+ * JSON-LD VideoObject contentUrl (HLS m3u8) + thumbnailUrl; the page's video
+ * tag mp4 as fallback. HLS plays natively on iOS.
  */
 export function parseSexComDetail(html: string): SexComFiles {
   const out: SexComFiles = { hls: '', mp4: '', thumb: '', premium: false };
@@ -205,9 +205,9 @@ export function parseSexComDetail(html: string): SexComFiles {
 }
 
 /**
- * Premium kilitli gönderileri listeden çıkarır. sex.com'da tam dosya
- * sunulmayan videolar ızgaraya girmez; izleyiciye kalanlar ücretsizdir,
- * önizlemede takılma olursa sebep çözümleme/TLS hatasıdır (logda görünür).
+ * Removes premium-locked posts from the list. On sex.com, videos without a
+ * served full file never enter the grid; the rest are free for the viewer,
+ * and if a preview stalls the cause is a resolution/TLS error (visible in logs).
  */
 export function excludePremiumPosts<T extends { isPremium?: boolean }>(posts: T[]): T[] {
   if (!posts) return posts;
@@ -215,9 +215,9 @@ export function excludePremiumPosts<T extends { isPremium?: boolean }>(posts: T[
 }
 
 /**
- * Izleyicide calinacak URL secimi (viewer + testler icin tek kaynak):
- * premium kilitli HLS anonim oynaticida acilmaz; varsa onizleme mp4'u
- * oynar (hata kartindan iyidir). Normalde HLS, yoksa mp4.
+ * Playable URL selection for the viewer (single source for viewer + tests):
+ * premium-locked HLS does not open in the anonymous player; if present, the preview mp4
+ * plays (better than an error card). Normally HLS, else mp4.
  */
 export function selectSexComPlayable(files: SexComFiles | null): string | null {
   if (!files) return null;
@@ -226,9 +226,9 @@ export function selectSexComPlayable(files: SexComFiles | null): string | null {
 }
 
 /**
- * Video detay sayfasindan taze oynatilabilir URL'leri cozer.
- * Akis URL'leri sureli olabilir; BILINCLI olarak cache'lenmez -
- * her viewer acilisinda taze cozulur.
+ * Resolves fresh playable URLs from the video detail page.
+ * Stream URLs may be time-limited; DELIBERATELY not cached -
+ * freshly resolved on every viewer open.
  */
 export async function resolveSexComVideoUrls(
   post: { sourceLink?: string },
@@ -243,8 +243,8 @@ export async function resolveSexComVideoUrls(
   }
 
   try {
-    // Dogrudan koparsa (TLS -1200 / bot duvari) kayitli worker varsa tek
-    // seferlik oradan denenir; workersiz direktten oteye gidilemez.
+    // If the direct link breaks (TLS -1200 / bot wall), a registered worker is tried
+    // once if one exists; without a worker there is no way past the direct link.
     const response = await proxyService.fetchWithFallback(
       post.sourceLink,
       {

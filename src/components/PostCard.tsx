@@ -6,13 +6,15 @@ import { useEventListener } from 'expo';
 import * as Haptics from 'expo-haptics';
 import { BookOpen, Heart, Play, Volume2 } from 'lucide-react-native';
 import { BooruPost } from '../types/booru';
+import { getPostKey } from '../utils/postIdentity';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isUnsupportedOnIOS } from '../utils/media';
 import { urlEndsWith } from '../utils/guards';
 import { proxyService } from '../services/proxyService';
 import { GridColumn, useLoadGate } from '../utils/imageLoadGate';
 import { trackGridPlayer, recordFreezeEvent } from '../utils/freezeProbe';
-import { useGridPreviewsEnabled, markPreviewHostDead, isPreviewHostDead } from '../utils/gridPreviews';
+import { useGridPreviewsEnabled, markPreviewFailure, isPreviewBlocked, clearPreviewFailure } from '../utils/gridPreviews';
+import { getGridPreviewVideoCandidates, getGridPreviewFrames } from '../utils/gridPreviewMedia';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const COLUMN_WIDTH = (SCREEN_WIDTH - 36) / 2;
@@ -21,15 +23,15 @@ interface PostCardProps {
   post: BooruPost;
   onPress: (post: BooruPost) => void;
   showFavoriteBadge?: boolean;
-  /** Üst ekran fav ID setini verdiyse kart storage'a sormaz — anında rozet, çökme yok */
+  /** Source-qualified keys from getPostKey; no per-card storage reads. */
   favoriteIds?: Set<string>;
-  /** ScrollView iki sütunda adil yükleme için: kapı sol/sağ sırayla slot dağıtır */
+  /** For fair loading across the two ScrollView columns: the gate hands out slots left/right in turn */
   column?: GridColumn;
-  /** Yalnız odaklı/aktif kart video açar; diğer kartlar slayt/kapak modunda kalır */
+  /** Only the focused/active card opens video; other cards stay in slide/cover mode */
   videoActive?: boolean;
-  /** Kart ekranda mı? (Slayt/kare döngüsü için) */
+  /** Is the card on screen? (For the slide/frame loop) */
   onScreen?: boolean;
-  /** Sekme/stack odağı kaybolunca dokunma önizlemesi dahil tüm medya durur. */
+  /** When tab/stack focus is lost, all media stops, including touch previews. */
   screenActive?: boolean;
 }
 
@@ -54,6 +56,9 @@ const isCandidateSafe = (u: string | undefined) => {
   return true;
 };
 
+const isStaticImageCandidate = (u: string | undefined) =>
+  isCandidateSafe(u) && !urlEndsWith(u, '.mp4', '.webm', '.mov', '.m4v', '.m3u8', '.mpd', '.zip');
+
 const PostCardComponent: React.FC<PostCardProps> = ({
   post,
   onPress,
@@ -64,11 +69,12 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   onScreen,
   screenActive = true,
 }) => {
-  // Kapı açılmadan resim mount olmaz: iki sütun bağlantı slotlarını adil paylaşır
+  // Image never mounts before the gate opens: both columns share connection slots fairly
   const [canLoad, releaseSlot] = useLoadGate(column);
-  // Emniyet: kapı açılıp da onLoadEnd/onError hiç ateşlenmezse (takılan
-  // thumb, boş URI) slot sonsuza dek dolu kalır ve kuyruk kararır. 8sn'de
-  // otomatik bırak; release idempotent olduğu için erken bırakma zararsız.
+  // Safety: if the gate opens but onLoadEnd/onError never fires (stuck
+  // thumb, empty URI), the slot would stay occupied forever and the queue
+  // would stall. Release automatically after 8s; release is idempotent so
+  // early release is harmless.
   React.useEffect(() => {
     if (!canLoad) return;
     const t = setTimeout(releaseSlot, 8000);
@@ -86,127 +92,99 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     [post.fileExt, post.originalUrl, post.sampleUrl]
   );
 
-  // Grid strictly uses preview thumbnail; full is exclusively owned by the viewer
-  const primaryRaw = React.useMemo(
-    () =>
-      (isCandidateSafe(post.previewUrl) ? post.previewUrl : undefined) ||
-      (isCandidateSafe(post.sampleUrl) ? post.sampleUrl : undefined) ||
-      post.previewUrl ||
-      '',
-    [post.previewUrl, post.sampleUrl]
-  );
+  // Static cover stays cheap; automatic motion uses listing clips/samples.
+  const primaryRaw = React.useMemo(() => {
+    const candidates = [post.previewUrl, post.previewFallbackUrl, post.sampleUrl];
+    return candidates.find(isStaticImageCandidate) || candidates.find(isCandidateSafe) || '';
+  }, [post.previewUrl, post.previewFallbackUrl, post.sampleUrl]);
 
-  const fallbackRaw = React.useMemo(
-    () =>
-      (primaryRaw !== post.sampleUrl && isCandidateSafe(post.sampleUrl) ? post.sampleUrl : undefined) ||
-      '',
-    [primaryRaw, post.sampleUrl]
+  const imageFallbacks = React.useMemo(
+    () => Array.from(new Set([post.previewFallbackUrl, post.previewThumbUrl, post.sampleUrl]
+      .filter((url): url is string => !!url && url !== primaryRaw && isStaticImageCandidate(url)))),
+    [primaryRaw, post.previewFallbackUrl, post.previewThumbUrl, post.sampleUrl]
   );
 
   const initialUri = React.useMemo(() => getMediaUrl(primaryRaw), [primaryRaw]);
   const [currentUri, setCurrentUri] = React.useState<string>(initialUri);
+  const [imageFailed, setImageFailed] = React.useState(false);
   const [touchPreviewActive, setTouchPreviewActive] = React.useState(false);
   const [activeThumbIndex, setActiveThumbIndex] = React.useState(0);
 
-  const previewVideoUrl = post.previewVideoUrl;
-  // Ayarlar'daki anahtar: kapalıysa kart statik kapakta kalır, oyuncu kurulmaz.
+  // Master switch from Settings: when off the card stays on its static cover, no player is set up.
   const previewsEnabled = useGridPreviewsEnabled();
-  // iOS AVPlayer WebM açamaz (PH mediabook .webm): oynatıcıya verilirse
-  // siyah kart + AVFoundation "Cannot Open" uyarıları. iOS'ta WebM
-  // önizleme yok sayılır, kapak/slayt fallback'i devreye girer.
-  const playablePreviewUrl =
-    previewVideoUrl &&
-    !urlEndsWith(previewVideoUrl, '.jpg', '.jpeg', '.png', '.webp', '.avif', '.gif') &&
-    !(Platform.OS === 'ios' && isUnsupportedOnIOS(previewVideoUrl))
-      ? previewVideoUrl
-      : undefined;
-  const previewThumbs = post.previewThumbs;
-  const secondaryThumb = post.previewThumbUrl;
-
-  const hasPreview = Boolean(playablePreviewUrl || (previewThumbs && previewThumbs.length > 0) || secondaryThumb);
-  // Kart ekrandaysa hafif slayt/kare döngüsü (sıfır native oyuncu); sadece odaklı kart video açar
+  const autoCandidates = React.useMemo(() => getGridPreviewVideoCandidates(post, Platform.OS),
+    [post]);
+  const manualCandidates = React.useMemo(() => getGridPreviewVideoCandidates(post, Platform.OS, true),
+    [post]);
+  const rawFrames = React.useMemo(() => getGridPreviewFrames(post),
+    [post.previewThumbs, post.previewThumbUrl, post.sampleUrl, post.previewUrl]);
+  const [failedFrames, setFailedFrames] = React.useState<Set<string>>(new Set());
+  React.useEffect(() => { setFailedFrames(new Set()); }, [rawFrames, post.id, post.sourceId]);
+  const previewThumbs = React.useMemo(() => rawFrames.filter((url) => !failedFrames.has(url)), [rawFrames, failedFrames]);
+  const currentFrame = previewThumbs.length ? previewThumbs[activeThumbIndex % previewThumbs.length] : undefined;
+  const hasPreview = Boolean(manualCandidates.length || previewThumbs.length);
+  // When the card is on screen, a light slide/frame loop (zero native players); only the focused card opens video
   const isCardVisible = onScreen ?? videoActive ?? false;
-  const isPreviewActive = previewsEnabled && screenActive && ((isCardVisible && hasPreview) || touchPreviewActive);
+  const isPreviewActive = previewsEnabled && canLoad && screenActive && onScreen !== false
+    && ((isCardVisible && hasPreview) || touchPreviewActive);
 
-  const touchTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const activePreviewTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The slide timer is set up below (once the video path is known).
 
-  const clearTouchTimer = () => {
-    if (touchTimerRef.current) {
-      clearTimeout(touchTimerRef.current);
-      touchTimerRef.current = null;
-    }
-  };
-  const clearActivePreviewTimer = () => {
-    if (activePreviewTimerRef.current) {
-      clearTimeout(activePreviewTimerRef.current);
-      activePreviewTimerRef.current = null;
-    }
-  };
-
-  React.useEffect(() => {
-    return () => {
-      clearTouchTimer();
-      clearActivePreviewTimer();
-    };
-  }, []);
-  // Slayt zamanlayıcısı aşağıda (video yolu belli olduktan sonra) kurulur.
-
-  // XHamster liste HTML'i ekran-dışı kartlarda statik kapak vermez (skeleton);
-  // tek kapak data-previewvideo MP4'tür. expo-image MP4 gösteremez → siyah kart.
-  // Görüntülenebilir resim yok ama MP4 varsa kapak sessiz video olarak oynar.
-  const isMp4Url = React.useCallback(
-    (u: unknown) => typeof u === 'string' && !!u && /\.mp4($|\?)/i.test(u.split('?')[0]),
-    []
-  );
+  // XHamster list HTML gives no static cover on off-screen cards (skeleton);
+  // the only cover is a data-previewvideo MP4. expo-image can't show MP4 → black card.
+  // With no renderable image but an MP4 available, the cover plays as silent video.
   const hasRenderableImage = React.useMemo(
-    () => Boolean(primaryRaw && !isMp4Url(primaryRaw)),
-    [primaryRaw, isMp4Url]
+    () => Boolean(primaryRaw && isStaticImageCandidate(primaryRaw)),
+    [primaryRaw]
   );
-  const videoCoverRaw = React.useMemo(() => {
-    if (hasRenderableImage) return '';
-    const cands = [post.previewUrl, post.sampleUrl, post.originalUrl];
-    for (const u of cands) {
-      if (isMp4Url(u)) return u as string;
-    }
-    return '';
-  }, [hasRenderableImage, post.previewUrl, post.sampleUrl, post.originalUrl, isMp4Url]);
-  const useVideoCover = Boolean(videoCoverRaw);
+  const useVideoCover = !hasRenderableImage && manualCandidates.length > 0;
 
-  // Tek kart, tek oynatıcı. Gerçek önizleme videosu varsa o oynar
-  // (XHamster/XVideos akıcı MP4); slayt yalnız videosuz kartın fallback'i.
-  // useVideoPlayer(null) bile native oyuncu oluşturur; kanca yalnız aşağıdaki
-  // koşullu çocukta bulunur. Görünmeyen kart hiçbir oyuncu tutmaz.
-  const motionUrl = useVideoCover ? videoCoverRaw : playablePreviewUrl;
-  const [failedMotionUrl, setFailedMotionUrl] = React.useState<string>();
-  const handleMotionError = React.useCallback((failedUri: string, proxyAttempted: boolean) => {
-    // Direkt bacak terminal patladiysa host oturumluk kara listede:
-    // sonraki kartlar native deneme + uyari uretmeden statik kapakta kalir.
-    if (!proxyAttempted) markPreviewHostDead(failedUri);
-    setFailedMotionUrl(motionUrl);
+  // One card, one player. When a real preview video exists, it plays
+  // (smooth XHamster/XVideos MP4); the slideshow is only the fallback for videoless cards.
+  // Even useVideoPlayer(null) creates a native player; the hook lives only in the
+  // conditional child below. Off-screen cards hold no player at all.
+  const candidates = touchPreviewActive ? manualCandidates : autoCandidates;
+  const motionUrl = candidates.find((url) => !isPreviewBlocked(url));
+  const [, refreshPreviewState] = React.useState(0);
+  const handleMotionError = React.useCallback((_failedUri: string, _proxyAttempted: boolean) => {
+    markPreviewFailure(motionUrl);
+    refreshPreviewState((value) => value + 1);
     releaseSlot();
   }, [motionUrl, releaseSlot]);
-  // Oturumda olmus host hic denenmez (uyari firtinasi bitirme).
-  const motionDead = !!motionUrl && isPreviewHostDead(motionUrl);
-  const showVideo = previewsEnabled && canLoad && screenActive && (videoActive || touchPreviewActive)
-    && !!motionUrl && motionUrl !== failedMotionUrl && !motionDead;
+  const showVideo = previewsEnabled && canLoad && screenActive && onScreen !== false
+    && (videoActive || touchPreviewActive) && !!motionUrl;
+  const [renderedMotionUrl, setRenderedMotionUrl] = React.useState<string>();
+  const motionReady = showVideo && renderedMotionUrl === motionUrl;
+  React.useEffect(() => {
+    if (!showVideo || motionReady || !motionUrl) return;
+    // Some native/CDN stalls never emit an error. Do not leave a hidden player
+    // buffering forever; keep the cover and advance to the next clip/frame.
+    const timer = setTimeout(() => handleMotionError(motionUrl, false), 15_000);
+    return () => clearTimeout(timer);
+  }, [showVideo, motionReady, motionUrl, handleMotionError]);
+  React.useEffect(() => {
+    if (!showVideo) setRenderedMotionUrl(undefined);
+  }, [showVideo]);
+  const handleFirstFrame = React.useCallback(() => {
+    clearPreviewFailure(motionUrl);
+    setRenderedMotionUrl(motionUrl);
+    releaseSlot();
+  }, [motionUrl, releaseSlot]);
 
   React.useEffect(() => {
-    // Ekran dışındaki video kapağı resim kuyruğunu 8 saniye tutmasın.
+    // An off-screen video cover must not hold the image queue for 8 seconds.
     if (canLoad && useVideoCover && !showVideo) releaseSlot();
   }, [canLoad, useVideoCover, showVideo, releaseSlot]);
 
   React.useEffect(() => {
-    if (!screenActive) {
-      clearTouchTimer();
-      clearActivePreviewTimer();
+    if (!screenActive || onScreen === false) {
       setTouchPreviewActive(false);
     }
-  }, [screenActive]);
+  }, [screenActive, onScreen]);
 
   React.useEffect(() => {
-    // Video yolu aktifken slayt zamanlayıcısı çalışmaz: hem gereksiz
-    // re-render (1200ms'de bir) hem de kapak altında görünmez kare değişimi olurdu.
+    // The slide timer doesn't run while the video path is active: it would cause both
+    // wasteful re-renders (every 1200ms) and invisible frame changes under the cover.
     if (showVideo) {
       setActiveThumbIndex(0);
       return;
@@ -221,40 +199,43 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     return () => clearInterval(timer);
   }, [isPreviewActive, previewThumbs, showVideo]);
 
-  // onError ping-pong koruması: denenmiş URI'ler tekrar denenmez, en fazla
-  // 3 farklı URI (direkt + fallback + proxy). primaryRaw değişince sıfırlanır.
+  // At most four image attempts: thumbnail, poster, and one proxy leg each.
+  // Video sample URLs must never reach expo-image as error fallbacks.
   const triedUrisRef = React.useRef<Set<string>>(new Set());
   React.useEffect(() => {
     triedUrisRef.current = new Set();
     setCurrentUri(getMediaUrl(primaryRaw));
-  }, [primaryRaw]);
+    setImageFailed(false);
+  }, [primaryRaw, post.sourceId, post.id]);
 
   const handleImageError = React.useCallback(() => {
     releaseSlot();
     const tried = triedUrisRef.current;
     if (currentUri) tried.add(currentUri);
-    if (tried.size > 3) return;
+    if (tried.size >= 4) { setImageFailed(true); return; }
     const candidates: string[] = [];
-    if (fallbackRaw) {
-      const fallbackUrl = getMediaUrl(fallbackRaw);
+    for (const raw of imageFallbacks) {
+      const fallbackUrl = getMediaUrl(raw);
       if (fallbackUrl) candidates.push(fallbackUrl);
     }
-    // Direkt kapak da öldüyse ve worker kayıtlıysa proxy üzerinden tekrar dene
+    // If the direct cover is dead too and a worker is registered, retry via proxy
     if (proxyService.hasWorker()) {
-      const raw = primaryRaw || post.previewUrl || '';
-      const viaProxy = raw ? getMediaUrl(proxyService.forceProxyUrl(raw)) : '';
-      if (viaProxy) candidates.push(viaProxy);
+      for (const raw of [primaryRaw, ...imageFallbacks]) {
+        if (!isStaticImageCandidate(raw)) continue;
+        const viaProxy = getMediaUrl(proxyService.forceProxyUrl(raw));
+        if (viaProxy) candidates.push(viaProxy);
+      }
     }
     const next = candidates.find((u) => u && !tried.has(u));
     if (next) {
       tried.add(next);
       setCurrentUri(next);
+    } else {
+      setImageFailed(true);
     }
-  }, [fallbackRaw, currentUri, releaseSlot, primaryRaw, post.previewUrl]);
+  }, [imageFallbacks, currentUri, releaseSlot, primaryRaw]);
 
-  // Grid, URL'yi cache key olarak kullanır (özel suffix YOK): prefetch
-  // ile aynı entry'ye yazılır/okunur. Viewer'ın :sample/:full-original
-  // key'leri ayrı kalır, çapraz kirlenme olmaz.
+  // URL keys share cached bytes with prefetch and the viewer sample layer.
   const imageSource = React.useMemo(() => {
     if (!currentUri) return undefined;
     return {
@@ -263,46 +244,44 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     };
   }, [currentUri]);
 
-  // isFav kartın kendi storage okuması YOK: üst ekran favoriteIds setinden senkron gelir.
-  // Set yoksa rozet kapalı sayılır (gecikmeli/tekil okuma çökme ve gecikme yapıyordu).
-  const isFav = showFavoriteBadge && !!favoriteIds && favoriteIds.has(post.id);
+  // isFav performs no storage read of its own: it comes synchronously from the parent's favoriteIds set.
+  // Without a set the badge counts as off (delayed/single reads caused crashes and lag).
+  const isFav = showFavoriteBadge && !!favoriteIds && favoriteIds.has(getPostKey(post));
 
   const ratingColor = React.useMemo(() => getRatingColor(post.rating), [post.rating]);
 
   return (
     <TouchableOpacity
       activeOpacity={0.88}
-      onPress={() => onPress(post)}
-      delayPressIn={0}
-      pressRetentionOffset={{ top: 200, bottom: 200, left: 100, right: 100 }}
-      onPressIn={() => {
-        if (previewsEnabled && screenActive && (hasPreview || useVideoCover)) {
-          clearTouchTimer();
-          clearActivePreviewTimer();
+      onPress={() => {
+        setTouchPreviewActive(false);
+        onPress(post);
+      }}
+      delayLongPress={350}
+      onLongPress={() => {
+        // Normal taps and scrolling must not start downloading full originals.
+        if (previewsEnabled && screenActive && onScreen !== false && (hasPreview || useVideoCover)) {
           Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
           setTouchPreviewActive(true);
         }
       }}
-      onPressOut={() => {
-        clearTouchTimer();
-        clearActivePreviewTimer();
-        activePreviewTimerRef.current = setTimeout(() => {
-          setTouchPreviewActive(false);
-        }, 1200);
-      }}
+      onPressOut={() => setTouchPreviewActive(false)}
       style={[styles.container, { width: COLUMN_WIDTH, height: cardHeight }]}
     >
-      {useVideoCover && !showVideo && (
+      {showVideo && motionUrl ? (
+        <CardVideoPreview key={motionUrl} url={motionUrl} onReady={releaseSlot} onFirstFrame={handleFirstFrame} onError={handleMotionError} />
+      ) : null}
+      {useVideoCover && !motionReady && (
         <View style={styles.videoPlaceholder} pointerEvents="none">
           <Play size={30} color={Colors.dark.textMuted} />
         </View>
       )}
-      {canLoad && !useVideoCover && imageSource ? (
+      {canLoad && hasRenderableImage && !useVideoCover && imageSource ? (
         <Image
           source={imageSource}
-          style={styles.image}
+          style={[styles.image, { opacity: motionReady ? 0 : 1 }]}
           contentFit="cover"
-          recyclingKey={post.id}
+          recyclingKey={`${getPostKey(post)}:${currentUri}`}
           priority="low"
           transition={100}
           cachePolicy="memory-disk"
@@ -311,28 +290,24 @@ const PostCardComponent: React.FC<PostCardProps> = ({
           onError={handleImageError}
         />
       ) : null}
+      {imageFailed && !motionReady && (
+        <View style={styles.videoPlaceholder} pointerEvents="none">
+          <Text style={{ color: Colors.dark.textMuted, fontSize: 12 }}>Cover unavailable</Text>
+        </View>
+      )}
 
-      {showVideo && motionUrl ? (
-        <CardVideoPreview key={motionUrl} url={motionUrl} onReady={releaseSlot} onError={handleMotionError} />
-      ) : isPreviewActive && previewThumbs && previewThumbs.length > 0 ? (
+      {!showVideo && isPreviewActive && currentFrame ? (
         <Image
           source={{
-            uri: getMediaUrl(previewThumbs[activeThumbIndex]) || previewThumbs[activeThumbIndex],
-            headers: getMediaHeaders(previewThumbs[activeThumbIndex]),
+            uri: getMediaUrl(currentFrame) || currentFrame,
+            headers: getMediaHeaders(currentFrame),
           }}
+          recyclingKey={`frame:${getPostKey(post)}:${currentFrame}`}
+          onError={() => setFailedFrames((previous) => new Set([...previous, currentFrame]))}
+          onLoadEnd={releaseSlot}
           style={StyleSheet.absoluteFill}
           contentFit="cover"
           transition={250}
-        />
-      ) : isPreviewActive && secondaryThumb ? (
-        <Image
-          source={{
-            uri: getMediaUrl(secondaryThumb) || secondaryThumb,
-            headers: getMediaHeaders(secondaryThumb),
-          }}
-          style={StyleSheet.absoluteFill}
-          contentFit="cover"
-          transition={150}
         />
       ) : null}
 
@@ -359,8 +334,8 @@ const PostCardComponent: React.FC<PostCardProps> = ({
           </View>
         )}
 
-        {/* Sesli klip rozeti: RedGifs hasAudio bilgisini meta 'sound' olarak taşır,
-            önizlemeler sessiz oynadığı için kullanıcı bunu karttan görsün. */}
+        {/* Audible-clip badge: RedGifs carries hasAudio info as meta 'sound', and
+            previews play muted, so the user sees it on the card. */}
         {post.tags.meta?.includes('sound') && (
           <View style={styles.soundBadge}>
             <Volume2 size={10} color="#FFFFFF" />
@@ -399,8 +374,9 @@ const PostCardComponent: React.FC<PostCardProps> = ({
 const CardVideoPreview: React.FC<{
   url: string;
   onReady: () => void;
+  onFirstFrame: () => void;
   onError: (failedUri: string, proxyAttempted: boolean) => void;
-}> = React.memo(({ url, onReady, onError }) => {
+}> = React.memo(({ url, onReady, onFirstFrame, onError }) => {
   React.useEffect(() => trackGridPlayer(), []);
   const videoSource = React.useMemo(
     () => ({
@@ -417,21 +393,21 @@ const CardVideoPreview: React.FC<{
     p.play();
   });
 
-  // Zorunlu native imha: kart ekrandan çıktığında veya unmount olduğunda
-  // AVPlayer'ı ve com.apple.avplayer.systemMuteObserver thread'lerini anında serbest bırak.
-  // Hermes GC'nin keyfini beklemek 400+ oyuncu birikmesine ve 0x8BADF00D kilitlenmesine yol açıyordu.
+  // Mandatory native teardown: when the card leaves the screen or unmounts,
+  // release the AVPlayer and the com.apple.avplayer.systemMuteObserver threads immediately.
+  // Waiting on Hermes GC let 400+ players pile up and caused 0x8BADF00D hangs.
   React.useEffect(() => {
     return () => {
       try {
         player.pause();
         (player as { release?: () => void }).release?.();
       } catch (e) {
-        // Zaten serbest bırakılmışsa sessizce geç
+        // Silently pass if already released
       }
     };
   }, [player]);
 
-  // TLS düşüşünde tek seferlik seçici proxy fallback'i (sadece bu önizleme).
+  // One-shot selective proxy fallback on TLS drop (this preview only).
   const proxyTriedRef = React.useRef(false);
   const mountedRef = React.useRef(true);
   React.useEffect(() => {
@@ -439,12 +415,12 @@ const CardVideoPreview: React.FC<{
     return () => { mountedRef.current = false; };
   }, []);
   useEventListener(player, 'statusChange', (payload) => {
-    if (payload.status === 'readyToPlay') onReady();
+    if (!mountedRef.current) return;
+    if (payload.status === 'readyToPlay') { player.play(); onReady(); }
     if (payload.status !== 'error') return;
     recordFreezeEvent('grid-player-error');
     const currentUri = videoSource.uri;
-    // Proxy bacagi denenmis basarisizlik hostu oldurmez (worker gecici
-    // bozuk olabilir); direkt bacak terminali oldurur.
+    // Each clip gets at most one proxy leg before falling back to another candidate/frame.
     const viaProxyLeg = proxyTriedRef.current || proxyService.isProxiedUrl(currentUri);
     if (viaProxyLeg || !proxyService.hasWorker()) {
       onError(currentUri, viaProxyLeg);
@@ -465,6 +441,9 @@ const CardVideoPreview: React.FC<{
       player={player}
       style={StyleSheet.absoluteFill}
       contentFit="cover"
+      surfaceType="textureView"
+      useExoShutter={false}
+      onFirstFrameRender={() => { if (mountedRef.current) onFirstFrame(); }}
       nativeControls={false}
       allowsVideoFrameAnalysis={false}
       allowsPictureInPicture={false}
@@ -483,17 +462,17 @@ export const PostCard = React.memo<PostCardProps>(
     if (prevProps.onPress !== nextProps.onPress) return false;
     if (prevProps.column !== nextProps.column) return false;
     if ((prevProps.videoActive ?? false) !== (nextProps.videoActive ?? false)) return false;
-    if ((prevProps.onScreen ?? false) !== (nextProps.onScreen ?? false)) return false;
+    if (prevProps.onScreen !== nextProps.onScreen) return false;
     if ((prevProps.screenActive ?? true) !== (nextProps.screenActive ?? true)) return false;
 
     const prevFav =
       (prevProps.showFavoriteBadge ?? true) &&
       !!prevProps.favoriteIds &&
-      prevProps.favoriteIds.has(prevProps.post.id);
+      prevProps.favoriteIds.has(getPostKey(prevProps.post));
     const nextFav =
       (nextProps.showFavoriteBadge ?? true) &&
       !!nextProps.favoriteIds &&
-      nextProps.favoriteIds.has(nextProps.post.id);
+      nextProps.favoriteIds.has(getPostKey(nextProps.post));
 
     if (prevFav !== nextFav) return false;
 

@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 export interface CardLayout {
   y: number;
@@ -6,10 +6,10 @@ export interface CardLayout {
 }
 
 /**
- * Izgara görünürlük takibi: ebeveyn render'da her kartın {y,h} konumunu
- * verdiği Map'i scroll'da bu kancaya verir, kanca ekrandaki (+marjin)
- * kart id setini döner. PostCard.videoActive buradan beslenir: sadece
- * görünür video kapaklar oynar, kaybolanlar durur.
+ * Grid visibility tracking: the parent passes a Map of each card's {y,h}
+ * position from render into this hook on scroll; the hook returns the set
+ * of on-screen (+margin) card ids. PostCard.videoActive is fed from here:
+ * only visible video covers play, off-screen ones stop.
  */
 export function useVisibleIds() {
   const [visibleIds, setVisibleIds] = useState<Set<string>>(new Set());
@@ -20,10 +20,10 @@ export function useVisibleIds() {
       layouts: Map<string, CardLayout>,
       offsetY: number,
       viewportH: number,
-      // Varsayılan pay 0: videoActive yalnız EKRANDAKİ kartlara verilir.
-      // 700px pay önceden kullanılıyordu; ekranda görünmeyen kartlar da
-      // oynatıcı açıp boşuna decoder/bandwidth harcıyordu (RedGifs'te her
-      // kartta önizleme videosu var). Görsel değişim yok, oyuncu sayısı yarıya iner.
+      // Default margin 0: videoActive is given only to ON-SCREEN cards.
+      // A 700px margin was used before; off-screen cards also opened
+      // players and wasted decoder/bandwidth for nothing (on RedGifs every
+      // card has a preview video). No visual change, player count is halved.
       margin: number = 0
     ) => {
       const top = offsetY - margin;
@@ -32,7 +32,7 @@ export function useVisibleIds() {
       layouts.forEach((r, id) => {
         if (r.y + r.h >= top && r.y <= bottom) next.add(id);
       });
-      // Aynı kümeyse state'e dokunma (gereksiz re-render yok)
+      // Don't touch state when the set is identical (no wasted re-render)
       let key = '';
       next.forEach((id) => {
         key += id + ',';
@@ -49,7 +49,7 @@ export function useVisibleIds() {
 }
 
 /**
- * Saf pencere hesabı (test edilebilir): pencere içindeki id'ler.
+ * Pure window computation (testable): ids inside the window.
  */
 export function computeWindowIds(
   layouts: Map<string, CardLayout>,
@@ -67,12 +67,12 @@ export function computeWindowIds(
 }
 
 /**
- * Mount penceresi: ekrandaki kartlar + alt/üst overscan içindeki kartlar
- * mount edilir, uzak kartlar yer tutucu View'e düşer (unmount).
- * ScrollView tüm listeyi mountladığında (n=120+) her kart hook, timer,
- * resim ve bazen video oyuncu tutar; JS köprüsü ve bellek dolar, dokunma
- * kuyruğu yetişemez. Pencere mount sayısını ~20'de tutar, kaydırma
- * yüksekliği yer tutucularla korunur.
+ * Mount window: on-screen cards + cards within the top/bottom overscan
+ * are mounted, distant cards fall back to placeholder Views (unmount).
+ * When ScrollView mounts the whole list (n=120+), every card holds hooks,
+ * timers, images and sometimes a video player; the JS bridge and memory
+ * fill up and the touch queue can't keep up. The window keeps mounts at
+ * ~20 while placeholders preserve scroll height.
  */
 export function useMountedIds(overscan: number = 1500) {
   const [mountedIds, setMountedIds] = useState<Set<string> | null>(null);
@@ -102,9 +102,9 @@ export function useMountedIds(overscan: number = 1500) {
 }
 
 /**
- * Ekrandaki kartlar arasından ekran merkezine en yakın `maxActive` (varsayılan 4)
- * kartın id setini döner. 2 sütunlu ızgarada hem sol hem sağ sütundaki
- * aktif kartlar canlı önizleme videosunu akıcı şekilde oynatır.
+ * Returns the id set of the `maxActive` (default 4) cards nearest the
+ * screen center among on-screen cards. In the 2-column grid, active
+ * cards in both the left and right columns smoothly play live preview video.
  */
 export function computeFocusedCardIds(
   layouts: Map<string, CardLayout>,
@@ -118,7 +118,7 @@ export function computeFocusedCardIds(
 
   layouts.forEach((layout, id) => {
     if (playableIds && !playableIds.has(id)) return;
-    // Kart ekran sınırları içinde olmalı
+    // Card must be within screen bounds
     if (layout.y + layout.h >= offsetY && layout.y <= offsetY + viewportH) {
       const cardCenterY = layout.y + layout.h / 2;
       const dist = Math.abs(cardCenterY - centerY);
@@ -136,8 +136,8 @@ export function computeFocusedCardIds(
 }
 
 /**
- * Tek odaklı kart hesabı:
- * Ekranın dikey merkezine en yakın olan tek bir kartın id'sini döner.
+ * Single focused-card computation:
+ * Returns the id of the single card nearest the vertical screen center.
  */
 export function computeFocusedCardId(
   layouts: Map<string, CardLayout>,
@@ -150,15 +150,19 @@ export function computeFocusedCardId(
 }
 
 /**
- * Odaklı kart kümesi kancası (2-4 aktif oyuncu bütçeli akış modeli):
- * Ekrandaki kartlar arasından merkeze en yakın `maxActive` kartı seçer.
- * Kaydırma sırasında debounce (80ms) uygular; böylece hızlı kaydırma
- * esnasında gereksiz video oyuncu açılıp kapanmaz.
+ * Focused-card-set hook (2-4 active-player streaming model):
+ * Picks the `maxActive` cards nearest the center among on-screen cards.
+ * Debounces during scrolling (80ms) so fast scrolls don't needlessly
+ * open and close video players.
  */
 export function useFocusedCardIds(debounceMs: number = 80, maxActive: number = 4) {
   const [focusedIds, setFocusedIds] = useState<Set<string>>(new Set());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const keyRef = useRef('');
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+  }, []);
 
   const updateFocused = useCallback(
     (
@@ -198,14 +202,18 @@ export function useFocusedCardIds(debounceMs: number = 80, maxActive: number = 4
 }
 
 /**
- * Tek odaklı kart takibi kancası (Instagram / Twitter tek oyuncu akış modeli):
- * Ekrandaki kartlar arasından merkeze en yakın TEK kartı seçer.
- * Kaydırma sırasında debounce (120ms) uygular; böylece hızlı kaydırma
- * esnasında gereksiz video oyuncu açılıp kapanmaz (sıfır fırtına).
+ * Single focused-card tracking hook (Instagram/Twitter single-player feed model):
+ * Picks the single card nearest the center among on-screen cards.
+ * Debounces during scrolling (120ms) so fast scrolls don't needlessly
+ * open and close video players (zero churn).
  */
 export function useFocusedCardId(debounceMs: number = 120) {
   const [focusedId, setFocusedId] = useState<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = null;
+  }, []);
 
   const updateFocused = useCallback(
     (

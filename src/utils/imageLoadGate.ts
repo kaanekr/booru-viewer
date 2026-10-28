@@ -3,16 +3,17 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 export type GridColumn = 'left' | 'right';
 
 /**
- * Grid resim yükleme kapısı (load gate).
+ * Grid image load gate.
  *
- * Sorun: ScrollView içindeki iki sütun aynı anda mount olunca sol sütunun
- * ~12 isteği iOS'un host başına ~6 bağlantı slotunu kapıyor, sağ sütun
- * kuyrukta bekleyip hep geç boyanıyordu.
+ * Problem: when both columns inside the ScrollView mount at once, the left
+ * column's ~12 requests occupy iOS's ~6 per-host connection slots, so the
+ * right column waits in the queue and always paints late.
  *
- * Çözüm: aynı anda en fazla MAX_CONCURRENT resim yüklenir; slotlar sol/sağ
- * kuyruklarına sırayla (turn-taking) dağıtılır. Böylece iki sütun simetrik
- * ilerler, biri diğerini aç bırakmaz. Slot biten işi (onLoadEnd/onError),
- * unmount'u veya 12sn fail-open zaman aşımını takiben bir sonrakine geçer.
+ * Fix: at most MAX_CONCURRENT images load at once; slots are handed out to
+ * the left/right queues in turn (turn-taking). Both columns thus progress
+ * symmetrically and neither starves the other. A slot passes to the next
+ * waiter when the job finishes (onLoadEnd/onError), on unmount, or after
+ * the 12s fail-open timeout.
  */
 
 const MAX_CONCURRENT = 6;
@@ -29,7 +30,7 @@ function pump() {
     const otherQueue = queues[turn === 'left' ? 'right' : 'left'];
     const next = turnQueue.shift() ?? otherQueue.shift();
     if (!next) return;
-    // Her dağıtımdan sonra sıra diğer sütuna geçer (adil paylaşım)
+    // Turn passes to the other column after each grant (fair sharing)
     turn = turn === 'left' ? 'right' : 'left';
     activeCount += 1;
     next();
@@ -39,8 +40,8 @@ function pump() {
 function schedulePump() {
   if (pumpScheduled) return;
   pumpScheduled = true;
-  // Microtask: aynı tick'teki tüm enqueue'ler toplandıktan sonra dağıt.
-  // Senkron pump ilk 6 slotu hep önce mount olan (sol) sütuna verirdi.
+  // Microtask: distribute after all enqueues in the same tick are collected.
+  // A sync pump would always give the first 6 slots to the (left) column that mounted first.
   Promise.resolve().then(() => {
     pumpScheduled = false;
     pump();
@@ -58,10 +59,25 @@ interface Ticket {
   grant: (() => void) | null;
 }
 
+function finishTicket(ticket: Ticket) {
+  if (ticket.released) return;
+  ticket.released = true;
+  if (ticket.granted) {
+    ticket.granted = false;
+    releaseSlot();
+  } else if (ticket.grant) {
+    for (const column of ['left', 'right'] as GridColumn[]) {
+      const index = queues[column].indexOf(ticket.grant);
+      if (index >= 0) queues[column].splice(index, 1);
+    }
+  }
+  ticket.grant = null;
+}
+
 /**
- * column verilirse resim kapıdan geçene kadar `false` döner;
- * verilmezse (örn. FlatList ekranları) anında `true` — davranış değişmez.
- * Dönen release fonksiyonu resim bitince (veya hatada) çağrılmalı.
+ * Returns `false` until the image passes the gate when a column is given;
+ * without one (e.g. FlatList screens) it returns `true` immediately — no behavior change.
+ * The returned release function must be called when the image finishes (or errors).
  */
 export function useLoadGate(column?: GridColumn): [boolean, () => void] {
   const [open, setOpen] = useState(() => !column);
@@ -72,9 +88,8 @@ export function useLoadGate(column?: GridColumn): [boolean, () => void] {
       setOpen(true);
       return;
     }
-    const ticket = ticketRef.current;
-    ticket.granted = false;
-    ticket.released = false;
+    const ticket: Ticket = { granted: false, released: false, grant: null };
+    ticketRef.current = ticket;
     setOpen(false);
 
     const grant = () => {
@@ -87,31 +102,22 @@ export function useLoadGate(column?: GridColumn): [boolean, () => void] {
     queues[column].push(grant);
     schedulePump();
 
-    // Fail-open: kapı bir nedenle takılırsa resmi sonsuza dek bekletme
-    const failOpen = setTimeout(() => setOpen(true), FAIL_OPEN_MS);
+    // Fail-open: never hold the image forever if the gate gets stuck
+    const failOpen = setTimeout(() => {
+      // Remove the waiter before bypassing the gate. A late grant must not
+      // consume a slot after the image's release timer has already fired.
+      finishTicket(ticket);
+      setOpen(true);
+    }, FAIL_OPEN_MS);
 
     return () => {
       clearTimeout(failOpen);
-      ticket.released = true;
-      if (ticket.granted) {
-        ticket.granted = false;
-        releaseSlot();
-      } else if (ticket.grant) {
-        for (const c of ['left', 'right'] as GridColumn[]) {
-          const i = queues[c].indexOf(ticket.grant);
-          if (i >= 0) queues[c].splice(i, 1);
-        }
-        ticket.grant = null;
-      }
+      finishTicket(ticket);
     };
   }, [column]);
 
   const release = useCallback(() => {
-    const ticket = ticketRef.current;
-    if (ticket.released || !ticket.granted) return;
-    ticket.released = true;
-    ticket.granted = false;
-    releaseSlot();
+    finishTicket(ticketRef.current);
   }, []);
 
   return [open, release];

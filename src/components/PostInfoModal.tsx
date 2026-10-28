@@ -38,7 +38,7 @@ import { onlyStrings } from '../utils/guards';
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
-/** Parmağın bırakıldığında sheet'in kapanacağı aşağı sürükleme eşiği */
+/** Down-drag threshold at which the sheet closes on release */
 const DISMISS_THRESHOLD = 130;
 const SHEET_MAX_HEIGHT = SCREEN_HEIGHT * 0.92;
 
@@ -80,8 +80,8 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     }
   }, [selectedTag]);
 
-  // Hangi kalite modunun şu an ekrandaki görüntüye karşılık geldiğini göster:
-  // viewer kalite ayarını oku (Normal = sample, Original = full)
+  // Show which quality mode matches the on-screen image:
+  // read the viewer quality setting (Normal = sample, Original = full)
   const [viewQuality, setViewQuality] = useState<ImageQuality>('auto');
 
   useEffect(() => {
@@ -95,14 +95,14 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     setTimeout(() => setToastMessage(null), 2200);
   };
 
-  // --- Drag-to-dismiss altyapısı (Animated + PanResponder, Expo Go uyumlu) ---
+  // --- Drag-to-dismiss infrastructure (Animated + PanResponder, Expo Go compatible) ---
   const translateY = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
   const scrollOffsetY = useRef(0);
   const closing = useRef(false);
   const [sheetScrollEnabled, setSheetScrollEnabled] = useState(true);
 
-  // Kapanış animasyonu bitmeden onClose çağrılmaz — yoksa Modal anında
-  // unmount olup çıkış animasyonu ölür.
+  // onClose is not called before the close animation finishes — otherwise
+  // the Modal unmounts instantly and the exit animation dies.
   const dismissThen = (cb?: () => void) => {
     if (closing.current) {
       cb?.();
@@ -124,7 +124,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
 
   const requestClose = () => dismissThen();
 
-  // Açılış: alttan kayarak gel
+  // Opening: slide in from the bottom
   useEffect(() => {
     if (visible) {
       closing.current = false;
@@ -138,7 +138,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     }
   }, [visible, translateY]);
 
-  // İç ScrollView en üstteyken aşağı çekişi yakala, parmağı 1:1 takip et
+  // Catch pull-down when the inner ScrollView is at the top, track finger 1:1
   const sheetPanResponder = useMemo(
     () =>
       PanResponder.create({
@@ -156,7 +156,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
           setSheetScrollEnabled(false);
         },
         onPanResponderMove: (_, gesture) => {
-          // Yukarı itişe direnç uygula, aşağı birebir takip et
+          // Resist upward pushes, track downward ones exactly
           translateY.setValue(gesture.dy > 0 ? gesture.dy : gesture.dy * 0.25);
         },
         onPanResponderRelease: (_, gesture) => {
@@ -227,13 +227,13 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   }
 
   const getTagColor = (category: TagCategory, name?: string) => {
-    // HentaiHaven resmi türleri (/genres/) diğer genel etiketlerden ayrışır
+    // HentaiHaven official genres (/genres/) stand apart from other general tags
     if (
       category === 'general' &&
       post?.sourceId === 'hentaihaven' &&
       isHentaiHavenOfficialGenre(name)
     ) {
-      return '#39C5CF'; // Teal: resmi tür
+      return '#39C5CF'; // Teal: official genre
     }
     switch (category) {
       case 'copyright':
@@ -251,7 +251,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   };
 
   const formatPostedDate = (createdAt?: string) => {
-    if (!createdAt) return 'Bilinmiyor';
+    if (!createdAt) return 'Unknown';
     try {
       const d = new Date(isNaN(Number(createdAt)) ? createdAt : Number(createdAt) * 1000);
       if (isNaN(d.getTime())) return createdAt;
@@ -285,7 +285,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   const handleCopyText = async (text: string, label: string) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     await Clipboard.setStringAsync(text);
-    showToast(`📋 ${label} kopyalandı!`);
+    showToast(`📋 ${label} copied!`);
   };
 
   const handleOpenUrl = async (url?: string) => {
@@ -296,10 +296,10 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
       if (supported) {
         await Linking.openURL(url);
       } else {
-        await handleCopyText(url, 'Bağlantı');
+        await handleCopyText(url, 'Link');
       }
     } catch {
-      await handleCopyText(url, 'Bağlantı');
+      await handleCopyText(url, 'Link');
     }
   };
 
@@ -312,10 +312,10 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   const handleTagSearch = (tag: string, category?: TagCategory) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
-    // RedGifs sanatçı adı etiketi aranırsa 0 döner; 'user:' mekaniğiyle ara
-    // nhentai: kategoriye göre `tag:"ad"` / `artist:"ad"` mekaniğiyle ara
-    // (düz kelime full-text eşleşir, etiket eşleşmesi yapmaz)
-    // hentaihaven: boşluklu tür `tag:"ad"` olur, yoksa kelimelere bölünürdü
+    // Searching a RedGifs artist-name tag returns 0; search via the 'user:' mechanism
+    // nhentai: search via the `tag:"name"` / `artist:"name"` mechanism by category
+    // (a plain word matches full-text, not tag matches)
+    // hentaihaven: a spaced genre becomes `tag:"name"`, otherwise it would split into words
     const isNhentai = post?.sourceId === 'nhentai' && !/^[a-z][a-z-]*:/i.test(tag);
     const isHentaiHaven = post?.sourceId === 'hentaihaven' && !/^[a-z][a-z-]*:/i.test(tag);
     const query =
@@ -335,7 +335,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   const handleTagAddToSearch = (tag: string, category?: TagCategory) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
-    // RedGifs sanatçısı aramaya kullanıcı olarak eklenir
+    // A RedGifs artist is added to search as a user
     const isHentaiHavenAdd = post?.sourceId === 'hentaihaven' && !/^[a-z][a-z-]*:/i.test(tag);
     const query = isRedGifsArtist(tag, category)
       ? `user:${tag}`
@@ -356,9 +356,9 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   const handleTagExcludeFromSearch = (tag: string, category?: TagCategory) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
-    // RedGifs sanatçısı '-user:' olarak dışlanır
-    // nhentai: `-tag:"ad"` (çok kelimeli etiket `-"a b"` gibi tek parça kalır)
-    // hentaihaven: `-artist:"ad"` veya `-tag:"ad"`
+    // A RedGifs artist is excluded as '-user:'
+    // nhentai: `-tag:"name"` (a multi-word tag stays whole like `-"a b"`)
+    // hentaihaven: `-artist:"name"` or `-tag:"name"`
     const isHentaiHavenEx = post?.sourceId === 'hentaihaven' && !/^(-|[a-z][a-z-]*:)/i.test(tag);
     const query = isRedGifsArtist(tag, category)
       ? `-user:${tag}`
@@ -380,7 +380,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const newState = await StorageService.toggleFavoriteTag(tag);
     setIsTagFav(newState);
-    showToast(newState ? `⭐ "${tag}" favori etiketlere eklendi!` : `"${tag}" favorilerden çıkarıldı.`);
+    showToast(newState ? `⭐ "${tag}" added to favorite tags!` : `"${tag}" removed from favorites.`);
     setSelectedTag(null);
   };
 
@@ -388,14 +388,14 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
     const newState = await StorageService.toggleBlacklistedTag(tag);
     setIsTagBlacklisted(newState);
-    showToast(newState ? `🚫 "${tag}" kara listeye eklendi!` : `"${tag}" kara listeden çıkarıldı.`);
+    showToast(newState ? `🚫 "${tag}" added to blacklist!` : `"${tag}" removed from blacklist.`);
     setSelectedTag(null);
   };
 
   const handleSaveToHistory = async (tag: string) => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     await StorageService.addSearchHistory(tag);
-    showToast(`🕒 "${tag}" arama geçmişine kaydedildi!`);
+    showToast(`🕒 "${tag}" saved to search history!`);
     setSelectedTag(null);
   };
 
@@ -427,7 +427,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     dismissThen(() => onPreviewOriginal(post));
   };
 
-  // Gerçek ölçüler: scrape 800x1000 placeholder bırakır, post sayfasından çöz
+  // Real dimensions: scrape leaves an 800x1000 placeholder, resolve from the post page
   useEffect(() => {
     if (!visible) return;
     setResolvedDims(null);
@@ -527,16 +527,16 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
             <Text style={styles.sectionTitle}>Post</Text>
 
             <View style={styles.sectionBody}>
-              {/* Başlık (video kaynakları) — dokununca kopyala */}
+              {/* Title (video sources) — tap to copy */}
               {post.title ? (
                 <>
                   <TouchableOpacity
                     style={styles.postRowItem}
-                    onPress={() => handleCopyText(post.title || '', 'Başlık')}
+                    onPress={() => handleCopyText(post.title || '', 'Title')}
                     activeOpacity={0.7}
                   >
                     <View style={styles.postRowLeft}>
-                      <Text style={styles.fieldLabel}>Başlık</Text>
+                      <Text style={styles.fieldLabel}>Title</Text>
                       <Text style={styles.postRowSubtitle} numberOfLines={3}>
                         {post.title}
                       </Text>
@@ -550,10 +550,10 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
                 </>
               ) : null}
 
-              {/* Normal (jpg) — aktif moddaysa sarı vurgu */}
+              {/* Normal (jpg) — yellow highlight when active */}
               <TouchableOpacity
                 style={styles.postRowItem}
-                onPress={() => handleCopyText(post.sampleUrl || post.previewUrl, 'Normal Görsel URL')}
+                onPress={() => handleCopyText(post.sampleUrl || post.previewUrl, 'Normal Image URL')}
                 activeOpacity={0.7}
               >
                 <View style={styles.postRowLeft}>
@@ -571,7 +571,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
 
               <View style={styles.rowDivider} />
 
-              {/* Original (png/jpg/mp4) — dokununca uygulamada full önizleme, aktif moddaysa sarı vurgu */}
+              {/* Original (png/jpg/mp4) — tap for in-app full preview, yellow highlight when active */}
               <TouchableOpacity
                 style={styles.postRowItem}
                 onPress={handlePreviewOriginal}
@@ -600,14 +600,14 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
                 style={styles.postRowItem}
                 onPress={() => {
                   if (post.sourceLink) handleOpenUrl(post.sourceLink);
-                  else showToast('Kaynak bağlantısı mevcut değil');
+                  else showToast('Source link not available');
                 }}
                 activeOpacity={0.7}
               >
                 <View style={styles.postRowLeft}>
                   <Text style={styles.fieldLabel}>Source</Text>
                   <Text style={styles.postRowSubtitle} numberOfLines={1}>
-                    {post.sourceLink || 'Bilinmiyor / Yok'}
+                    {post.sourceLink || 'Unknown / None'}
                   </Text>
                 </View>
                 <View style={styles.yellowInfoBadge}>
@@ -620,7 +620,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
               {/* Post URL */}
               <TouchableOpacity
                 style={styles.postRowItem}
-                onPress={() => handleCopyText(post.originalUrl || post.sampleUrl, 'Görsel URL')}
+                onPress={() => handleCopyText(post.originalUrl || post.sampleUrl, 'Image URL')}
                 activeOpacity={0.7}
               >
                 <View style={styles.postRowLeft}>
@@ -677,7 +677,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
             </View>
           </View>
 
-          {/* 3. NICHES SECTION (RedGifs kategorileri — dokununca o kategoriyi arar) */}
+          {/* 3. NICHES SECTION (RedGifs categories — tap searches that category) */}
           {post.niches && post.niches.length > 0 && (
             <View style={styles.sectionContainer}>
               <Text style={styles.sectionTitle}>Niches</Text>
@@ -836,7 +836,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
                     <TouchableOpacity
                       style={styles.menuItem}
                       onPress={() => {
-                        handleCopyText(selectedTag.name, 'Etiket');
+                        handleCopyText(selectedTag.name, 'Tag');
                         setSelectedTag(null);
                       }}
                       activeOpacity={0.7}
@@ -990,7 +990,7 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     marginBottom: 2,
   },
-  /** Görüntüleyicideki aktif kalite modunun satırı (Normal/Original) */
+  /** Row of the active quality mode in the viewer (Normal/Original) */
   activeModeLabel: {
     color: GOLD_ACCENT,
   },

@@ -1,7 +1,7 @@
 ﻿import { useEffect, useState } from 'react';
 
-// Izgara video onizleme anahtari: tum kartlar buradan okur (prop drilling yok).
-// Ayarlar ekranindaki switch burayi + storage'i gunceller; kartlar abone olur.
+// Grid video-preview switch: all cards read from here (no prop drilling).
+// The switch on the Settings screen updates this + storage; cards subscribe.
 let enabled = true;
 const listeners = new Set<() => void>();
 
@@ -31,26 +31,28 @@ export function useGridPreviewsEnabled(): boolean {
   return current;
 }
 
-// Oturumluk negatif onbellek: direkt video yuklemesi olumcul patlayan host
-// (TLS -1200, baglanti reset) bir daha denenmez; kart statik kapak/slayta
-// duser. Boylece her yeni kart ayni host icin bir native deneme + uyari
-// uretmez. Proxy bacagi denenmis basarisizliklar isaretlenmez (worker
-// gecici bozulmus olabilir; direkt yol remount'ta tekrar denenir).
-const deadHosts = new Set<string>();
+// A corrupt/expired clip must not disable every other file on its CDN.
+// Cool down only this exact URL, with bounded memory and no background retry timers.
+export const PREVIEW_RETRY_DELAY_MS = 30_000;
+const failedUrls = new Map<string, number>();
+const MAX_FAILED_URLS = 256;
 
-function hostOf(url: string | undefined): string {
-  if (typeof url !== 'string') return '';
-  const noQuery = url.split('?')[0];
-  const parts = noQuery.split('/');
-  return (parts.length > 2 ? parts[2] : '').toLowerCase();
+export function markPreviewFailure(url: string | undefined): void {
+  if (!url) return;
+  failedUrls.delete(url);
+  failedUrls.set(url, Date.now() + PREVIEW_RETRY_DELAY_MS);
+  if (failedUrls.size > MAX_FAILED_URLS) failedUrls.delete(failedUrls.keys().next().value!);
 }
 
-export function markPreviewHostDead(url: string | undefined): void {
-  const h = hostOf(url);
-  if (h) deadHosts.add(h);
+export function isPreviewBlocked(url: string | undefined): boolean {
+  if (!url) return false;
+  const until = failedUrls.get(url);
+  if (until === undefined) return false;
+  if (Date.now() < until) return true;
+  failedUrls.delete(url);
+  return false;
 }
 
-export function isPreviewHostDead(url: string | undefined): boolean {
-  const h = hostOf(url);
-  return !!h && deadHosts.has(h);
+export function clearPreviewFailure(url: string | undefined): void {
+  if (url) failedUrls.delete(url);
 }

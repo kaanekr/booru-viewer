@@ -31,7 +31,9 @@ yarn-error.*
 *.pem
 
 # local env files
-.env*.local
+.env
+.env*
+!.env.example
 
 # typescript
 *.tsbuildinfo
@@ -44,3 +46,14 @@ yarn-error.*
 *.abbj
 .claude/
 build-ipa/
+*.ipa
+*.xcarchive
+*.apk
+*.aab
+ios/build/
+android/build/
+ios/Pods/
+google-services.json
+GoogleService-Info.plist
+credentials.json
+eas-credentials/

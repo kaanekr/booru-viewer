@@ -1,27 +1,27 @@
 import type { BooruPost, BooruSource } from '../types/booru';
 
 /**
- * XVideos (https://www.xvideos.com) entegrasyonu — saf yardımcılar.
- * Kaynak: rodrigogs/xvideos kütüphanesinin kullandığı uçlar (canlı doğrulandı):
- * - Arama: GET /?k=<kelime>&sort=..&durf=..&datef=..&quality=..[&p=<sayfa-1>]
- *   (sayfa 1'de `p` yok; p sıfır tabanlıdır: p=1 → 2. sayfa)
- * - Aramasız liste: GET /new[/<sayfa>] (fresh)
- * - Kartlar: `id="video_<eid>" data-id="<numeric>"` thumb-block div'leri
- * - Detay: html5player.setVideoUrlLow/High (mp4) + setVideoHLS (m3u8),
- *   etiketler: a[href*="/tags/"]
- * React import'u YOK — node ile doğrudan test edilebilir.
+ * XVideos (https://www.xvideos.com) integration — pure helpers.
+ * Source: endpoints used by the rodrigogs/xvideos library (verified live):
+ * - Search: GET /?k=<word>&sort=..&durf=..&datef=..&quality=..[&p=<page-1>]
+ *   (no `p` on page 1; p is zero-based: p=1 → page 2)
+ * - Keywordless list: GET /new[/<page>] (fresh)
+ * - Cards: `id="video_<eid>" data-id="<numeric>"` thumb-block divs
+ * - Detail: html5player.setVideoUrlLow/High (mp4) + setVideoHLS (m3u8),
+ *   tags: a[href*="/tags/"]
+ * No React import — can be tested directly with node.
  */
 
 export const XVIDEOS_BASE = 'https://www.xvideos.com';
 
-/** Arama/liste HTML'i için desktop UA (mobil UA farklı markup döndürebilir). */
+/** Desktop UA for search/list HTML (a mobile UA may return different markup). */
 export const XVIDEOS_UA =
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148';
 
 export type XVideosSort = 'relevance' | 'uploaddate' | 'rating' | 'length' | 'views' | 'random';
 export type XVideosDatef = 'today' | 'week' | 'month' | '3month' | '6month' | 'all';
 
-/** Uygulamanın TimeRangeOption karşılığı (1y aralığı sitede yok → 'all'). */
+/** App's TimeRangeOption equivalent (no 1y range on site → 'all'). */
 export function xvideosDatefForTimeRange(timeRange: string | undefined): XVideosDatef {
   if (timeRange === '1d') return 'today';
   if (timeRange === '1w') return 'week';
@@ -41,14 +41,14 @@ export function buildXVideosSearchUrl(
 }
 
 /**
- * Sırayla denenecek aday URL'ler (kütüphanenin loadListingPage mantığı):
- * site bazı varyantlarda 404 verir (örn. `/new` 404, `/new/1` 200) ya da
- * boş liste döner; ilk dolu sonuç kazanır.
+ * Candidate URLs to try in order (the library's loadListingPage logic):
+ * the site 404s on some variants (e.g. `/new` 404s, `/new/1` 200s) or
+ * returns an empty list; the first non-empty result wins.
  *
- * Aramasız keşfet: sayfa 1 sitenin anasayfası (günlük seçki), deeper
- * sayfalar ayın popülerleri (`/best` güncel aya redirect olur,
- * `/best/YYYY-AA`). Ay bilinmiyorsa redirect çözer; çözülemezse
- * `/new` varyantlarına düşülür.
+ * Keywordless discover: page 1 is the site homepage (daily picks), deeper
+ * pages are the month's most popular (`/best` redirects to the current month,
+ * `/best/YYYY-MM`). When the month is unknown the redirect is resolved; if it
+ * cannot be resolved it falls back to the `/new` variants.
  */
 export function buildXVideosSearchCandidates(
   baseUrl: string,
@@ -62,6 +62,13 @@ export function buildXVideosSearchCandidates(
   const keyword = (k || '').trim();
   if (!keyword) {
     const m = (bestMonth || '').match(/^\d{4}-\d{2}$/) ? (bestMonth as string) : '';
+    // Explicit browse orders must not silently fall back to the homepage.
+    // /new/1 and /best -> /best/YYYY-MM were verified with parsed cards.
+    if (sort === 'uploaddate') return [`${base}/new/${Math.max(1, page)}`];
+    if (sort === 'views' && datef === 'month') {
+      if (page <= 1) return [`${base}/best`];
+      return m ? [`${base}/best/${m}/${page - 1}`] : [];
+    }
     if (page <= 1) {
       return m
         ? [`${base}/`, `${base}/best/${m}`, `${base}/best`, `${base}/new/1`]
@@ -82,7 +89,7 @@ export function buildXVideosSearchCandidates(
     return `${base}/?${qp.toString()}`;
   };
   if (page <= 1) return [make(undefined)];
-  // p sıfır tabanlıdır (p=1 → 2. sayfa); ikisi de denenir
+  // p is zero-based (p=1 → page 2); both are tried
   return [make(page - 1), make(page)];
 }
 
@@ -104,7 +111,7 @@ function decodeScriptValue(s: string): string {
     .trim();
 }
 
-/** `/best` HTML'inden güncel ay (`YYYY-AA`) çıkarılır (sayfalama linkinden). */
+/** Extracts the current month (`YYYY-MM`) from `/best` HTML (from the pagination link). */
 export function extractXVideosBestMonth(html: string): string {
   if (!html) return '';
   const m = html.match(/\/best\/(\d{4}-\d{2})\/\d+/);
@@ -112,20 +119,34 @@ export function extractXVideosBestMonth(html: string): string {
 }
 
 /**
- * Arama/liste HTML'inden kartları çıkarır. Her kart bir videodur
- * (site tamamen video; fotoğraf yok).
+ * Extracts cards from search/listing HTML. Every card is a video
+ * (the site is video-only; there are no photos).
  *
- * İki kart yapısı desteklenir:
+ * Two card structures are supported:
  * - Klasik: `id="video_<eid>" data-id="<numeric>"` thumb-block div'leri
- * - Yeni (`/best` sayfaları): `id="video-thumb-<enc>"` + `data-video` JSON
- *   (nümerik id, encodedId, previewVideo mp4)
+ * - New (`/best` pages): `id="video-thumb-<enc>"` + `data-video` JSON
+ *   (numeric id, encodedId, previewVideo mp4)
  */
 export function parseXVideosListing(html: string, source: BooruSource): BooruPost[] {
   const posts: BooruPost[] = [];
   const seen = new Set<string>();
   const base = (source.baseUrl || XVIDEOS_BASE).replace(/\/$/, '');
+  const mediaUrl = (value: string): string => {
+    const url = decodeScriptValue(value);
+    if (url.startsWith('//')) return `https:${url}`;
+    if (url.startsWith('/')) return `${base}${url}`;
+    return /^https?:\/\//i.test(url) ? url : '';
+  };
+  const thumbnailFrames = (url: string): string[] | undefined => {
+    if (url.includes('THUMBNUM')) {
+      return [1, 2, 3, 4, 5, 6, 7, 8].map((num) => url.replace(/THUMBNUM/g, String(num)));
+    }
+    const match = url.match(/_(\d+)_t\.(jpg|jpeg|webp|avif)/i);
+    return match ? [1, 3, 5, 7, 10, 15, 20, 25].map((num) =>
+      url.replace(/_\d+_t\.(jpg|jpeg|webp|avif)/i, `_${num}_t.${match[2]}`)) : undefined;
+  };
 
-  // Her kart `id="video_<eid>"` ile başlar; parçaya bölüp kart içinden çek.
+  // Each card starts with `id="video_<eid>"`; split the chunk and read from inside the card.
   const chunks = html.split('id="video_');
   for (let i = 1; i < chunks.length; i++) {
     const c = chunks[i];
@@ -138,26 +159,14 @@ export function parseXVideosListing(html: string, source: BooruSource): BooruPos
 
     const thumbM =
       c.match(/data-src="([^"]+)"/) || c.match(/<img[^>]*src="([^"]+)"/);
-    const preview = thumbM ? thumbM[1].trim() : '';
+    const template = thumbM ? mediaUrl(thumbM[1]) : '';
+    const preview = template.replace(/THUMBNUM/g, '1');
     if (!preview) continue;
 
     const pvvM = c.match(/data-pvv="([^"]+\.mp4[^"]*)"/i);
-    const previewVideo = pvvM ? pvvM[1].trim() : undefined;
+    const previewVideo = pvvM ? mediaUrl(pvvM[1]) || undefined : undefined;
 
-    let previewThumbs: string[] | undefined;
-    if (preview.includes('THUMBNUM')) {
-      previewThumbs = [1, 2, 3, 4, 5, 6, 7, 8].map((num) =>
-        preview.replace('THUMBNUM', String(num))
-      );
-    } else {
-      const matchNum = preview.match(/_(\d+)_t\.(jpg|jpeg|webp|avif)/i);
-      if (matchNum) {
-        const ext = matchNum[2];
-        previewThumbs = [1, 3, 5, 7, 10, 15, 20, 25].map((num) =>
-          preview.replace(/_\d+_t\.(jpg|jpeg|webp|avif)/i, `_${num}_t.${ext}`)
-        );
-      }
-    }
+    const previewThumbs = thumbnailFrames(template);
 
     const titleM =
       c.match(/<p class="title"><a[^>]*title="([^"]+)"/) ||
@@ -168,7 +177,7 @@ export function parseXVideosListing(html: string, source: BooruSource): BooruPos
     const profM = c.match(/<(?:span|a) class="name"[^>]*>([^<]+)</);
     const profile = profM ? decodeEntities(profM[1]).trim() : '';
 
-    // Kalite işareti (örn. >720p< / >360p<) → 16:9 boyut tahmini
+    // Quality marker (e.g. >720p< / >360p<) -> 16:9 dimension estimate
     let height = 720;
     const qM = c.match(/>(\d{3,4})p</);
     if (qM) {
@@ -190,8 +199,9 @@ export function parseXVideosListing(html: string, source: BooruSource): BooruPos
       previewVideoUrl: previewVideo,
       previewThumbs,
       sampleUrl: preview,
-      // Orijinal mp4 secure-token'lıdır ve süreli olabilir; liste anında
-      // gömülmez — viewer açılışında detaydan taze çözülür.
+      // The original mp4 is secure-tokenized and may be time-limited; it is not
+      // embedded in the listing — it is resolved fresh from the detail page on
+      // viewer open.
       originalUrl: '',
       width,
       height,
@@ -213,9 +223,9 @@ export function parseXVideosListing(html: string, source: BooruSource): BooruPos
     });
   }
 
-  // Yeni kart yapısı (`/best` sayfaları): `id="video-thumb-<enc>"` div'leri.
-  // Nümerik id + önizleme mp4'ü `data-video` JSON'undan, başlık/küçük resim
-  // kart içinden alınır; çıktı formu klasik yapıyla aynıdır.
+  // New card structure (`/best` pages): `id="video-thumb-<enc>"` divs.
+  // Numeric id and preview mp4 come from the `data-video` JSON, title/thumb
+  // from inside the card; the output shape matches the classic structure.
   const bestChunks = html.split('id="video-thumb-');
   for (let i = 1; i < bestChunks.length; i++) {
     const c = bestChunks[i];
@@ -230,10 +240,10 @@ export function parseXVideosListing(html: string, source: BooruSource): BooruPos
         if (j && typeof j.id === 'number' && Number.isFinite(j.id)) vid = j.id;
         if (j && typeof j.encodedId === 'string') enc = j.encodedId.trim();
         if (j && typeof j.previewVideo === 'string' && j.previewVideo.trim()) {
-          previewVideo = j.previewVideo.trim();
+          previewVideo = mediaUrl(j.previewVideo) || undefined;
         }
       } catch {
-        // bozuk JSON: aşağıdaki regex'lere düş
+        // Broken JSON: fall through to the regexes below
       }
     }
     if (!enc) {
@@ -250,22 +260,16 @@ export function parseXVideosListing(html: string, source: BooruSource): BooruPos
 
     const thumbM =
       c.match(/data-src="([^"]+)"/) || c.match(/<img[^>]*src="([^"]+)"/);
-    const preview = thumbM ? thumbM[1].trim() : '';
+    const template = thumbM ? mediaUrl(thumbM[1]) : '';
+    const preview = template.replace(/THUMBNUM/g, '1');
     if (!preview || preview.includes('blank.gif')) continue;
 
     if (!previewVideo) {
       const pvvM = c.match(/data-pvv="([^"]+\.mp4[^"]*)"/i);
-      if (pvvM) previewVideo = pvvM[1].trim();
+      if (pvvM) previewVideo = mediaUrl(pvvM[1]) || undefined;
     }
 
-    let previewThumbs: string[] | undefined;
-    const matchNum = preview.match(/_(\d+)_t\.(jpg|jpeg|webp|avif)/i);
-    if (matchNum) {
-      const ext = matchNum[2];
-      previewThumbs = [1, 3, 5, 7, 10, 15, 20, 25].map((num) =>
-        preview.replace(/_\d+_t\.(jpg|jpeg|webp|avif)/i, `_${num}_t.${ext}`)
-      );
-    }
+    const previewThumbs = thumbnailFrames(template);
 
     const titleM =
       c.match(/<div class="title" title="([^"]+)"/) || c.match(/title="([^"]+)"/);
@@ -323,7 +327,7 @@ export interface XVideosFiles {
   hls: string;
 }
 
-/** Detay sayfası HTML'inden oynatılabilir dosya URL'lerini çıkarır. */
+/** Extracts playable file URLs from the detail page HTML. */
 export function parseXVideosFiles(html: string): XVideosFiles {
   const pick = (patterns: RegExp[]): string => {
     for (const p of patterns) {

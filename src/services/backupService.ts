@@ -5,7 +5,7 @@ import { BooruPost, BooruTagGroups } from '../types/booru';
 import { StorageService } from './storage';
 import { asStr, lower, urlEndsWith } from '../utils/guards';
 import { normalizeBooruMediaUrl } from '../utils/media';
-import animeboxesDefaultBackup from '../data/animeboxesBackup.json';
+import { getPostKey } from '../utils/postIdentity';
 
 export interface ImportResult {
   favoritesImported: number;
@@ -136,8 +136,8 @@ export function mapAnimeBoxesFavoriteToBooruPost(f: any): BooruPost {
 }
 
 /**
- * Kendi dışa aktarma formatımız (exportBackup) BooruPost dizisi yazar.
- * Bu şekil doğrudan normalize edilip geçirilir.
+ * Our own export format (exportBackup) writes a BooruPost array.
+ * This shape is normalized and passed through directly.
  */
 function isBooruPostShape(f: any): boolean {
   if (!f || typeof f !== 'object') return false;
@@ -190,6 +190,12 @@ function normalizeBooruPost(f: any): BooruPost {
     sourceId,
     sourceName,
     previewUrl,
+    previewFallbackUrl: typeof f.previewFallbackUrl === 'string' ? normalizeBooruMediaUrl(f.previewFallbackUrl) : undefined,
+    previewVideoUrl: typeof f.previewVideoUrl === 'string' ? normalizeBooruMediaUrl(f.previewVideoUrl) : undefined,
+    previewThumbUrl: typeof f.previewThumbUrl === 'string' ? normalizeBooruMediaUrl(f.previewThumbUrl) : undefined,
+    previewThumbs: Array.isArray(f.previewThumbs)
+      ? f.previewThumbs.filter((url: unknown): url is string => typeof url === 'string' && !!url.trim()).map(normalizeBooruMediaUrl)
+      : undefined,
     sampleUrl,
     originalUrl,
     width,
@@ -221,9 +227,9 @@ function inferSourceFromHaystack(haystack: string): { id: string; name: string }
 export const BackupService = {
   /**
    * Parse backup and extract posts, starred tags, search history, banned tags.
-   * İki formatı kabul eder:
+   * Accepts two formats:
    * - AnimeBoxes (.abbj): favorites[].preview.url + tags string + searchHistory[].searchText
-   * - Kendi dışa aktarmamız (exportBackup): favorites[] BooruPost + favoriteTags/blacklistedTags string dizileri
+   * - Our own export (exportBackup): favorites[] BooruPost + favoriteTags/blacklistedTags string arrays
    */
   parseAnimeBoxesBackup(backupData: any): {
     posts: BooruPost[];
@@ -249,7 +255,7 @@ export const BackupService = {
       .map((h: any) => (typeof h === 'string' ? cleanText(h) : h && h.searchText ? cleanText(h.searchText) : ''))
       .filter(Boolean);
 
-    // Kendi formatımızdaki etiket listeleri (string dizileri)
+    // Our own format's tag lists (string arrays)
     const ownFavTags = Array.isArray(backupData?.favoriteTags)
       ? backupData.favoriteTags.map(cleanText).filter(Boolean)
       : [];
@@ -283,72 +289,54 @@ export const BackupService = {
   async importBackupData(backupData: any): Promise<ImportResult> {
     const { posts, starredTags, searchHistory, bannedTags, recentViews } = this.parseAnimeBoxesBackup(backupData);
 
-    // 0. Merge Recent Views (favoriler tarihe göre en yeniden eskiye: dateAdded desc).
-    // Yedekte recentViews varsa onlar da birleştirilir.
+    // 0. Merge Recent Views (favorites newest-first by dateAdded desc).
+    // Recent views in the backup are merged too.
     try {
       const sortedByDate = [...posts, ...recentViews].sort((a, b) => {
         const ta = a.createdAt ? Date.parse(a.createdAt) : 0;
         const tb = b.createdAt ? Date.parse(b.createdAt) : 0;
         return tb - ta;
       });
-      const currentRecent = await StorageService.getRecentViews();
-      const existingRecentIds = new Set(currentRecent.map((p) => p.id));
-      const freshViews = sortedByDate.filter((p) => !existingRecentIds.has(p.id));
-      if (freshViews.length > 0) {
-        const mergedRecent = [...currentRecent, ...freshViews].slice(-500);
-        await StorageService.saveAllRecentViews(mergedRecent);
-      }
+      await StorageService.mergeRecentViews(sortedByDate);
     } catch (e) {
       console.warn('[BackupService] Recent views merge error:', e);
     }
 
     // 1. Merge Favorites
-    const currentFavs = await StorageService.getFavorites();
-    const existingIds = new Set(currentFavs.map((p) => p.id));
-    const existingUrls = new Set(currentFavs.map((p) => p.originalUrl || p.sampleUrl || p.previewUrl));
-
-    const newPostsToAdd: BooruPost[] = [];
-    for (const p of posts) {
-      if (!existingIds.has(p.id) && !existingUrls.has(p.originalUrl)) {
-        newPostsToAdd.push(p);
-        existingIds.add(p.id);
-        existingUrls.add(p.originalUrl);
+    let favoritesImported = 0;
+    const mergedFavorites = await StorageService.updateFavorites((currentFavs) => {
+      const existingIds = new Set(currentFavs.map(getPostKey));
+      const mediaKey = (p: BooruPost) => JSON.stringify([p.sourceId, p.originalUrl || p.sampleUrl || p.previewUrl]);
+      const existingUrls = new Set(currentFavs.map(mediaKey));
+      const added: BooruPost[] = [];
+      for (const p of posts) {
+        if (!existingIds.has(getPostKey(p)) && !existingUrls.has(mediaKey(p))) {
+          added.push(p);
+          existingIds.add(getPostKey(p));
+          existingUrls.add(mediaKey(p));
+        }
       }
-    }
-
-    const mergedFavorites = [...newPostsToAdd, ...currentFavs];
-    await StorageService.saveAllFavorites(mergedFavorites);
+      favoritesImported = added.length;
+      return added.length ? [...added, ...currentFavs] : currentFavs;
+    });
 
     // 2. Merge Starred / Favorite Tags
-    const currentFavTags = await StorageService.getFavoriteTags();
-    const mergedFavTags = Array.from(new Set([...starredTags, ...currentFavTags]));
-    await StorageService.saveAllFavoriteTags(mergedFavTags);
+    await StorageService.updateFavoriteTags((tags) => Array.from(new Set([...starredTags, ...tags])));
 
     // 3. Merge Search History
-    const currentHistory = await StorageService.getSearchHistory();
-    const mergedHistory = Array.from(new Set([...searchHistory, ...currentHistory])).slice(0, 100);
-    await StorageService.saveAllSearchHistory(mergedHistory);
+    await StorageService.updateSearchHistory((history) => Array.from(new Set([...searchHistory, ...history])).slice(0, 100));
 
     // 4. Merge Banned Tags (if any)
     if (bannedTags.length > 0) {
-      const currentBanned = await StorageService.getBlacklistedTags();
-      const mergedBanned = Array.from(new Set([...bannedTags, ...currentBanned]));
-      await StorageService.saveAllBlacklistedTags(mergedBanned);
+      await StorageService.updateBlacklistedTags((tags) => Array.from(new Set([...bannedTags, ...tags])));
     }
 
     return {
-      favoritesImported: newPostsToAdd.length,
+      favoritesImported,
       tagsImported: starredTags.length,
       historyImported: searchHistory.length,
       totalFavorites: mergedFavorites.length,
     };
-  },
-
-  /**
-   * Directly import the bundled '15 Sep 2026.abbj' backup
-   */
-  async importBundledBackup(): Promise<ImportResult> {
-    return await this.importBackupData(animeboxesDefaultBackup);
   },
 
   /**
@@ -414,12 +402,12 @@ export const BackupService = {
       } catch {
         // Ignored if already exists
       }
-      exportFile.write(jsonStr);
+      await exportFile.write(jsonStr);
 
       if (await Sharing.isAvailableAsync()) {
         await Sharing.shareAsync(exportFile.uri, {
           mimeType: 'application/json',
-          dialogTitle: 'Yedeği Paylaş / Kaydet',
+          dialogTitle: 'Share / Save Backup',
           UTI: 'public.json',
         });
         return true;
@@ -439,16 +427,14 @@ export const BackupService = {
    */
   async repairAndNormalizeStoredFavorites(): Promise<number> {
     try {
-      const currentFavs = await StorageService.getFavorites();
-
       let changedCount = 0;
-      if (currentFavs && currentFavs.length > 0) {
+      await StorageService.updateFavorites((currentFavs) => {
         const repairedFavs = currentFavs.map((post) => {
           const prevUrl = normalizeBooruMediaUrl(post.previewUrl);
           const sampUrl = normalizeBooruMediaUrl(post.sampleUrl);
           const origUrl = normalizeBooruMediaUrl(post.originalUrl);
 
-          // Eski kayıtlarda eksik sourceId/sourceName'i URL'lerden geri çıkar
+          // Backfill missing sourceId/sourceName on legacy records from URLs
           let nextSourceId = post.sourceId;
           let nextSourceName = post.sourceName;
           if (!nextSourceId || !nextSourceName) {
@@ -460,7 +446,8 @@ export const BackupService = {
             }
           }
 
-          // Realbooru ve diğer booru'lardaki .webm kayıtlarının fileExt'ini düzelt ('webm'), URL'leri bozma (.mp4'e çevirme)
+          // Fix the fileExt of .webm records from Realbooru and other boorus ('webm')
+          // without corrupting URLs (do not rewrite them to .mp4)
           let nextFileExt = post.fileExt;
           const isRealbooru =
             nextSourceId === 'realbooru' ||
@@ -498,14 +485,10 @@ export const BackupService = {
           return post;
         });
 
-        if (changedCount > 0) {
-          await StorageService.saveAllFavorites(repairedFavs);
-          console.log(`[BackupService] Successfully repaired ${changedCount} favorites in storage.`);
-        }
-      }
+        return changedCount > 0 ? repairedFavs : currentFavs;
+      });
 
       // Repair and normalize favorite tags
-      const currentTags = await StorageService.getFavoriteTags();
       const STARRED_TAG_REPAIR_MAP: Record<string, string> = {
         'toned_huge_breasts': 'toned huge_breasts',
         'midriff_thick_thighs_microskirt': 'midriff thick_thighs microskirt',
@@ -525,7 +508,7 @@ export const BackupService = {
         'hu_tao_(genshin_impact)_thick_thighs': 'hu_tao_(genshin_impact) thick_thighs',
       };
 
-      if (currentTags && currentTags.length > 0) {
+      await StorageService.updateFavoriteTags((currentTags) => {
         let tagRepaired = false;
         const fixedTags = currentTags.map((t) => {
           if (STARRED_TAG_REPAIR_MAP[t]) {
@@ -534,11 +517,8 @@ export const BackupService = {
           }
           return t;
         });
-        if (tagRepaired) {
-          await StorageService.saveAllFavoriteTags(Array.from(new Set(fixedTags)));
-          console.log('[BackupService] Successfully normalized multi-tag favorite clusters.');
-        }
-      }
+        return tagRepaired ? Array.from(new Set(fixedTags)) : currentTags;
+      });
 
       return changedCount;
     } catch (e) {

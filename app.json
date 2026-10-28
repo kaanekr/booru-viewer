@@ -17,6 +17,7 @@
       }
     },
     "android": {
+      "package": "com.booru.viewer",
       "adaptiveIcon": {
         "backgroundColor": "#12151A",
         "foregroundImage": "./assets/android-icon-foreground.png",
@@ -31,12 +32,8 @@
     "plugins": [
       "expo-image",
       "expo-sharing",
-      "expo-video"
-    ],
-    "extra": {
-      "eas": {
-        "projectId": "61bce249-505d-48e8-b6fa-81eec48bb68c"
-      }
-    }
+      "expo-video",
+      "expo-status-bar"
+    ]
   }
 }
