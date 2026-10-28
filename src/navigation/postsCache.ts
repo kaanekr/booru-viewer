@@ -8,11 +8,11 @@ function makeKey(): string {
   return `posts_${Date.now().toString(36)}_${counter}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
-/** Büyük post dizilerini navigation params ile geçirmek yerine burada tutar. */
+/** Holds large post arrays here instead of passing them via navigation params. */
 export function setCachedPosts(posts: BooruPost[]): string {
   const key = makeKey();
   cache.set(key, posts);
-  // Belleği şişirmemek için eski girişleri at
+  // Drop old entries to keep memory usage down
   if (cache.size > 20) {
     const oldest = cache.keys().next().value;
     if (oldest) cache.delete(oldest);
@@ -24,7 +24,7 @@ export function getCachedPosts(key: string): BooruPost[] {
   return cache.get(key) ?? [];
 }
 
-/** Ekran kapanınca kendi girişini siler — harita şişmez. */
+/** Each screen deletes its own entry on close — the map never grows. */
 export function deleteCachedPosts(key: string): void {
   cache.delete(key);
 }

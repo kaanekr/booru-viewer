@@ -1,10 +1,12 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useState, useRef } from 'react';
 import {
   ActivityIndicator,
   Dimensions,
+  Platform,
   FlatList,
   Keyboard,
   ScrollView,
+  type ScrollViewInstance,
   StyleSheet,
   Text,
   TextInput,
@@ -20,10 +22,6 @@ import {
   ArrowLeft,
   Image as ImageIcon,
   SlidersHorizontal,
-  Calendar,
-  Sparkles,
-  ShieldCheck,
-  Star,
   Pin,
   Layers,
   AlertCircle,
@@ -48,10 +46,16 @@ import type { TabParamList, SearchMode } from '../navigation/types';
 import { StorageService } from '../services/storage';
 import { PostCard } from '../components/PostCard';
 import { TagChip } from '../components/TagChip';
+import { applyQuickFilter, getSourceQuickFilters, isQuickFilterActive, SourceQuickFilter } from '../utils/sourceQuickFilters';
+import { useScrollAwayHeader } from '../utils/scrollAwayHeader';
+import { ScrollAwayHeader } from '../components/ScrollAwayHeader';
 import { pushViewer } from '../navigation/rootNavigation';
+import { getPostKey } from '../utils/postIdentity';
+import { getGridPreviewVideoCandidates } from '../utils/gridPreviewMedia';
 import { SearchFilterModal } from '../components/SearchFilterModal';
+import { SourceSheet } from '../components/SourceSheet';
 import { Colors } from '../theme/colors';
-import { getMediaHeaders, getMediaUrl, isVideoPost } from '../utils/media';
+import { getMediaHeaders, getMediaUrl, isImageMediaUrl } from '../utils/media';
 import { useVisibleIds, useMountedIds, useFocusedCardIds, CardLayout } from '../utils/gridVisibility';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { useSource } from '../context/SourceContext';
@@ -97,8 +101,31 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 }) => {
   const hookNavigation = useNavigation<any>();
   const navigation = propNavigation ?? hookNavigation;
-  const { activeSource: contextSource } = useSource();
-  const activeSource = propSource ?? contextSource;
+  const { activeSource: contextSource, selectSource } = useSource();
+  const [localSource, setLocalSource] = useState<BooruSource | null>(null);
+  const activeSource = localSource ?? propSource ?? contextSource;
+  useEffect(() => { setLocalSource(null); }, [propSource]);
+  const handleSelectSource = useCallback(async (source: BooruSource) => {
+    // A search opened from a post owns its source; don't change unrelated screens.
+    if (propSource) setLocalSource(source);
+    else await selectSource(source);
+  }, [propSource, selectSource]);
+  const [isSourceSheetOpen, setIsSourceSheetOpen] = useState(false);
+
+  const handleManageSources = () => {
+    setIsSourceSheetOpen(false);
+    navigation?.navigate?.('Settings', { section: 'sources' });
+  };
+
+  const handleOpenSourcePicker = () => {
+    if (onOpenSourcePicker) {
+      onOpenSourcePicker();
+    } else {
+      setIsSourceSheetOpen(true);
+    }
+  };
+
+  const showSourcePicker = true;
   const insets = useSafeAreaInsets();
   const [query, setQuery] = useState('');
   const [history, setHistory] = useState<string[]>([]);
@@ -118,24 +145,31 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const [loadingMore, setLoadingMore] = useState(false);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const [searchError, setSearchError] = useState<string | null>(null);
-  // Video kapaklar sadece ekrandayken oynar (kasılmayı önler)
+  // Video covers play only while on screen (prevents stutter)
   const [visibleIds, updateVisible] = useVisibleIds();
-  // Odaklı oyuncu mimarisi: merkeze en yakın 2-4 kart video açar
+  // Focused-player architecture: the 2-4 cards nearest the center play video
   const [focusedIds, updateFocused] = useFocusedCardIds(80, 4);
-  // Mount penceresi: uzak sonuçlar yer tutucuya düşer (bkz. FeedScreen).
+  // Mount window: distant results fall back to placeholders (see FeedScreen).
   const [mountedIds, updateMounted] = useMountedIds();
   const searchOffsetRef = useRef(0);
+  const gridTopRef = useRef(0);
+  const viewportHeightRef = useRef(SCREEN_HEIGHT);
   // RedGifs niches (kategoriler)
   const [niches, setNiches] = useState<RedGifsNiche[]>([]);
   const [nichesLoading, setNichesLoading] = useState(false);
   const isFocused = useIsFocused();
   const mediaAllowed = useMediaPlaybackAllowed();
+  const header = useScrollAwayHeader({
+    enabled: isSearchActive && !loading && !searchError && results.length > 0,
+    resetKey: activeSource.id,
+    pinned: !isFocused || isInputFocused || isFilterModalOpen || isSourceSheetOpen,
+  });
 
-  // Kapağa dönünce fav setini tazele — viewer'da favlanan anında rozetlenir
+  // Refresh the fav set when returning to the cover — items faved in the viewer badge instantly
   useEffect(() => {
     if (isFocused) {
       StorageService.getFavorites().then((favs) => {
-        setFavoriteIds(new Set(favs.map((p) => p.id)));
+        setFavoriteIds(new Set(favs.map(getPostKey)));
       });
     }
   }, [isFocused]);
@@ -143,6 +177,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   // Source Tracking & Race Condition Prevention Refs
   const lastActiveSourceIdRef = useRef(activeSource.id);
   const searchRequestIdRef = useRef(0);
+  const paginationPendingRef = useRef<number | null>(null);
+  const hasMoreRef = useRef(true);
+  const resultsRef = useRef<BooruPost[]>([]);
   const currentPageRef = useRef<number>(1);
   const filterConfigRef = useRef<SearchFilterConfig>(filterConfig);
 
@@ -150,26 +187,18 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     filterConfigRef.current = filterConfig;
   }, [filterConfig]);
 
+  useEffect(() => () => { searchRequestIdRef.current++; }, []);
+
   const routeParams = route?.params;
   const effectiveTag = initialTag ?? routeParams?.tag;
   const effectiveMode = initialMode ?? routeParams?.mode ?? 'replace';
-
-  const handleOpenSourcePicker = () => {
-    if (onOpenSourcePicker) {
-      onOpenSourcePicker();
-    } else if (navigation?.navigate) {
-      navigation.navigate('Settings');
-    }
-  };
-
-  const showSourcePicker = Boolean(onOpenSourcePicker) || (!onBackPress && Boolean(navigation?.navigate));
 
   useEffect(() => {
     StorageService.getSearchHistory().then(setHistory);
     StorageService.getFavoriteTags().then(setFavoriteTags);
   }, [isSearchActive]);
 
-  // RedGifs niches: keşif ekranında ve redgifs aktifken trendleri yükle
+  // RedGifs niches: load trends on the explore screen while redgifs is active
   useEffect(() => {
     if (isSearchActive || activeSource.type !== 'redgifs') {
       return;
@@ -233,6 +262,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       lastActiveSourceIdRef.current = activeSource.id;
       // Invalidate any ongoing asynchronous search or tag suggestion requests
       searchRequestIdRef.current += 1;
+      paginationPendingRef.current = null;
+      hasMoreRef.current = true;
+      resultsRef.current = [];
 
       setSuggestions([]);
       setResults([]);
@@ -254,14 +286,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       return;
     }
 
-    // Boşlukla bitiyorsa kullanıcı henüz yeni bir etiket yazmaya başlamamıştır
+    // If it ends with a space the user has not started typing a new tag yet
     if (query.endsWith(' ')) {
       setSuggestions([]);
       return;
     }
 
-    // Çoklu etiket aramalarında o an yazılmakta olan son etiketi baz al.
-    // `tag:"..."` öneki ve tırnaklar aramadan sıyrılır (örn. tag:"big bre -> big bre).
+    // For multi-tag searches base it on the tag currently being typed.
+    // The `tag:"..."` prefix and quotes are stripped from the search (e.g. tag:"big bre -> big bre).
     const tokens = query.trim().split(/\s+/);
     const activeToken = tokens[tokens.length - 1] || '';
     const cleanToken = activeToken
@@ -276,20 +308,21 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     }
 
     const currentSourceId = activeSource.id;
+    let cancelled = false;
     const timer = setTimeout(async () => {
       try {
-        const list = await booruApi.searchTags(cleanToken);
-        if (currentSourceId === lastActiveSourceIdRef.current) {
+        const list = await booruApi.searchTags(cleanToken, 12, activeSource);
+        if (!cancelled && currentSourceId === lastActiveSourceIdRef.current) {
           setSuggestions(list);
         }
       } catch (e) {
-        if (currentSourceId === lastActiveSourceIdRef.current) {
+        if (!cancelled && currentSourceId === lastActiveSourceIdRef.current) {
           setSuggestions([]);
         }
       }
     }, 250);
 
-    return () => clearTimeout(timer);
+    return () => { cancelled = true; clearTimeout(timer); };
   }, [query, isInputFocused, filterConfig.autocompleteFromServer, activeSource.id]);
 
   const executeSearchWithConfig = async (config: SearchFilterConfig) => {
@@ -301,9 +334,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     setLoading(true);
     setSearchError(null);
     setResults([]);
+    resultsRef.current = [];
+    paginationPendingRef.current = null;
+    hasMoreRef.current = true;
+    setLoadingMore(false);
 
     const requestId = ++searchRequestIdRef.current;
     const expectedSourceId = activeSource.id;
+    const isCurrent = () => requestId === searchRequestIdRef.current && expectedSourceId === lastActiveSourceIdRef.current;
 
     const startPage = Math.max(1, config.jumpToPage || 1);
     setPage(startPage);
@@ -316,46 +354,51 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       await StorageService.addSearchHistory(config.tags.join(' '));
       StorageService.getSearchHistory().then(setHistory);
     }
+    if (!isCurrent()) return;
 
-    // Sabit sayfa limiti: jumpToPage > 1'de rate limit koruması ve derin sayfa için 100 gönderi çekilir (Doküman default 100)
+    // Fixed page limit: for jumpToPage > 1 fetch 100 posts for rate-limit protection and deep pages (docs default 100)
     const effectiveLimit = config.jumpToPage > 1 ? 100 : (activeSource.type === 'cumst' ? 50 : 24);
 
-    // Atlamalı aramada scroll'u başa al — kullanıcı eski listenin dibinde kalmasın
+    // On a jump search scroll back to top — keep the user from sitting at the bottom of the old list
     try {
       resultsScrollRef.current?.scrollTo({ y: 0, animated: false });
     } catch {}
 
     try {
-      const posts = await booruApi.fetchPostsWithFilter(config, startPage, effectiveLimit);
+      const posts = await booruApi.fetchPostsWithFilter(config, startPage, effectiveLimit, activeSource);
       // Guard: Ignore response if newer search request was triggered
-      if (requestId !== searchRequestIdRef.current) {
+      if (!isCurrent()) {
         return;
       }
 
       posts.slice(0, 10).forEach((p) => {
         const raw = p.previewUrl || p.sampleUrl;
-        if (raw && /\.mp4($|\?)/i.test(raw.split('?')[0])) return;
+        if (!isImageMediaUrl(raw)) return;
         const u = getMediaUrl(raw);
-        if (u) Image.prefetch(u, { headers: getMediaHeaders(u) });
+        if (u) Image.prefetch(u, { headers: getMediaHeaders(u) }).catch(() => {});
       });
+      resultsRef.current = posts;
+      hasMoreRef.current = posts.length > 0;
       setResults(posts);
       if (posts.length === 0) {
-        setSearchError('Sonuç bulunamadı');
+        setSearchError('No results found');
       }
     } catch (e: any) {
+      if (!isCurrent()) return;
       console.warn('Search with config error:', e);
+      resultsRef.current = [];
       setResults([]);
-      setSearchError(e?.message || 'Arama sonuçları getirilirken bir hata oluştu.');
+      setSearchError(e?.message || 'An error occurred while fetching search results.');
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   };
 
   const handleSelectSuggestion = (suggestedTag: string, immediateSearch = false, category?: TagCategory) => {
     Haptics.selectionAsync();
 
-    // nhentai / hentaihaven: öneri gerçek etiketse `tag:...` veya `artist:...`
-    // mekaniğiyle ara (diğer sunuculardaki gibi).
+    // nhentai / hentaihaven: if the suggestion is a real tag, search via the `tag:...` or `artist:...`
+    // mechanism (like the other servers).
     const qualifiedTag =
       activeSource.type === 'nhentai'
         ? nhentaiTagQuery(suggestedTag, category)
@@ -385,7 +428,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   };
 
   const parseQueryToTags = (raw: string): string[] => {
-    // Tırnaklı gruplar tek token kalır: tag:"big breasts" bölünmez
+    // Quoted groups stay a single token: tag:"big breasts" is not split
     return (raw.trim().match(/("[^"]*"|[^\s"])+/g) || [])
       .map((t) => t.trim().toLowerCase())
       .filter(Boolean);
@@ -404,7 +447,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     let updatedTags: string[];
 
     if (mode === 'add') {
-      // Boş sorguda eklenecek bir şey yok ama mevcut filtreyle yine de ara
+      // Empty query has nothing to add, but still search with the current filter
       const currentTags = filterConfig.tags || [];
       const newToAdd = incomingTags.filter((t) => !currentTags.includes(t));
       updatedTags = [...currentTags, ...newToAdd];
@@ -434,62 +477,70 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     setIsFilterModalOpen(false);
     setFilterConfig(newConfig);
     filterConfigRef.current = newConfig;
-    if (newConfig.tags.length > 0) {
-      setQuery(newConfig.tags.join(' '));
-    }
+    setQuery(newConfig.tags.join(' '));
     executeSearchWithConfig(newConfig);
   };
 
+  const handleCardPress = useCallback((post: BooruPost) => {
+    const index = results.findIndex((item) => getPostKey(item) === getPostKey(post));
+    if (index >= 0) pushViewer(results, index, filterConfig.tags, filterConfig, activeSource);
+  }, [results, filterConfig, activeSource]);
+
   const loadMoreResults = async () => {
-    if (!isSearchActive || loadingMore || loading) return;
+    if (!isFocused || !isSearchActive || loadingMore || loading || paginationPendingRef.current !== null || !hasMoreRef.current) return;
     const requestId = searchRequestIdRef.current;
     const expectedSourceId = activeSource.id;
+    const isCurrent = () => requestId === searchRequestIdRef.current && expectedSourceId === lastActiveSourceIdRef.current;
+    paginationPendingRef.current = requestId;
 
     setLoadingMore(true);
     const activeConfig = filterConfigRef.current || filterConfig;
     const currentBase = currentPageRef.current || page;
     const nextPage = currentBase + 1;
-    setPage(nextPage);
-    currentPageRef.current = nextPage;
 
     const effectiveLimit = activeConfig.jumpToPage > 1 ? 100 : (activeSource.type === 'cumst' ? 50 : 24);
 
     try {
-      const newPosts = await booruApi.fetchPostsWithFilter(activeConfig, nextPage, effectiveLimit);
-      if (requestId !== searchRequestIdRef.current || expectedSourceId !== lastActiveSourceIdRef.current) {
+      const newPosts = await booruApi.fetchPostsWithFilter(activeConfig, nextPage, effectiveLimit, activeSource);
+      if (!isCurrent()) {
         return;
       }
 
       newPosts.slice(0, 8).forEach((p) => {
         const raw = p.previewUrl || p.sampleUrl;
-        if (raw && /\.mp4($|\?)/i.test(raw.split('?')[0])) return;
+        if (!isImageMediaUrl(raw)) return;
         const u = getMediaUrl(raw);
-        if (u) Image.prefetch(u, { headers: getMediaHeaders(u) });
+        if (u) Image.prefetch(u, { headers: getMediaHeaders(u) }).catch(() => {});
       });
-      // Atlamalı sayfa boş dönerse (limit dışı) sayacı geri al, loader takılmasın
+      // If a jump page comes back empty (out of range) roll the counter back so the loader does not stick
       if (newPosts.length === 0) {
-        setPage(currentBase);
-        currentPageRef.current = currentBase;
+        hasMoreRef.current = false;
         return;
       }
-      setResults((prev) => {
-        const existingIds = new Set(prev.map((p) => p.id));
-        const unique = newPosts.filter((p) => !existingIds.has(p.id));
-        // API aynı sayfayı döndürdüyse sayacı geri al
-        if (unique.length === 0) {
-          setPage(currentBase);
-          currentPageRef.current = currentBase;
-          return prev;
-        }
-        return [...prev, ...unique];
+      const existingIds = new Set(resultsRef.current.map(getPostKey));
+      const unique = newPosts.filter((p) => {
+        const key = getPostKey(p);
+        if (existingIds.has(key)) return false;
+        existingIds.add(key);
+        return true;
       });
+      if (unique.length === 0) {
+        hasMoreRef.current = false;
+        return;
+      }
+      resultsRef.current = [...resultsRef.current, ...unique];
+      setResults(resultsRef.current);
+      setPage(nextPage);
+      currentPageRef.current = nextPage;
     } catch (e) {
-      // Hatalı sayfada sayacı geri al ki sonraki kaydırma aynı sayfayı denesin
-      setPage(currentBase);
-      currentPageRef.current = currentBase;
+      if (!isCurrent()) return;
+      // The page advances only on success, so retry fetches the same page.
       console.warn('Load more search error:', e);
     } finally {
-      setLoadingMore(false);
+      if (isCurrent() && paginationPendingRef.current === requestId) {
+        paginationPendingRef.current = null;
+        setLoadingMore(false);
+      }
     }
   };
 
@@ -500,6 +551,12 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   };
 
   const handleExitSearch = () => {
+    searchRequestIdRef.current++;
+    paginationPendingRef.current = null;
+    resultsRef.current = [];
+    hasMoreRef.current = false;
+    setLoading(false);
+    setLoadingMore(false);
     setIsSearchActive(false);
     setResults([]);
     setPage(1);
@@ -516,69 +573,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     }
   };
 
-  const resultsScrollRef = useRef<ScrollView>(null);
+  const resultsScrollRef = useRef<ScrollViewInstance>(null);
 
-  // Quick preset toggles
-  const handleQuickPreset = (
-    preset:
-      | 'score_day'
-      | 'score_week'
-      | 'score_month'
-      | 'score_all'
-      | 'safe_only'
-      | 'score_50'
-      | 'cumst_videos'
-      | 'cumst_onlyfans'
-      | 'cumst_fansly'
-  ) => {
-    Haptics.selectionAsync();
-    let updated: SearchFilterConfig = { ...filterConfig };
-    if (preset === 'score_day') {
-      updated.sortBy = updated.sortBy === 'score' && updated.timeRange === '1d' ? 'default' : 'score';
-      updated.timeRange = '1d';
-    } else if (preset === 'score_week') {
-      updated.sortBy = updated.sortBy === 'score' && updated.timeRange === '1w' ? 'default' : 'score';
-      updated.timeRange = '1w';
-    } else if (preset === 'score_month') {
-      updated.sortBy = updated.sortBy === 'score' && updated.timeRange === '1m' ? 'default' : 'score';
-      updated.timeRange = '1m';
-    } else if (preset === 'score_all') {
-      updated.sortBy = updated.sortBy === 'score' && updated.timeRange === 'all' ? 'default' : 'score';
-      updated.timeRange = 'all';
-    } else if (preset === 'safe_only') {
-      updated.rating = updated.rating === 'safe' ? 'all' : 'safe';
-    } else if (preset === 'score_50') {
-      updated.minScore = updated.minScore === 50 ? undefined : 50;
-    } else if (preset === 'cumst_videos') {
-      updated.cumstMediaType = updated.cumstMediaType === 'videos' ? 'all' : 'videos';
-    } else if (preset === 'cumst_onlyfans') {
-      updated.cumstService = updated.cumstService === 'onlyfans' ? 'all' : 'onlyfans';
-    } else if (preset === 'cumst_fansly') {
-      updated.cumstService = updated.cumstService === 'fansly' ? 'all' : 'fansly';
-    }
-
-    setFilterConfig(updated);
-    if (isSearchActive || updated.tags.length > 0) {
-      executeSearchWithConfig(updated);
-    }
-  };
-
-  // HentaiHaven: tür sayfaları tek dokunuşla aranır (tek token -> genre/{id}),
-  // Trend akışı boş sorgu + score sıralamasıyla home.trending_month'tan gelir.
-  const HENTAIHAVEN_QUICK_GENRES = ['yuri', 'ecchi', 'harem', 'anal', 'milf', 'bdsm'];
-
-  const handleHentaiHavenTrend = () => {
-    Haptics.selectionAsync();
-    const updated: SearchFilterConfig = {
-      ...filterConfig,
-      tags: [],
-      sortBy: filterConfig.sortBy === 'score' ? 'default' : 'score',
-      timeRange: '1m',
-      jumpToPage: 1,
-    };
-    setQuery('');
-    setFilterConfig(updated);
-    executeSearchWithConfig(updated);
+  const quickOptions = getSourceQuickFilters(activeSource, 'search', query.trim().length > 0);
+  const handleQuickPreset = (option: SourceQuickFilter) => {
+    // Also work before the first search, and use text currently in the input.
+    const updated = applyQuickFilter(option, { ...filterConfig, tags: parseQueryToTags(query) });
+    if (option.patch.tags) setQuery(option.patch.tags.join(' '));
+    void executeSearchWithConfig(updated);
   };
 
   const hasCustomFilters =
@@ -590,13 +592,13 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     (filterConfig.cumstMediaType && filterConfig.cumstMediaType !== 'all') ||
     filterConfig.jumpToPage > 1;
 
-  // Yükseklik dengeli masonry: her kart o an kısa olan sütuna gider.
-  // İki sütun aynı hizada biter; kısa sütun altında ölü boşluk kalmaz.
+  // Height-balanced masonry: each card goes to the currently shorter column.
+  // Both columns end level; no dead space remains under the short column.
   const leftColumn: BooruPost[] = [];
   const rightColumn: BooruPost[] = [];
   const layoutMap = new Map<string, CardLayout>();
   {
-    const colW = (SCREEN_WIDTH - 36) / 2; // PostCard ile aynı genişlik
+    const colW = (SCREEN_WIDTH - 36) / 2; // same width as PostCard
     let leftH = 0;
     let rightH = 0;
     results.forEach((post) => {
@@ -619,7 +621,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const playableIds = React.useMemo(() => {
     const set = new Set<string>();
     results.forEach((p) => {
-      if (p.previewVideoUrl || isVideoPost(p) || p.fileExt === 'mp4' || p.fileExt === 'webm') {
+      if (getGridPreviewVideoCandidates(p, Platform.OS).length > 0) {
         set.add(p.id);
       }
     });
@@ -627,18 +629,26 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   }, [results]);
   const playableIdsRef = useRef(playableIds);
   playableIdsRef.current = playableIds;
+  const lastGridUpdateRef = useRef(0);
+  const updateGridViewport = React.useCallback((immediate = false) => {
+    const covered = header.occlusionRef.current;
+    const offset = searchOffsetRef.current - gridTopRef.current + covered;
+    const height = Math.max(0, viewportHeightRef.current - covered);
+    updateVisible(layoutMapRef.current, offset, height);
+    updateMounted(layoutMapRef.current, offset, height);
+    updateFocused(layoutMapRef.current, offset, height, playableIdsRef.current, immediate);
+  }, [updateVisible, updateMounted, updateFocused]);
 
-  // Sonuç değişince ilk ekranın videoları hemen oynasın
+  // Play the first screen's videos immediately when the results change
   useEffect(() => {
-    updateVisible(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT);
-    updateMounted(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT);
-    updateFocused(layoutMapRef.current, searchOffsetRef.current, SCREEN_HEIGHT, playableIdsRef.current, true);
+    updateGridViewport(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [results]);
+  }, [results, header.height, header.enabled]);
 
   return (
     <View style={styles.container}>
       <View style={[styles.contentWrapper, { paddingTop: insets.top }]}>
+        <ScrollAwayHeader controller={header} top={insets.top}>
         {/* Top Header with Active Source Badge (when search is not active) */}
         {!isSearchActive && (
           <View style={styles.topHeader}>
@@ -654,13 +664,15 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                 </TouchableOpacity>
               )}
               <View>
-                <Text style={styles.topHeaderTitle}>Arama</Text>
-                <Text style={styles.topHeaderSubtitle}>Etiket veya görsel keşfet</Text>
+                <Text style={styles.topHeaderTitle}>Search</Text>
+                <Text style={styles.topHeaderSubtitle}>Discover tags or images</Text>
               </View>
             </View>
 
             {showSourcePicker && (
               <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={`Current source: ${activeSource.name}. Change source`}
                 activeOpacity={0.8}
                 onPress={() => {
                   Haptics.selectionAsync();
@@ -694,7 +706,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             <Search size={18} color={isInputFocused ? GOLD_ACCENT : Colors.dark.textMuted} />
             <TextInput
               style={styles.searchInput}
-              placeholder="Etiket veya içerik üretici ara..."
+              placeholder="Search tags or creators..."
               placeholderTextColor={Colors.dark.textMuted}
               value={query}
               onFocus={() => setIsInputFocused(true)}
@@ -772,6 +784,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             {/* Active Source Quick Badge */}
             {showSourcePicker && (
               <TouchableOpacity
+                accessibilityRole="button"
+                accessibilityLabel={`Current source: ${activeSource.name}. Change source`}
                 style={styles.sourceQuickChip}
                 onPress={() => {
                   Haptics.selectionAsync();
@@ -794,360 +808,52 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             >
               <SlidersHorizontal size={13} color={hasCustomFilters ? '#111216' : GOLD_ACCENT} />
               <Text style={[styles.quickChipText, hasCustomFilters && styles.quickChipTextActive]}>
-                Filtreler {hasCustomFilters ? '• Açık' : ''}
+                Filters {hasCustomFilters ? '• On' : ''}
               </Text>
             </TouchableOpacity>
 
-            {activeSource.type === 'cumst' ? (
-              <>
-                {/* Cumst Quick Day Leaderboard */}
+            {quickOptions.map((option) => {
+              const selected = isQuickFilterActive(option, filterConfig);
+              return (
                 <TouchableOpacity
-                  style={[
-                    styles.quickChip,
-                    filterConfig.sortBy === 'score' &&
-                      filterConfig.timeRange === '1d' &&
-                      styles.quickChipActive,
-                  ]}
-                  onPress={() => handleQuickPreset('score_day')}
+                  key={option.id}
+                  accessibilityRole="button"
+                  accessibilityLabel={option.label}
+                  accessibilityState={{ selected }}
+                  style={[styles.quickChip, selected && styles.quickChipActive]}
+                  onPress={() => handleQuickPreset(option)}
                   activeOpacity={0.7}
                 >
-                  <Flame
-                    size={13}
-                    color={
-                      filterConfig.sortBy === 'score' && filterConfig.timeRange === '1d'
-                        ? '#111216'
-                        : '#FF7B72'
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.quickChipText,
-                      filterConfig.sortBy === 'score' &&
-                        filterConfig.timeRange === '1d' &&
-                        styles.quickChipTextActive,
-                    ]}
-                  >
-                    Günün Lideri
-                  </Text>
+                  <Text style={[styles.quickChipText, selected && styles.quickChipTextActive]}>{option.label}</Text>
                 </TouchableOpacity>
-
-                {/* Cumst Quick Week Leaderboard */}
-                <TouchableOpacity
-                  style={[
-                    styles.quickChip,
-                    filterConfig.sortBy === 'score' &&
-                      filterConfig.timeRange === '1w' &&
-                      styles.quickChipActive,
-                  ]}
-                  onPress={() => handleQuickPreset('score_week')}
-                  activeOpacity={0.7}
-                >
-                  <Calendar
-                    size={13}
-                    color={
-                      filterConfig.sortBy === 'score' && filterConfig.timeRange === '1w'
-                        ? '#111216'
-                        : '#58A6FF'
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.quickChipText,
-                      filterConfig.sortBy === 'score' &&
-                        filterConfig.timeRange === '1w' &&
-                        styles.quickChipTextActive,
-                    ]}
-                  >
-                    Haftanın Lideri
-                  </Text>
-                </TouchableOpacity>
-
-                {/* Cumst Quick Month Leaderboard */}
-                <TouchableOpacity
-                  style={[
-                    styles.quickChip,
-                    filterConfig.sortBy === 'score' &&
-                      filterConfig.timeRange === '1m' &&
-                      styles.quickChipActive,
-                  ]}
-                  onPress={() => handleQuickPreset('score_month')}
-                  activeOpacity={0.7}
-                >
-                  <Star
-                    size={13}
-                    color={
-                      filterConfig.sortBy === 'score' && filterConfig.timeRange === '1m'
-                        ? '#111216'
-                        : '#FCC419'
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.quickChipText,
-                      filterConfig.sortBy === 'score' &&
-                        filterConfig.timeRange === '1m' &&
-                        styles.quickChipTextActive,
-                    ]}
-                  >
-                    Ayın Lideri
-                  </Text>
-                </TouchableOpacity>
-
-                {/* Cumst Quick Videos Only */}
-                <TouchableOpacity
-                  style={[
-                    styles.quickChip,
-                    filterConfig.cumstMediaType === 'videos' && styles.quickChipActive,
-                  ]}
-                  onPress={() => handleQuickPreset('cumst_videos')}
-                  activeOpacity={0.7}
-                >
-                  <Sparkles
-                    size={13}
-                    color={filterConfig.cumstMediaType === 'videos' ? '#111216' : '#A371F7'}
-                  />
-                  <Text
-                    style={[
-                      styles.quickChipText,
-                      filterConfig.cumstMediaType === 'videos' && styles.quickChipTextActive,
-                    ]}
-                  >
-                    Videolar
-                  </Text>
-                </TouchableOpacity>
-
-                {/* Cumst Quick OnlyFans */}
-                <TouchableOpacity
-                  style={[
-                    styles.quickChip,
-                    filterConfig.cumstService === 'onlyfans' && styles.quickChipActive,
-                  ]}
-                  onPress={() => handleQuickPreset('cumst_onlyfans')}
-                  activeOpacity={0.7}
-                >
-                  <Text
-                    style={[
-                      styles.quickChipText,
-                      filterConfig.cumstService === 'onlyfans' && styles.quickChipTextActive,
-                    ]}
-                  >
-                    OnlyFans
-                  </Text>
-                </TouchableOpacity>
-
-                {/* Cumst Quick Fansly */}
-                <TouchableOpacity
-                  style={[
-                    styles.quickChip,
-                    filterConfig.cumstService === 'fansly' && styles.quickChipActive,
-                  ]}
-                  onPress={() => handleQuickPreset('cumst_fansly')}
-                  activeOpacity={0.7}
-                >
-                  <Text
-                    style={[
-                      styles.quickChipText,
-                      filterConfig.cumstService === 'fansly' && styles.quickChipTextActive,
-                    ]}
-                  >
-                    Fansly
-                  </Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <>
-                {/* HentaiHaven: Trend + tek dokunuşla tür aramaları.
-                    Genel score/safe çipleri bu kaynakta etkisiz (API desteklemez). */}
-                {activeSource.type === 'hentaihaven' ? (
-                  <>
-                    <TouchableOpacity
-                      style={[
-                        styles.quickChip,
-                        filterConfig.sortBy === 'score' &&
-                          filterConfig.tags.length === 0 &&
-                          styles.quickChipActive,
-                      ]}
-                      onPress={handleHentaiHavenTrend}
-                      activeOpacity={0.7}
-                    >
-                      <Flame
-                        size={13}
-                        color={
-                          filterConfig.sortBy === 'score' && filterConfig.tags.length === 0
-                            ? '#111216'
-                            : '#FF7B72'
-                        }
-                      />
-                      <Text
-                        style={[
-                          styles.quickChipText,
-                          filterConfig.sortBy === 'score' &&
-                            filterConfig.tags.length === 0 &&
-                            styles.quickChipTextActive,
-                        ]}
-                      >
-                        Ayın Trendleri
-                      </Text>
-                    </TouchableOpacity>
-
-                    {HENTAIHAVEN_QUICK_GENRES.map((genre) => {
-                      const isActive =
-                        filterConfig.tags.length === 1 && filterConfig.tags[0] === genre;
-                      return (
-                        <TouchableOpacity
-                          key={`hh-quick-${genre}`}
-                          style={[styles.quickChip, isActive && styles.quickChipActive]}
-                          onPress={() => executeSearch(genre)}
-                          activeOpacity={0.7}
-                        >
-                          <Text
-                            style={[styles.quickChipText, isActive && styles.quickChipTextActive]}
-                          >
-                            {genre.charAt(0).toUpperCase() + genre.slice(1)}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </>
-                ) : (
-                  <>
-                {/* Quick Popularity: This Week */}
-                <TouchableOpacity
-                  style={[
-                    styles.quickChip,
-                    filterConfig.sortBy === 'score' &&
-                      filterConfig.timeRange === '1w' &&
-                      styles.quickChipActive,
-                  ]}
-                  onPress={() => handleQuickPreset('score_week')}
-                  activeOpacity={0.7}
-                >
-                  <Flame
-                    size={13}
-                    color={
-                      filterConfig.sortBy === 'score' && filterConfig.timeRange === '1w'
-                        ? '#111216'
-                        : '#FF7B72'
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.quickChipText,
-                      filterConfig.sortBy === 'score' &&
-                        filterConfig.timeRange === '1w' &&
-                        styles.quickChipTextActive,
-                    ]}
-                  >
-                    Popüler (Hafta)
-                  </Text>
-                </TouchableOpacity>
-
-                {/* Quick Popularity: This Month */}
-                <TouchableOpacity
-                  style={[
-                    styles.quickChip,
-                    filterConfig.sortBy === 'score' &&
-                      filterConfig.timeRange === '1m' &&
-                      styles.quickChipActive,
-                  ]}
-                  onPress={() => handleQuickPreset('score_month')}
-                  activeOpacity={0.7}
-                >
-                  <Calendar
-                    size={13}
-                    color={
-                      filterConfig.sortBy === 'score' && filterConfig.timeRange === '1m'
-                        ? '#111216'
-                        : '#58A6FF'
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.quickChipText,
-                      filterConfig.sortBy === 'score' &&
-                        filterConfig.timeRange === '1m' &&
-                        styles.quickChipTextActive,
-                    ]}
-                  >
-                    Popüler (Ay)
-                  </Text>
-                </TouchableOpacity>
-
-                {/* Quick Rating: Safe Only */}
-                <TouchableOpacity
-                  style={[
-                    styles.quickChip,
-                    filterConfig.rating === 'safe' && styles.quickChipActive,
-                  ]}
-                  onPress={() => handleQuickPreset('safe_only')}
-                  activeOpacity={0.7}
-                >
-                  <ShieldCheck
-                    size={13}
-                    color={filterConfig.rating === 'safe' ? '#111216' : '#51CF66'}
-                  />
-                  <Text
-                    style={[
-                      styles.quickChipText,
-                      filterConfig.rating === 'safe' && styles.quickChipTextActive,
-                    ]}
-                  >
-                    Safe (Güvenli)
-                  </Text>
-                </TouchableOpacity>
-
-                {/* Quick Min Score: 50+ */}
-                <TouchableOpacity
-                  style={[
-                    styles.quickChip,
-                    filterConfig.minScore === 50 && styles.quickChipActive,
-                  ]}
-                  onPress={() => handleQuickPreset('score_50')}
-                  activeOpacity={0.7}
-                >
-                  <Star
-                    size={13}
-                    color={filterConfig.minScore === 50 ? '#111216' : '#FCC419'}
-                  />
-                  <Text
-                    style={[
-                      styles.quickChipText,
-                      filterConfig.minScore === 50 && styles.quickChipTextActive,
-                    ]}
-                  >
-                    50+ Puan
-                  </Text>
-                </TouchableOpacity>
-                  </>
-                )
-              }
-              </>
-            )}
+              );
+            })}
           </ScrollView>
         </View>
 
-        {/* HentaiHaven: boşluklu sorgular VE ile birleşir, tırnaklı grup tek tür arar */}
+        {/* HentaiHaven: spaced queries combine with AND, a quoted group searches a single genre */}
         {activeSource.type === 'hentaihaven' && (
           <View style={styles.syntaxHintBar}>
             <Text style={styles.syntaxHintText}>
-              Tür: <Text style={styles.syntaxHintMono}>yuri</Text> · Çok kelime:{' '}
-              <Text style={styles.syntaxHintMono}>"big breasts" anal</Text> · Dışla:{' '}
-              <Text style={styles.syntaxHintMono}>-etiket</Text>
+              Genre: <Text style={styles.syntaxHintMono}>yuri</Text> · Multiple words:{' '}
+              <Text style={styles.syntaxHintMono}>"big breasts" anal</Text> · Exclude:{' '}
+              <Text style={styles.syntaxHintMono}>-tag</Text>
             </Text>
           </View>
         )}
-        {/* RedGifs: sunucu etiket dışlama/tahmin yapmıyor; niş ve kullanıcı
-          açık öneklerle aranır, küçük ipucu satırı bunu gösterir. */}
+        {/* RedGifs: the server does not do tag exclusion/inference; search via
+          explicit niche and user prefixes, which this hint line shows. */}
         {activeSource.type === 'redgifs' && (
           <View style={styles.syntaxHintBar}>
             <Text style={styles.syntaxHintText}>
-              Etiket: <Text style={styles.syntaxHintMono}>etiket</Text> · Niş:{' '}
-              <Text style={styles.syntaxHintMono}>niche:id</Text> · Kullanıcı:{' '}
-              <Text style={styles.syntaxHintMono}>user:ad</Text> · Dışla:{' '}
-              <Text style={styles.syntaxHintMono}>-etiket</Text>
+              Tag: <Text style={styles.syntaxHintMono}>tag</Text> · Niche:{' '}
+              <Text style={styles.syntaxHintMono}>niche:id</Text> · User:{' '}
+              <Text style={styles.syntaxHintMono}>user:name</Text> · Exclude:{' '}
+              <Text style={styles.syntaxHintMono}>-tag</Text>
             </Text>
           </View>
         )}
+        </ScrollAwayHeader>
 
         {/* Autocomplete Dropdown overlay - only when search input is focused */}
         {isInputFocused && suggestions.length > 0 && (
@@ -1179,12 +885,12 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
           loading ? (
             <View style={styles.centerContainer}>
               <ActivityIndicator size="large" color={Colors.dark.primary} />
-              <Text style={styles.loadingText}>Sonuçlar aranıyor...</Text>
+              <Text style={styles.loadingText}>Searching results...</Text>
             </View>
           ) : searchError ? (
             <View style={styles.centerContainer}>
               <AlertCircle size={44} color={Colors.dark.danger} />
-              <Text style={styles.noResultsTitle}>Arama Hatası</Text>
+              <Text style={styles.noResultsTitle}>Search Error</Text>
               <Text style={styles.noResultsText}>{searchError}</Text>
               <TouchableOpacity
                 style={styles.retryButton}
@@ -1195,47 +901,42 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                 activeOpacity={0.7}
               >
                 <RefreshCw size={15} color="#FFFFFF" />
-                <Text style={styles.retryButtonText}>Tekrar Dene</Text>
+                <Text style={styles.retryButtonText}>Retry</Text>
               </TouchableOpacity>
             </View>
           ) : results.length === 0 ? (
             <View style={styles.centerContainer}>
               <ImageIcon size={48} color={Colors.dark.textMuted} />
-              <Text style={styles.noResultsTitle}>Sonuç Bulunamadı</Text>
+              <Text style={styles.noResultsTitle}>No Results Found</Text>
               <Text style={styles.noResultsText}>
-                Seçilen filtre ve etiketlerle eşleşen görsel bulunamadı.
+                No images matched the selected filters and tags.
               </Text>
             </View>
           ) : (
             <ScrollView
               ref={resultsScrollRef}
               style={styles.resultsScroll}
-              contentContainerStyle={styles.resultsContent}
+              contentContainerStyle={[styles.resultsContent, header.enabled && { paddingTop: header.height + 12 }]}
               showsVerticalScrollIndicator={false}
-              onScroll={({ nativeEvent }) => {
+              onScroll={(event) => {
+                const changed = header.onScroll(event);
+                const { nativeEvent } = event;
                 const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
                 searchOffsetRef.current = contentOffset.y;
-                updateVisible(
-                  layoutMapRef.current,
-                  contentOffset.y,
-                  layoutMeasurement.height
-                );
-                updateMounted(
-                  layoutMapRef.current,
-                  contentOffset.y,
-                  layoutMeasurement.height
-                );
-                updateFocused(
-                  layoutMapRef.current,
-                  contentOffset.y,
-                  layoutMeasurement.height,
-                  playableIdsRef.current
-                );
+                viewportHeightRef.current = layoutMeasurement.height;
+                const now = Date.now();
+                if (changed || now - lastGridUpdateRef.current >= 150) {
+                  lastGridUpdateRef.current = now;
+                  updateGridViewport(changed);
+                }
                 if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 900) {
                   loadMoreResults();
                 }
               }}
-              scrollEventThrottle={150}
+              onMomentumScrollEnd={() => updateGridViewport(true)}
+              onScrollEndDrag={() => updateGridViewport(true)}
+              onLayout={({ nativeEvent }) => { viewportHeightRef.current = nativeEvent.layout.height; updateGridViewport(true); }}
+              scrollEventThrottle={32}
             >
               {/* Active Filter Info Banner */}
               <View style={styles.activeTagBanner}>
@@ -1246,10 +947,10 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                     </Text>
                   ) : (
                     <Text style={styles.activeTagName}>
-                      Tüm Gönderiler
+                      All Posts
                     </Text>
                   )}
-                  <Text style={styles.activeTagCount}>({results.length}+ sonuç)</Text>
+                  <Text style={styles.activeTagCount}>({results.length}+ results)</Text>
                 </View>
 
                 {hasCustomFilters && (
@@ -1257,7 +958,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                     {filterConfig.sortBy === 'score' && (
                       <View style={styles.smallFilterPill}>
                         <Text style={styles.smallFilterPillText}>
-                          🔥 Popüler ({filterConfig.timeRange})
+                          Popular ({filterConfig.timeRange})
                         </Text>
                       </View>
                     )}
@@ -1278,7 +979,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                     {filterConfig.jumpToPage > 1 && (
                       <View style={styles.smallFilterPill}>
                         <Text style={styles.smallFilterPillText}>
-                          📄 Sayfa {filterConfig.jumpToPage}
+                          Page {filterConfig.jumpToPage}
                         </Text>
                       </View>
                     )}
@@ -1287,7 +988,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               </View>
 
               {/* 2-Column Masonry Grid */}
-              <View style={styles.gridContainer}>
+              <View style={styles.gridContainer} onLayout={({ nativeEvent }) => { gridTopRef.current = nativeEvent.layout.y; updateGridViewport(true); }}>
                 <View style={styles.column}>
                   {leftColumn.map((post) =>
                     mountedIds && !mountedIds.has(post.id) ? (
@@ -1301,15 +1002,10 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                         post={post}
                         favoriteIds={favoriteIds}
                         column="left"
-                        screenActive={isFocused && mediaAllowed && !isFilterModalOpen}
+                        screenActive={isFocused && mediaAllowed && !isFilterModalOpen && !isSourceSheetOpen}
                         videoActive={focusedIds.has(post.id)}
                         onScreen={visibleIds.has(post.id)}
-                        onPress={(p) => {
-                          const idx = results.findIndex((item) => item.id === p.id);
-                          if (idx >= 0) {
-                            pushViewer(results, idx, filterConfig.tags, filterConfig);
-                          }
-                        }}
+                        onPress={handleCardPress}
                       />
                     )
                   )}
@@ -1327,15 +1023,10 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                         post={post}
                         favoriteIds={favoriteIds}
                         column="right"
-                        screenActive={isFocused && mediaAllowed && !isFilterModalOpen}
+                        screenActive={isFocused && mediaAllowed && !isFilterModalOpen && !isSourceSheetOpen}
                         videoActive={focusedIds.has(post.id)}
                         onScreen={visibleIds.has(post.id)}
-                        onPress={(p) => {
-                          const idx = results.findIndex((item) => item.id === p.id);
-                          if (idx >= 0) {
-                            pushViewer(results, idx, filterConfig.tags, filterConfig);
-                          }
-                        }}
+                        onPress={handleCardPress}
                       />
                     )
                   )}
@@ -1345,7 +1036,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               {loadingMore && (
                 <View style={styles.footerLoader}>
                   <ActivityIndicator size="small" color={Colors.dark.primary} />
-                  <Text style={styles.footerText}>Daha fazla yükleniyor...</Text>
+                  <Text style={styles.footerText}>Loading more...</Text>
                 </View>
               )}
             </ScrollView>
@@ -1362,10 +1053,10 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                 <View style={styles.sectionHeader}>
                   <View style={styles.sectionTitleWithIcon}>
                     <Clock size={16} color={Colors.dark.textSecondary} />
-                    <Text style={styles.sectionTitle}>Son Aramalar</Text>
+                    <Text style={styles.sectionTitle}>Recent Searches</Text>
                   </View>
                   <TouchableOpacity onPress={handleClearHistory}>
-                    <Text style={styles.clearText}>Temizle</Text>
+                    <Text style={styles.clearText}>Clear</Text>
                   </TouchableOpacity>
                 </View>
                 <View style={styles.tagWrap}>
@@ -1381,13 +1072,13 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               </View>
             )}
 
-            {/* Favorite Pinned Tags (Tag Favorileri) */}
+            {/* Favorite Pinned Tags */}
             {favoriteTags.length > 0 && (
               <View style={styles.section}>
                 <View style={styles.sectionHeader}>
                   <View style={styles.sectionTitleWithIcon}>
                     <Pin size={16} color={GOLD_ACCENT} />
-                    <Text style={styles.sectionTitle}>Favori Etiketler</Text>
+                    <Text style={styles.sectionTitle}>Favorite Tags</Text>
                   </View>
                 </View>
                 <View style={styles.tagWrap}>
@@ -1403,13 +1094,13 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               </View>
             )}
 
-            {/* RedGifs Niches (Kategoriler) */}
+            {/* RedGifs Niches (Categories) */}
             {activeSource.type === 'redgifs' && (niches.length > 0 || nichesLoading) && (
               <View style={styles.section}>
                 <View style={styles.sectionHeader}>
                   <View style={styles.sectionTitleWithIcon}>
                     <Layers size={16} color={GOLD_ACCENT} />
-                    <Text style={styles.sectionTitle}>Kategoriler (Niches)</Text>
+                    <Text style={styles.sectionTitle}>Categories (Niches)</Text>
                   </View>
                   {nichesLoading && <ActivityIndicator size="small" color={Colors.dark.primary} />}
                 </View>
@@ -1432,7 +1123,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               <View style={styles.sectionHeader}>
                 <View style={styles.sectionTitleWithIcon}>
                   <Flame size={16} color="#FF7B72" />
-                  <Text style={styles.sectionTitle}>Popüler Etiketler</Text>
+                  <Text style={styles.sectionTitle}>Popular Tags</Text>
                 </View>
               </View>
               <View style={styles.tagWrap}>
@@ -1455,11 +1146,18 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         visible={isFilterModalOpen}
         filterConfig={filterConfig}
         activeSource={activeSource}
+        onSelectSource={handleSelectSource}
         onClose={() => setIsFilterModalOpen(false)}
         onApply={handleApplyFilterModal}
       />
 
-
+      <SourceSheet
+        visible={isSourceSheetOpen}
+        activeSource={activeSource}
+        onSelectSource={handleSelectSource}
+        onClose={() => setIsSourceSheetOpen(false)}
+        onManage={handleManageSources}
+      />
     </View>
   );
 };
@@ -1765,9 +1463,9 @@ const styles = StyleSheet.create({
   sourcePill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    gap: 5,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 20,
     backgroundColor: '#181A22',
     borderWidth: 1,
@@ -1775,22 +1473,22 @@ const styles = StyleSheet.create({
   },
   sourceText: {
     color: Colors.dark.text,
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
   },
   sourceQuickChip: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#181A22',
-    paddingHorizontal: 12,
-    paddingVertical: 7,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 20,
     borderWidth: 1,
     borderColor: 'rgba(245, 166, 35, 0.4)',
-    gap: 6,
+    gap: 5,
   },
   sourceQuickChipText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
     color: GOLD_ACCENT,
     maxWidth: 90,

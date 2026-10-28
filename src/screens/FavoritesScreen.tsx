@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -29,12 +29,10 @@ import {
   SlidersHorizontal,
   ArrowUpDown,
   Calendar,
-  Film,
   Flame,
   Check,
   RotateCcw,
   Clock,
-  History,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { StorageService } from '../services/storage';
@@ -47,6 +45,10 @@ import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { pushViewer } from '../navigation/rootNavigation';
 import { Colors, TagColors } from '../theme/colors';
+import { getPostKey } from '../utils/postIdentity';
+import { useScrollAwayHeader } from '../utils/scrollAwayHeader';
+import { ScrollAwayHeader } from '../components/ScrollAwayHeader';
+import { useMountedIds, type CardLayout } from '../utils/gridVisibility';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
@@ -94,6 +96,11 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
   const [refreshing, setRefreshing] = useState(false);
   const [displayLimit, setDisplayLimit] = useState(40);
   const [historyLimit, setHistoryLimit] = useState(40);
+  const repairPromiseRef = useRef<Promise<number> | null>(null);
+  const [mountedIds, updateMounted] = useMountedIds();
+  const favoritesOffsetRef = useRef(0);
+  const gridTopRef = useRef(0);
+  const viewportHeightRef = useRef(Dimensions.get('window').height);
 
   const loadRecentViews = useCallback(async () => {
     try {
@@ -106,8 +113,13 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
 
   const loadData = useCallback(async (silent: boolean = false) => {
     try {
-      if (!silent && favorites.length === 0 && favoriteTags.length === 0) setLoading(true);
-      await BackupService.repairAndNormalizeStoredFavorites();
+      if (!silent) setLoading(true);
+      // Migration is shared by concurrent loads and runs once per screen mount,
+      // not every time the user returns from the viewer.
+      if (!repairPromiseRef.current) {
+        repairPromiseRef.current = BackupService.repairAndNormalizeStoredFavorites();
+      }
+      await repairPromiseRef.current;
       const [items, tags] = await Promise.all([
         StorageService.getFavorites(),
         StorageService.getFavoriteTags(),
@@ -120,12 +132,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
       setLoading(false);
       setRefreshing(false);
     }
-  }, [favorites.length, favoriteTags.length]);
-
-  useEffect(() => {
-    loadData();
-    loadRecentViews();
-  }, [loadData, loadRecentViews]);
+  }, []);
 
   useEffect(() => {
     if (effectiveIsActive) {
@@ -135,6 +142,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
   }, [effectiveIsActive, loadData, loadRecentViews]);
 
   const handleRefresh = async () => {
+    header.reset();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setRefreshing(true);
     setDisplayLimit(40);
@@ -145,12 +153,12 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
 
   const handleClearRecentViews = () => {
     Alert.alert(
-      'Geçmişi Temizle',
-      'Son görüntülenen gönderilerin tümünü silmek istediğinizden emin misiniz?',
+      'Clear History',
+      'Are you sure you want to delete all recently viewed posts?',
       [
-        { text: 'İptal', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Temizle',
+          text: 'Clear',
           style: 'destructive',
           onPress: async () => {
             Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -169,7 +177,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     setFavoriteTags((prev) => prev.filter((t) => t !== tag));
   };
 
-  // Favorilerdeki tüm gönderilerden etiket sıklığı ve kategori haritası
+  // Tag frequency and category map across all favorite posts
   const tagStats = useMemo(() => {
     const counts = new Map<string, number>();
     const categories = new Map<string, TagCategory>();
@@ -209,10 +217,10 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     return { counts, categories };
   }, [favorites]);
 
-  // Fav ID seti: kartlar rozet için storage'a sormaz — anında + çökmesiz
-  const favoriteIdSet = useMemo(() => new Set(favorites.map((p) => p.id)), [favorites]);
+  // Fav ID set: cards never query storage for the badge — instant and crash-free
+  const favoriteIdSet = useMemo(() => new Set(favorites.map(getPostKey)), [favorites]);
 
-  // Favorilerde bulunan kaynaklar ve görsel sayıları (kanonik isimlerle)
+  // Sources present in favorites with their image counts (canonical names)
   const sourceList = useMemo(() => {
     const map = new Map<string, { id: string; name: string; count: number }>();
 
@@ -222,7 +230,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
         (s) => s.id.toLowerCase() === rawSid || s.name.toLowerCase() === rawSid
       );
       const sid = canonical ? canonical.id.toLowerCase() : rawSid;
-      const sname = canonical ? canonical.name : asStrOr(post.sourceName, asStrOr(post.sourceId, 'Diğer'));
+      const sname = canonical ? canonical.name : asStrOr(post.sourceName, asStrOr(post.sourceId, 'Other'));
       const existing = map.get(sid);
       if (existing) {
         existing.count += 1;
@@ -236,7 +244,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
 
   const trimmedQuery = searchQuery.trim().toLowerCase();
 
-  // Otomatik tamamlama / Öneri listesi
+  // Autocomplete / suggestion list
   const suggestions = useMemo(() => {
     if (activeSegment !== 'posts' || trimmedQuery.length < 2) return [];
 
@@ -267,7 +275,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     return list.slice(0, 10);
   }, [activeSegment, trimmedQuery, tagStats, selectedTags]);
 
-  // Çoklu etiket, kaynak, puan, tür, rating ve arama metnine göre filtrelenmiş favoriler
+  // Favorites filtered by multi-tag, source, score, media type, rating and search text
   const filteredFavorites = useMemo(() => {
     let result = favorites.filter((post) => {
       // 1. Kaynak Filtresi
@@ -279,7 +287,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
         }
       }
 
-      // 2. Medya Türü Filtresi
+      // 2. Media type filter
       if (mediaTypeFilter !== 'all') {
         const rawMedia = lower(post.originalUrl) || lower(post.sampleUrl) || lower(post.previewUrl) || '';
         const ext = lower(post.fileExt);
@@ -290,7 +298,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
         if (mediaTypeFilter === 'image' && (isVid || isGif)) return false;
       }
 
-      // 3. Rating / Güvenlik Filtresi
+      // 3. Rating / safety filter
       if (ratingFilter !== 'all') {
         const r = lower(post.rating);
         if (ratingFilter === 'safe' && r !== 's' && r !== 'safe' && r !== 'general') return false;
@@ -300,7 +308,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
 
       const postAllTags = onlyStrings(post.allTags).map((t) => t.toLowerCase());
 
-      // 4. Seçili Çoklu Etiketler Filtresi (AND veya OR modu)
+      // 4. Selected multi-tag filter (AND or OR mode)
       if (selectedTags.length > 0) {
         if (tagMatchMode === 'AND') {
           const hasAllSelected = selectedTags.every((selectedTag) => {
@@ -324,7 +332,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
         }
       }
 
-      // 5. Normal Metin Arama Kutusu Filtresi (tag/source/id desteği)
+      // 5. Plain text search box filter (supports tag/source/id)
       if (trimmedQuery) {
         const terms = trimmedQuery.split(/\s+/).filter(Boolean);
         const idStr = String(post.id).toLowerCase();
@@ -343,7 +351,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
       return true;
     });
 
-    // 6. Sıralama
+    // 6. Sorting
     if (sortBy === 'score') {
       result = [...result].sort((a, b) => (b.score || 0) - (a.score || 0));
     } else if (sortBy === 'id_desc') {
@@ -355,7 +363,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     return result;
   }, [favorites, selectedSource, mediaTypeFilter, ratingFilter, selectedTags, tagMatchMode, trimmedQuery, sortBy]);
 
-  // Filtrelenmiş favori etiketler (Etiketler sekmesi için)
+  // Filtered favorite tags (for the Tags tab)
   const filteredFavoriteTags = useMemo(() => {
     if (!trimmedQuery) return favoriteTags;
     const terms = trimmedQuery.split(/\s+/).filter(Boolean);
@@ -366,7 +374,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     });
   }, [favoriteTags, trimmedQuery]);
 
-  // Etiket seçme & çipe dönüştürme
+  // Tag selection and conversion to chips
   const handleAddSelectedTag = (tag: string) => {
     const normalized = tag.trim().toLowerCase();
     if (!normalized) return;
@@ -380,7 +388,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     setIsInputFocused(false);
   };
 
-  // Klavyeden arama metnini onaylayınca çip olarak ekleme
+  // Add the typed search text as a chip when confirmed from the keyboard
   const handleSubmitSearch = () => {
     if (!trimmedQuery) return;
     const terms = trimmedQuery.split(/\s+/).filter(Boolean);
@@ -400,21 +408,21 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     }
   };
 
-  // Tekil çip kaldırma
+  // Remove a single chip
   const handleRemoveSelectedTag = (tag: string) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedTags((prev) => prev.filter((t) => t !== tag));
     setDisplayLimit(40);
   };
 
-  // Tüm etiketleri temizleme
+  // Clear all tags
   const handleClearAllSelectedTags = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedTags([]);
     setDisplayLimit(40);
   };
 
-  // Tüm filtreleri (etiket, kaynak, metin, sıralama, rating, tür) sıfırlama
+  // Reset all filters (tag, source, text, sorting, rating, media type)
   const handleClearAllFilters = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setSelectedTags([]);
@@ -436,26 +444,34 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     sortBy !== 'fav_date';
 
   // 2-column masonry distribution with pagination limit
-  const visibleFavorites = filteredFavorites.slice(0, displayLimit);
-  const leftColumn: BooruPost[] = [];
-  const rightColumn: BooruPost[] = [];
-  visibleFavorites.forEach((post, index) => {
-    if (index % 2 === 0) {
-      leftColumn.push(post);
-    } else {
-      rightColumn.push(post);
-    }
-  });
+  const { leftColumn, rightColumn, layoutMap } = useMemo(() => {
+    const leftColumn: BooruPost[] = [];
+    const rightColumn: BooruPost[] = [];
+    const layoutMap = new Map<string, CardLayout>();
+    const heights = [0, 0];
+    const columnWidth = (SCREEN_WIDTH - 36) / 2;
+    filteredFavorites.slice(0, displayLimit).forEach((post, index) => {
+      const column = index % 2;
+      const aspectRatio = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75));
+      const height = columnWidth / aspectRatio + 12;
+      layoutMap.set(getPostKey(post), { y: heights[column], h: height });
+      heights[column] += height;
+      (column === 0 ? leftColumn : rightColumn).push(post);
+    });
+    return { leftColumn, rightColumn, layoutMap };
+  }, [filteredFavorites, displayLimit]);
+  const layoutMapRef = useRef(layoutMap);
+  layoutMapRef.current = layoutMap;
 
   const handleCardPress = useCallback((post: BooruPost) => {
-    const idx = filteredFavorites.findIndex((p) => p.id === post.id);
+    const idx = filteredFavorites.findIndex((p) => getPostKey(p) === getPostKey(post));
     if (idx >= 0) {
       pushViewer(filteredFavorites, idx, [], undefined);
     }
   }, [filteredFavorites]);
 
   const handleHistoryCardPress = useCallback((post: BooruPost) => {
-    const idx = recentViews.findIndex((p) => p.id === post.id);
+    const idx = recentViews.findIndex((p) => getPostKey(p) === getPostKey(post));
     if (idx >= 0) {
       pushViewer(recentViews, idx, [], undefined);
     }
@@ -486,26 +502,45 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
   );
 
   const historyKeyExtractor = useCallback(
-    (item: BooruPost, index: number) => `hist-${item.id}-${index}`,
+    (item: BooruPost) => getPostKey(item),
     []
   );
 
+  const header = useScrollAwayHeader({
+    enabled: !loading && ((activeSegment === 'posts' && filteredFavorites.length > 0) || (activeSegment === 'history' && recentViews.length > 0)),
+    resetKey: JSON.stringify([activeSegment, selectedSource, selectedTags, searchQuery, mediaTypeFilter, ratingFilter, sortBy, tagMatchMode]),
+    pinned: !effectiveIsActive || refreshing || isInputFocused || showFilterSheet,
+  });
+  const lastLoadMoreRef = useRef(0);
+  const updateFavoritesViewport = useCallback(() => {
+    const covered = header.occlusionRef.current;
+    updateMounted(
+      layoutMapRef.current,
+      favoritesOffsetRef.current - gridTopRef.current + covered,
+      Math.max(0, viewportHeightRef.current - covered)
+    );
+  }, [header.occlusionRef, updateMounted]);
+  useEffect(() => {
+    updateFavoritesViewport();
+  }, [layoutMap, header.height, header.enabled, activeSegment, updateFavoritesViewport]);
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
+      <ScrollAwayHeader controller={header} top={insets.top}>
       {/* Header */}
       <View style={styles.header}>
         <View style={{ flex: 1 }}>
-          <Text style={styles.headerTitle}>Favoriler</Text>
+          <Text style={styles.headerTitle}>Favorites</Text>
           <Text style={styles.headerSubtitle}>
             {activeSegment === 'posts'
               ? hasActiveFilters
-                ? `${filteredFavorites.length} / ${favorites.length} görsel filtrelendi`
-                : `Kaydedilen görseller (${favorites.length})`
+                ? `${filteredFavorites.length} / ${favorites.length} images filtered`
+                : `Saved images (${favorites.length})`
               : activeSegment === 'tags'
                 ? trimmedQuery
-                  ? `${filteredFavoriteTags.length} / ${favoriteTags.length} etiket`
-                  : `Favori etiketler (${favoriteTags.length})`
-                : `Son görüntülenen görseller (${recentViews.length})`}
+                  ? `${filteredFavoriteTags.length} / ${favoriteTags.length} tags`
+                  : `Favorite tags (${favoriteTags.length})`
+                : `Recently viewed images (${recentViews.length})`}
           </Text>
         </View>
 
@@ -517,7 +552,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
               activeOpacity={0.7}
             >
               <Trash2 size={14} color="#FF6B6B" />
-              <Text style={styles.clearHeaderBtnText}>Temizle</Text>
+              <Text style={styles.clearHeaderBtnText}>Clear</Text>
             </TouchableOpacity>
           ) : null
         ) : (
@@ -527,7 +562,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
         )}
       </View>
 
-      {/* Segment Switcher [ Görseller | Etiketler | Geçmiş ] */}
+      {/* Segment Switcher [ Images | Tags | History ] */}
       <View style={styles.segmentWrapper}>
         <View style={styles.segmentContainer}>
           <TouchableOpacity
@@ -549,7 +584,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
               ]}
               numberOfLines={1}
             >
-              Görseller ({favorites.length})
+              Images ({favorites.length})
             </Text>
           </TouchableOpacity>
 
@@ -571,7 +606,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
               ]}
               numberOfLines={1}
             >
-              Etiketler ({favoriteTags.length})
+              Tags ({favoriteTags.length})
             </Text>
           </TouchableOpacity>
 
@@ -595,7 +630,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
               ]}
               numberOfLines={1}
             >
-              Geçmiş ({recentViews.length})
+              History ({recentViews.length})
             </Text>
           </TouchableOpacity>
         </View>
@@ -612,12 +647,12 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
               />
               <TextInput
                 style={styles.searchInput}
-                placeholder="Favorilerde ara... (Enter ile etiket ekle)"
+                placeholder="Search in favorites... (Press Enter to add tag)"
                 placeholderTextColor={Colors.dark.textMuted}
                 value={searchQuery}
                 onFocus={() => setIsInputFocused(true)}
                 onBlur={() => {
-                  // Öneri listesine dokunulabilmesi için kısa gecikme
+                  // Short delay so the suggestion list stays tappable
                   setTimeout(() => setIsInputFocused(false), 220);
                 }}
                 onChangeText={(text) => {
@@ -645,7 +680,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
               )}
             </View>
 
-            {/* Gelişmiş Filtreleme Butonu */}
+            {/* Advanced filtering button */}
             <TouchableOpacity
               style={[
                 styles.filterToggleBtn,
@@ -672,13 +707,13 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             </TouchableOpacity>
           </View>
 
-          {/* Otomatik Tamamlama / Öneri Listesi (Dropdown Overlay) */}
+          {/* Autocomplete / Suggestion List (Dropdown Overlay) */}
           {isInputFocused && suggestions.length > 0 && (
             <View style={styles.suggestionsDropdown}>
               <View style={styles.suggestionsHeader}>
                 <Sparkles size={13} color={GOLD_ACCENT} />
                 <Text style={styles.suggestionsHeaderText}>
-                  Favorilerdeki Eşleşen Etiketler ({suggestions.length})
+                  Matching Tags in Favorites ({suggestions.length})
                 </Text>
               </View>
               <ScrollView
@@ -706,7 +741,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                       </View>
                       <View style={styles.suggestionBadge}>
                         <Text style={styles.suggestionBadgeText}>
-                          {item.count} görsel
+                          {item.count} images
                         </Text>
                       </View>
                     </TouchableOpacity>
@@ -718,7 +753,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
         </View>
       )}
 
-      {/* Seçilen Etiketler / Çip Listesi (Selected Tags Chips) */}
+      {/* Selected Tags / Chip List */}
       {activeSegment === 'posts' && (selectedTags.length > 0 || tagMatchMode === 'OR') && (
         <View style={styles.selectedTagsContainer}>
           <ScrollView
@@ -727,7 +762,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             contentContainerStyle={styles.selectedTagsContent}
             keyboardShouldPersistTaps="handled"
           >
-            {/* AND / OR Eşleşme Modu Değiştirici */}
+            {/* AND / OR match mode toggle */}
             {selectedTags.length > 1 && (
               <TouchableOpacity
                 style={styles.modeToggleChip}
@@ -737,9 +772,9 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 }}
                 activeOpacity={0.7}
               >
-                <Text style={styles.modeToggleLabel}>Eşleşme:</Text>
+                <Text style={styles.modeToggleLabel}>Match:</Text>
                 <Text style={styles.modeToggleValue}>
-                  {tagMatchMode === 'AND' ? 'VE (Tümü)' : 'VEYA (Herhangi)'}
+                  {tagMatchMode === 'AND' ? 'AND (All)' : 'OR (Any)'}
                 </Text>
               </TouchableOpacity>
             )}
@@ -767,14 +802,14 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 activeOpacity={0.7}
               >
                 <Trash2 size={12} color="#FF6B6B" />
-                <Text style={styles.clearAllTagsText}>Tümünü Temizle</Text>
+                <Text style={styles.clearAllTagsText}>Clear All</Text>
               </TouchableOpacity>
             )}
           </ScrollView>
         </View>
       )}
 
-      {/* Kaynak Filtre Çipleri (Source Pills) */}
+      {/* Source filter pills */}
       {activeSegment === 'posts' && favorites.length > 0 && sourceList.length > 0 && (
         <View style={styles.sourcesContainer}>
           <ScrollView
@@ -782,7 +817,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.sourcesContent}
           >
-            {/* Tümü Seçeneği */}
+            {/* All option */}
             <TouchableOpacity
               style={[
                 styles.sourcePill,
@@ -805,11 +840,11 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                   selectedSource === 'all' && styles.sourcePillTextActive,
                 ]}
               >
-                Tümü ({favorites.length})
+                All ({favorites.length})
               </Text>
             </TouchableOpacity>
 
-            {/* Kaynak Bazlı Butonlar */}
+            {/* Per-source buttons */}
             {sourceList.map((source) => {
               const isSelected = selectedSource === source.id;
               return (
@@ -840,6 +875,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
           </ScrollView>
         </View>
       )}
+      </ScrollAwayHeader>
 
       {loading ? (
         <View style={styles.centerContainer}>
@@ -852,9 +888,9 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             <View style={styles.emptyIconCircle}>
               <Pin size={38} color={GOLD_ACCENT} />
             </View>
-            <Text style={styles.emptyTitle}>Favori Etiket Yok</Text>
+            <Text style={styles.emptyTitle}>No Favorite Tags</Text>
             <Text style={styles.emptyText}>
-              Görsel detayından veya arama ekranından etiketleri favorileyebilirsiniz.
+              You can favorite tags from image details or the search screen.
             </Text>
           </View>
         ) : filteredFavoriteTags.length === 0 ? (
@@ -862,9 +898,9 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             <View style={styles.emptyIconCircle}>
               <Search size={36} color={GOLD_ACCENT} />
             </View>
-            <Text style={styles.emptyTitle}>Etiket Bulunamadı</Text>
+            <Text style={styles.emptyTitle}>Tag Not Found</Text>
             <Text style={styles.emptyText}>
-              "{searchQuery}" aramasıyla eşleşen favori etiket bulunamadı.
+              No favorite tags matched "{searchQuery}".
             </Text>
             <TouchableOpacity
               style={styles.clearFilterBtn}
@@ -873,7 +909,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 setSearchQuery('');
               }}
             >
-              <Text style={styles.clearFilterBtnText}>Aramayı Temizle</Text>
+              <Text style={styles.clearFilterBtnText}>Clear Search</Text>
             </TouchableOpacity>
           </View>
         ) : (
@@ -918,9 +954,9 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             <View style={styles.emptyIconCircle}>
               <Clock size={38} color={Colors.dark.textMuted} />
             </View>
-            <Text style={styles.emptyTitle}>Görüntüleme Geçmişi Boş</Text>
+            <Text style={styles.emptyTitle}>Viewing History Empty</Text>
             <Text style={styles.emptyText}>
-              Görüntülediğiniz gönderiler otomatik olarak burada listelenir.
+              Posts you view are automatically listed here.
             </Text>
           </View>
         ) : (
@@ -930,7 +966,9 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             keyExtractor={historyKeyExtractor}
             numColumns={2}
             columnWrapperStyle={styles.columnWrapper}
-            contentContainerStyle={styles.scrollContent}
+            contentContainerStyle={[styles.scrollContent, header.enabled && { paddingTop: header.height + 10 }]}
+            onScroll={header.onScroll}
+            scrollEventThrottle={32}
             renderItem={renderHistoryItem}
             initialNumToRender={8}
             maxToRenderPerBatch={8}
@@ -955,9 +993,9 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             <View style={styles.emptyIconCircle}>
               <ImageOff size={38} color={Colors.dark.textMuted} />
             </View>
-            <Text style={styles.emptyTitle}>Henüz Favori Yok</Text>
+            <Text style={styles.emptyTitle}>No Favorites Yet</Text>
             <Text style={styles.emptyText}>
-              Beğendiğin görselleri kalp ikonuna basarak buraya kaydedebilirsin.
+              Tap the heart icon on images you like to save them here.
             </Text>
           </View>
         ) : filteredFavorites.length === 0 ? (
@@ -965,25 +1003,25 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             <View style={styles.emptyIconCircle}>
               <Search size={36} color={Colors.dark.textMuted} />
             </View>
-            <Text style={styles.emptyTitle}>Eşleşen Favori Bulunamadı</Text>
+            <Text style={styles.emptyTitle}>No Matching Favorites Found</Text>
             <Text style={styles.emptyText}>
               {hasActiveFilters
-                ? 'Seçtiğiniz filtreler veya etiketlerle eşleşen kayıtlı görsel bulunamadı.'
-                : 'Aradığınız kriterlere uygun favori görsel bulunamadı.'}
+                ? 'No saved images matched the selected filters or tags.'
+                : 'No favorite images matched your criteria.'}
             </Text>
             {hasActiveFilters && (
               <TouchableOpacity
                 style={styles.clearFilterBtn}
                 onPress={handleClearAllFilters}
               >
-                <Text style={styles.clearFilterBtnText}>Filtreleri Sıfırla</Text>
+                <Text style={styles.clearFilterBtnText}>Reset Filters</Text>
               </TouchableOpacity>
             )}
           </View>
         ) : (
           <ScrollView
             style={styles.scrollView}
-            contentContainerStyle={styles.scrollContent}
+            contentContainerStyle={[styles.scrollContent, header.enabled && { paddingTop: header.height + 10 }]}
             keyboardShouldPersistTaps="handled"
             refreshControl={
               <RefreshControl
@@ -992,22 +1030,39 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 tintColor={Colors.dark.primary}
               />
             }
-            onScroll={({ nativeEvent }) => {
+            onScroll={(event) => {
+              header.onScroll(event);
+              const { nativeEvent } = event;
               const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
+              favoritesOffsetRef.current = contentOffset.y;
+              viewportHeightRef.current = layoutMeasurement.height;
+              updateFavoritesViewport();
               if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 400) {
-                if (displayLimit < filteredFavorites.length) {
+                const now = Date.now();
+                if (displayLimit < filteredFavorites.length && now - lastLoadMoreRef.current >= 300) {
+                  lastLoadMoreRef.current = now;
                   setDisplayLimit((prev) => prev + 40);
                 }
               }
             }}
-            scrollEventThrottle={300}
+            onLayout={({ nativeEvent }) => {
+              viewportHeightRef.current = nativeEvent.layout.height;
+              updateFavoritesViewport();
+            }}
+            scrollEventThrottle={32}
           >
-            <View style={styles.gridContainer}>
+            <View style={styles.gridContainer} onLayout={({ nativeEvent }) => {
+              gridTopRef.current = nativeEvent.layout.y;
+              updateFavoritesViewport();
+            }}>
               <View style={styles.column}>
-                {leftColumn.map((post, index) => (
+                {leftColumn.map((post) => mountedIds && !mountedIds.has(getPostKey(post)) ? (
+                  <View key={getPostKey(post)} style={{ height: layoutMap.get(getPostKey(post))?.h ?? 320 }} />
+                ) : (
                   <PostCard
-                    key={`fav-left-${post.id}-${index}`}
-                    screenActive={isFocused && mediaAllowed}
+                    key={getPostKey(post)}
+                    screenActive={effectiveIsActive && mediaAllowed && !showFilterSheet}
+                    column="left"
                     post={post}
                     onPress={handleCardPress}
                     showFavoriteBadge={false}
@@ -1015,10 +1070,13 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 ))}
               </View>
               <View style={styles.column}>
-                {rightColumn.map((post, index) => (
+                {rightColumn.map((post) => mountedIds && !mountedIds.has(getPostKey(post)) ? (
+                  <View key={getPostKey(post)} style={{ height: layoutMap.get(getPostKey(post))?.h ?? 320 }} />
+                ) : (
                   <PostCard
-                    key={`fav-right-${post.id}-${index}`}
-                    screenActive={isFocused && mediaAllowed}
+                    key={getPostKey(post)}
+                    screenActive={effectiveIsActive && mediaAllowed && !showFilterSheet}
+                    column="right"
                     post={post}
                     onPress={handleCardPress}
                     showFavoriteBadge={false}
@@ -1030,7 +1088,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
         )
       )}
 
-      {/* Gelişmiş Filtreler Modal / Alt Menü */}
+      {/* Advanced Filters Modal / Bottom Sheet */}
       <Modal
         visible={showFilterSheet}
         transparent
@@ -1049,7 +1107,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             <View style={styles.modalHeader}>
               <View style={styles.modalHeaderTitleRow}>
                 <SlidersHorizontal size={18} color={GOLD_ACCENT} />
-                <Text style={styles.modalTitle}>Favori Filtreleri</Text>
+                <Text style={styles.modalTitle}>Favorite Filters</Text>
               </View>
               <TouchableOpacity
                 onPress={() => setShowFilterSheet(false)}
@@ -1065,7 +1123,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
               contentContainerStyle={{ paddingBottom: Math.max(insets.bottom, 20) + 16 }}
             >
               {/* Sunucu / Kaynak Filtresi */}
-              <Text style={styles.filterSectionTitle}>Sunucu</Text>
+              <Text style={styles.filterSectionTitle}>Server</Text>
               <View style={styles.filterOptionsGrid}>
                 <TouchableOpacity
                   style={[styles.filterChoicePill, selectedSource === 'all' && styles.filterChoicePillActive]}
@@ -1077,7 +1135,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 >
                   <Layers size={13} color={selectedSource === 'all' ? '#111216' : Colors.dark.textSecondary} />
                   <Text style={[styles.filterChoiceText, selectedSource === 'all' && styles.filterChoiceTextActive]}>
-                    Tümü ({favorites.length})
+                    All ({favorites.length})
                   </Text>
                   {selectedSource === 'all' && <Check size={12} color="#111216" style={{ marginLeft: 2 }} />}
                 </TouchableOpacity>
@@ -1102,14 +1160,14 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 })}
               </View>
 
-              {/* Sıralama Ölçütü */}
-              <Text style={styles.filterSectionTitle}>Sıralama</Text>
+              {/* Sorting Criterion */}
+              <Text style={styles.filterSectionTitle}>Sorting</Text>
               <View style={styles.filterOptionsGrid}>
                 {[
-                  { id: 'fav_date', label: 'Eklenme Tarihi', icon: Calendar },
-                  { id: 'score', label: 'En Yüksek Puan', icon: Flame },
-                  { id: 'id_desc', label: 'ID (Yeni > Eski)', icon: ArrowUpDown },
-                  { id: 'id_asc', label: 'ID (Eski > Yeni)', icon: ArrowUpDown },
+                  { id: 'fav_date', label: 'Date Added', icon: Calendar },
+                  { id: 'score', label: 'Highest Score', icon: Flame },
+                  { id: 'id_desc', label: 'ID (New > Old)', icon: ArrowUpDown },
+                  { id: 'id_asc', label: 'ID (Old > New)', icon: ArrowUpDown },
                 ].map((item) => {
                   const IconCmp = item.icon;
                   const isSel = sortBy === item.id;
@@ -1132,14 +1190,14 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 })}
               </View>
 
-              {/* Medya Türü */}
-              <Text style={styles.filterSectionTitle}>Medya Türü</Text>
+              {/* Media Type */}
+              <Text style={styles.filterSectionTitle}>Media Type</Text>
               <View style={styles.filterOptionsGrid}>
                 {[
-                  { id: 'all', label: 'Tümü' },
-                  { id: 'image', label: 'Fotoğraf' },
+                  { id: 'all', label: 'All' },
+                  { id: 'image', label: 'Photo' },
                   { id: 'video', label: 'Video' },
-                  { id: 'animated', label: 'GIF / Animasyon' },
+                  { id: 'animated', label: 'GIF / Animation' },
                 ].map((item) => {
                   const isSel = mediaTypeFilter === item.id;
                   return (
@@ -1160,12 +1218,12 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 })}
               </View>
 
-              {/* Güvenlik / Rating */}
-              <Text style={styles.filterSectionTitle}>İçerik Derecelendirmesi</Text>
+              {/* Safety / Rating */}
+              <Text style={styles.filterSectionTitle}>Content Rating</Text>
               <View style={styles.filterOptionsGrid}>
                 {[
-                  { id: 'all', label: 'Tümü' },
-                  { id: 'safe', label: 'Safe (Güvenli)' },
+                  { id: 'all', label: 'All' },
+                  { id: 'safe', label: 'Safe' },
                   { id: 'questionable', label: 'Questionable' },
                   { id: 'explicit', label: 'Explicit (18+)' },
                 ].map((item) => {
@@ -1188,12 +1246,12 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 })}
               </View>
 
-              {/* Etiket Eşleşme Mantığı */}
-              <Text style={styles.filterSectionTitle}>Çoklu Etiket Mantığı</Text>
+              {/* Tag match logic */}
+              <Text style={styles.filterSectionTitle}>Multiple Tag Logic</Text>
               <View style={styles.filterOptionsGrid}>
                 {[
-                  { id: 'AND', label: 'VE (Tüm etiketleri içermeli)' },
-                  { id: 'OR', label: 'VEYA (Herhangi birini içermeli)' },
+                  { id: 'AND', label: 'AND (must contain all tags)' },
+                  { id: 'OR', label: 'OR (must contain any)' },
                 ].map((item) => {
                   const isSel = tagMatchMode === item.id;
                   return (
@@ -1214,7 +1272,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 })}
               </View>
 
-              {/* Sıfırla ve Uygula Butonları */}
+              {/* Reset and Apply buttons */}
               <View style={styles.modalActionButtons}>
                 <TouchableOpacity
                   style={styles.modalResetBtn}
@@ -1229,7 +1287,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                   }}
                 >
                   <RotateCcw size={15} color={Colors.dark.textSecondary} />
-                  <Text style={styles.modalResetBtnText}>Sıfırla</Text>
+                  <Text style={styles.modalResetBtnText}>Reset</Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -1239,7 +1297,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                     setShowFilterSheet(false);
                   }}
                 >
-                  <Text style={styles.modalApplyBtnText}>Uygula ({filteredFavorites.length} Sonuç)</Text>
+                  <Text style={styles.modalApplyBtnText}>Apply ({filteredFavorites.length} Results)</Text>
                 </TouchableOpacity>
               </View>
             </ScrollView>

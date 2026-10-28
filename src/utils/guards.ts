@@ -1,45 +1,39 @@
 /**
- * Dış veri (API JSON, yedek dosyası, AsyncStorage) her zaman beklenen tipte
- * gelmez. Bu yardımcılar "undefined is not a function" sınıfı çökmeleri
- * merkezi olarak engeller.
+ * External data (API JSON, backup files, AsyncStorage) is not always the
+ * expected type. These helpers centrally prevent "undefined is not a
+ * function" class crashes.
  */
 
-/** string değilse '' döner. */
+/** Returns '' if not a string. */
 export function asStr(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
 
-/** string değilse varsayılanı döner. */
+/** Returns fallback if not a string. */
 export function asStrOr(v: unknown, fallback: string): string {
   return typeof v === 'string' ? v : fallback;
 }
 
-/** Değeri string listesine çevirir: string → split, dizi → string elemanlar, diğer → []. */
+/** Converts a value to a string list: string → split, array → string items, else []. */
 export function asTagList(v: unknown, sep: RegExp = /\s+/): string[] {
   if (typeof v === 'string') return v.split(sep).filter(Boolean);
   if (Array.isArray(v)) return v.filter((t): t is string => typeof t === 'string');
   return [];
 }
 
-/** Dizideki yalnız string elemanları döndürür (değilse []). */
+/** Returns only string elements (or [] otherwise). */
 export function onlyStrings(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : [];
 }
 
-/** Sayı değilse varsayılanı döner. */
-export function asNum(v: unknown, fallback: number): number {
-  const n = typeof v === 'string' || typeof v === 'number' ? Number(v) : NaN;
-  return Number.isFinite(n) ? (n as number) : fallback;
-}
-
-/** Güvenli toLowerCase (string değilse ''). */
+/** Safe toLowerCase ('' if not a string). */
 export function lower(v: unknown): string {
   return typeof v === 'string' ? v.toLowerCase() : '';
 }
 
-/** Soru işareti öncesi uzantı kontrolü; url string değilse false. */
+/** Checks the extension before query/fragment; false if url is not a string. */
 export function urlEndsWith(url: unknown, ...suffixes: string[]): boolean {
   if (typeof url !== 'string') return false;
-  const clean = url.split('?')[0].toLowerCase();
+  const clean = url.split(/[?#]/)[0].toLowerCase();
   return suffixes.some((s) => clean.endsWith(s));
 }

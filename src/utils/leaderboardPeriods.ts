@@ -1,29 +1,29 @@
 ﻿import type { TimeRangeOption } from '../types/booru';
 
 /**
- * Liderlik capasi slotlari: tarih secici, aktif zaman dilimine gore
- * periyoda uygun secenek sunar (gun modunda gunler, hafta modunda
- * haftalar, ay modunda aylar). Secim, eslesen timeRange ile birlikte
- * uygulanir; boylece 'haftalikta tarih secince haftalik zaman secilmis olur'.
- * Tum tarihler YYYY-AA-GG takvim dizgesidir; hafta Pazartesi baslar
- * (sunucu da ayni hizalamayi yapar).
+ * Leaderboard anchor slots: the date picker offers period-appropriate
+ * options for the active time range (days in day mode, weeks in week
+ * mode, months in month mode). The selection is applied together with
+ * its matching timeRange, so picking a date in weekly mode selects
+ * weekly time. All dates are YYYY-MM-DD calendar strings; weeks start
+ * on Monday (the server aligns the same way).
  */
 
 export interface DateSlot {
   label: string;
   value: string | undefined;
-  /** Secimde otomatik uygulanacak zaman dilimi. */
+  /** Time range auto-applied on selection. */
   range: TimeRangeOption;
 }
 
 const MONTHS_FULL = [
-  'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
-  'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık',
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
 const MONTHS_ABBR = [
-  'Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz',
-  'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara',
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ];
 
 function pad(n: number): string {
@@ -34,7 +34,7 @@ function fmtLocal(d: Date): string {
   return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
 }
 
-/** Gunluk / periyotsuz mod listesi (onceki davranisla ayni icerik). */
+/** Daily / period-less mode list (same content as previous behavior). */
 export function dayDateOptions(now: Date = new Date()): DateSlot[] {
   const formatDate = (d: Date) => fmtLocal(d);
   const subDays = (days: number) => {
@@ -49,17 +49,17 @@ export function dayDateOptions(now: Date = new Date()): DateSlot[] {
   };
   const day = (label: string, value: string | undefined): DateSlot => ({ label, value, range: '1d' });
   return [
-    day('Bugün / En Güncel', undefined),
-    day('Dün (' + subDays(1) + ')', subDays(1)),
-    day('2 Gün Önce (' + subDays(2) + ')', subDays(2)),
-    day('3 Gün Önce (' + subDays(3) + ')', subDays(3)),
-    day('1 Hafta Önce (' + subDays(7) + ')', subDays(7)),
-    day('2 Hafta Önce (' + subDays(14) + ')', subDays(14)),
-    day('1 Ay Önce (' + subMonths(1) + ')', subMonths(1)),
-    day('2 Ay Önce (' + subMonths(2) + ')', subMonths(2)),
-    day('3 Ay Önce (' + subMonths(3) + ')', subMonths(3)),
-    day('6 Ay Önce (' + subMonths(6) + ')', subMonths(6)),
-    day('1 Yıl Önce (' + subMonths(12) + ')', subMonths(12)),
+    day('Today / Latest', undefined),
+    day('Yesterday (' + subDays(1) + ')', subDays(1)),
+    day('2 Days Ago (' + subDays(2) + ')', subDays(2)),
+    day('3 Days Ago (' + subDays(3) + ')', subDays(3)),
+    day('1 Week Ago (' + subDays(7) + ')', subDays(7)),
+    day('2 Weeks Ago (' + subDays(14) + ')', subDays(14)),
+    day('1 Month Ago (' + subMonths(1) + ')', subMonths(1)),
+    day('2 Months Ago (' + subMonths(2) + ')', subMonths(2)),
+    day('3 Months Ago (' + subMonths(3) + ')', subMonths(3)),
+    day('6 Months Ago (' + subMonths(6) + ')', subMonths(6)),
+    day('1 Year Ago (' + subMonths(12) + ')', subMonths(12)),
   ];
 }
 
@@ -83,7 +83,7 @@ function fmtWeekRange(monday: Date): string {
   return fmtDay(monday) + ' - ' + fmtDay(sunday);
 }
 
-/** Haftalik mod listesi: degerler Pazartesi capalaridir. */
+/** Weekly mode list: values are Monday anchors. */
 export function weekDateOptions(now: Date = new Date(), count: number = 8): DateSlot[] {
   const base = mondayOf(now);
   const slots: DateSlot[] = [];
@@ -92,22 +92,22 @@ export function weekDateOptions(now: Date = new Date(), count: number = 8): Date
     monday.setDate(monday.getDate() - i * 7);
     const label =
       i === 0
-        ? 'Bu Hafta (' + fmtWeekRange(monday) + ')'
+        ? 'This Week (' + fmtWeekRange(monday) + ')'
         : i === 1
-          ? 'Geçen Hafta (' + fmtWeekRange(monday) + ')'
-          : i + ' Hafta Önce (' + fmtWeekRange(monday) + ')';
+          ? 'Last Week (' + fmtWeekRange(monday) + ')'
+          : i + ' Weeks Ago (' + fmtWeekRange(monday) + ')';
     slots.push({ label, value: i === 0 ? undefined : fmtLocal(monday), range: '1w' });
   }
   return slots;
 }
 
-/** Aylik mod listesi: degerler ayin 1'i capalaridir. */
+/** Monthly mode list: values are the 1st-of-month anchors. */
 export function monthDateOptions(now: Date = new Date(), count: number = 12): DateSlot[] {
   const slots: DateSlot[] = [];
   for (let i = 0; i < count; i++) {
     const first = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const label =
-      (i === 0 ? 'Bu Ay' : i === 1 ? 'Geçen Ay' : i + ' Ay Önce') +
+      (i === 0 ? 'This Month' : i === 1 ? 'Last Month' : i + ' Months Ago') +
       ' (' + MONTHS_FULL[first.getMonth()] + ' ' + first.getFullYear() + ')';
     slots.push({ label, value: i === 0 ? undefined : fmtLocal(first), range: '1m' });
   }
@@ -124,11 +124,12 @@ function parseISODate(iso: string): { y: number; m: number; d: number } | null {
 }
 
 /**
- * Satir etiketi: secili capanin etkin karsiligi. Haftada o gunun bulundugu
- * hafta araligi, ayda 'Ay Yil', gunlukte ham tarih gosterilir.
+ * Row label: the effective equivalent of the selected anchor. Shows the
+ * containing week range in weekly mode, 'Month Year' in monthly mode,
+ * and the raw date in daily mode.
  */
 export function describeAnchor(anchor: string | undefined, timeRange: string | undefined): string {
-  if (!anchor) return 'Bugün / En Güncel';
+  if (!anchor) return 'Today / Latest';
   const clean = anchor.trim();
   if (timeRange === '1w') {
     const parts = parseISODate(clean);

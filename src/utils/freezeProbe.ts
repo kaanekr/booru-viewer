@@ -1,5 +1,5 @@
-// Yalnız geliştirme: native dosya erişimi yok, medya URL'leri kaydedilmez.
-// FPS veya açık TCP bağlantısı tek başına JS canlılığı kanıtı değildir.
+// Dev only: no native file access, media URLs are never recorded.
+// FPS or an open TCP connection alone is not proof of JS liveness.
 const state = {
   build: 'ios-player-lifecycle-v3-sexcomdiag',
   tick: 0,

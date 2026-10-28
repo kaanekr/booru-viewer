@@ -54,8 +54,8 @@ export interface LockScreenProps {
 
 export const LockScreen: React.FC<LockScreenProps> = ({
   mode = 'unlock',
-  title = 'Passcode Girin',
-  subtitle = 'Uygulamaya erişmek için 4 haneli PIN kodunuzu girin',
+  title = 'Enter Passcode',
+  subtitle = 'Enter your 4-digit PIN to access the app',
   errorText: externalError = null,
   onSuccess,
   onCancel,
@@ -107,7 +107,7 @@ export const LockScreen: React.FC<LockScreenProps> = ({
     };
   }, [mode]);
 
-  const triggerErrorAnimation = useCallback((msg: string = 'Hatalı Passcode') => {
+  const triggerErrorAnimation = useCallback((msg: string = 'Incorrect Passcode') => {
     setErrorMsg(msg);
     setIsErrorState(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
@@ -134,7 +134,7 @@ export const LockScreen: React.FC<LockScreenProps> = ({
     setIsAuthenticating(true);
     try {
       const ok = await SecurityService.authenticateWithBiometrics(
-        biometryType ? `${biometryType} ile Kilidi Aç` : 'Biyometrik Doğrulama'
+        biometryType ? `Unlock with ${biometryType}` : 'Biometric Authentication'
       );
       if (ok) {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -170,18 +170,18 @@ export const LockScreen: React.FC<LockScreenProps> = ({
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               onSuccess?.();
             } else {
-              triggerErrorAnimation('Hatalı Passcode');
+              triggerErrorAnimation('Incorrect Passcode');
             }
           } else if (result && typeof result === 'object') {
             if (result.success) {
               Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
               onSuccess?.();
             } else {
-              triggerErrorAnimation(result.error || 'Hatalı Passcode');
+              triggerErrorAnimation(result.error || 'Incorrect Passcode');
             }
           }
         } catch (e: any) {
-          triggerErrorAnimation(e?.message || 'Doğrulama hatası');
+          triggerErrorAnimation(e?.message || 'Verification error');
         }
       } else if (mode === 'unlock') {
         // Default unlock check against stored hash
@@ -190,7 +190,7 @@ export const LockScreen: React.FC<LockScreenProps> = ({
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
           onSuccess?.();
         } else {
-          triggerErrorAnimation('Hatalı Passcode');
+          triggerErrorAnimation('Incorrect Passcode');
         }
       }
     }
@@ -340,7 +340,7 @@ export const LockScreen: React.FC<LockScreenProps> = ({
       {/* Security Footer Badge */}
       <View style={styles.footerSection}>
         <ShieldCheck size={14} color="#686E7D" />
-        <Text style={styles.footerText}>Uçtan Uca Cihaz İçi Güvenlik</Text>
+        <Text style={styles.footerText}>End-to-end on-device security</Text>
       </View>
     </View>
   );
