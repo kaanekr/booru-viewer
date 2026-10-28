@@ -6,14 +6,19 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const React = require('react');
 const { create, act } = require('react-test-renderer');
+const { createLoader } = require('./helpers/load-typescript.cjs');
 global.IS_REACT_ACT_ENVIRONMENT = true;
 
-function loadFeed() {
-  let source = { id: 'a', type: 'xvideos', name: 'A' };
+function loadFeed(sourceOverride = {}) {
+  const scrollHeader = require('./helpers/scroll-away-header.cjs').loadScrollAwayHeader();
+  let source = { id: 'a', type: 'xvideos', name: 'A', ...sourceOverride };
   const requests = [];
+  const viewport = {};
+  const navigated = [];
   const mocks = {
     react: React,
     'react-native': {
+      Platform: { OS: 'ios' },
       Dimensions: { get: () => ({ width: 390, height: 844 }) },
       StyleSheet: { create: (v) => v },
       ...Object.fromEntries(['ActivityIndicator', 'RefreshControl', 'ScrollView', 'Text', 'TouchableOpacity', 'View'].map((n) => [n, n])),
@@ -23,27 +28,34 @@ function loadFeed() {
     'expo-haptics': { impactAsync: async () => {}, selectionAsync: async () => {}, ImpactFeedbackStyle: { Light: 'light' } },
     'expo-image': { Image: { prefetch: async () => {} } },
     '../services/booruApi': { booruApi: {
-      resetFeedSeen() {},
-      fetchPosts: (page) => new Promise((resolve, reject) => requests.push({ page, source: source.id, resolve, reject })),
+      buildQueryTags: (filter) => `sort:${filter.sortBy}`,
+      fetchPosts: (page, _limit, tags, filter) => new Promise((resolve, reject) => requests.push({ page, tags, filter, source: source.id, resolve, reject })),
+      fetchRedGifsTrendingTags: async () => [],
     } },
     '../types/booru': { DEFAULT_FILTER_CONFIG: {} },
     '../components/PostCard': { PostCard: 'PostCard' },
     '../components/TagChip': { TagChip: 'TagChip' },
+    '../components/SourceSheet': { SourceSheet: 'SourceSheet' },
     '../navigation/rootNavigation': { pushViewer() {}, pushSearchDetail() {} },
-    '@react-navigation/native': { useNavigation: () => ({}), useIsFocused: () => true },
+    '@react-navigation/native': { useNavigation: () => ({ navigate: (...args) => navigated.push(args) }), useIsFocused: () => true },
     '../theme/colors': { Colors: { dark: {} } },
-    '../utils/media': { getMediaUrl: (url) => url, getMediaHeaders: () => ({}), isVideoPost: (p) => !!p?.previewVideoUrl || p?.fileExt === 'mp4' },
+    '../utils/media': { getMediaUrl: (url) => url, getMediaHeaders: () => ({}), isVideoPost: (p) => !!p?.previewVideoUrl || p?.fileExt === 'mp4', isImageMediaUrl: (url) => !/\.(mp4|webm|mov|m4v|m3u8|mpd|zip)(?:\?|$)/i.test(String(url || '')) },
     '../utils/gridVisibility': {
-      useVisibleIds: () => [new Set(), () => {}],
+      useVisibleIds: () => [new Set(), (_layouts, offset, height) => { viewport.visible = { offset, height }; }],
       useFocusedCardId: () => [null, () => {}],
-      useFocusedCardIds: () => [new Set(), () => {}],
-      // Testlerde pencere hesaplanmaz (null = ilk boya): tüm kartlar mount edilir.
+      useFocusedCardIds: () => [new Set(), (_layouts, offset, height, playable) => { viewport.focused = { offset, height, playable }; }],
+      // In tests the window is not computed (null = first paint): all cards mount.
       useMountedIds: () => [null, () => {}],
     },
     '../context/SourceContext': { useSource: () => ({ activeSource: source }) },
     '../context/MediaPlaybackContext': { useMediaPlaybackAllowed: () => true },
     '../services/hentaihavens': { HENTAIHAVEN_FEED_SECTIONS: [] },
     '../utils/freezeProbe': { updateFreezeProbe() {} },
+    '../utils/postIdentity': createLoader()(path.resolve(__dirname, '../src/utils/postIdentity.ts')),
+    '../utils/gridPreviewMedia': createLoader()(path.resolve(__dirname, '../src/utils/gridPreviewMedia.ts')),
+    '../utils/sourceQuickFilters': createLoader()(path.resolve(__dirname, '../src/utils/sourceQuickFilters.ts')),
+    '../utils/scrollAwayHeader': scrollHeader.hook,
+    '../components/ScrollAwayHeader': scrollHeader.component,
     '../services/storage': { StorageService: {
       getFavorites: async () => [], getFeedOrder: async () => null, setFeedOrder: async () => {},
     } },
@@ -62,16 +74,39 @@ function loadFeed() {
     console,
   }, { filename });
   return {
-    FeedScreen: module.exports.FeedScreen, requests,
-    switchSource: (id) => { source = { ...source, id, name: id.toUpperCase() }; },
+    FeedScreen: module.exports.FeedScreen, requests, viewport, navigated, headerAnimations: scrollHeader.animations,
+    switchSource: (id, type = source.type) => { source = { ...source, id, type, name: id.toUpperCase() }; },
   };
 }
 
 let root;
 afterEach(async () => { if (root) await act(() => root.unmount()); root = undefined; });
 const post = (id) => ({ id, previewUrl: `https://cdn.test/${id}.jpg`, tags: {}, aspectRatio: 1 });
+
+test('Explore quick filters dispatch their generated query and reset pagination', async () => {
+  const { FeedScreen, requests } = loadFeed({ id: 'yandere', type: 'moebooru' });
+  await act(async () => { root = create(React.createElement(FeedScreen)); });
+  assert.equal(requests[0].filter.sortBy, 'id');
+  assert.equal(requests[0].tags, 'sort:id');
+  await act(async () => root.root.findByProps({ accessibilityLabel: 'Weekly Top' }).props.onPress());
+  assert.equal(requests[1].page, 1);
+  assert.equal(requests[1].filter.sortBy, 'score');
+  assert.equal(requests[1].filter.timeRange, '1w');
+  assert.equal(requests[1].tags, 'sort:score');
+});
+
+test('switching from a weekly-top source cannot leak its order into an unsupported discover feed', async () => {
+  const { FeedScreen, requests, switchSource } = loadFeed({ id: 'redgifs', type: 'redgifs' });
+  await act(async () => { root = create(React.createElement(FeedScreen)); });
+  await act(async () => root.root.findByProps({ accessibilityLabel: 'Weekly Top' }).props.onPress());
+  switchSource('pornhub', 'pornhub');
+  await act(async () => root.update(React.createElement(FeedScreen)));
+  assert.equal(requests.at(-1).filter.sortBy, 'default');
+  assert.equal(requests.at(-1).filter.timeRange, 'all');
+  assert.equal(root.root.findAllByProps({ accessibilityLabel: 'Weekly Top' }).length, 0);
+});
 const ids = () => root.root.findAllByType('PostCard').map((card) => card.props.post.id);
-const scrollBottom = () => root.root.findByType('ScrollView').props.onScroll({
+const scrollBottom = () => root.root.findAllByType('ScrollView').find((n) => n.props.onScroll).props.onScroll({
   nativeEvent: { contentOffset: { y: 1000 }, layoutMeasurement: { height: 844 }, contentSize: { height: 1800 } },
 });
 
@@ -140,12 +175,12 @@ test('mount window keeps ~20 cards mounted out of 148 and preserves total height
     else { layouts.set(`p${i}`, { y: rightH, h }); rightH += h; }
   }
   const totalH = Math.max(leftH, rightH);
-  // Listenin ortasında: pencere ekran + 1500 overscan ile sınırlı kalır.
+  // In the middle of the list: the window stays bounded by the screen + 1500 overscan.
   const mounted = computeWindowIds(layouts, 5000, 844, 1500);
   assert.ok(mounted.size > 0 && mounted.size <= 30, `mounted=${mounted.size}`);
-  // Uzak üst kartlar dışarıda, yakın kartlar içeride.
+  // Distant top cards stay outside, near cards stay inside.
   assert.equal(mounted.has('p0'), false);
-  // Yer tutucular toplam yüksekliği korur: pencere dışı yükseklik kaybolmaz.
+  // Placeholders preserve the total height: off-window height does not disappear.
   let placeholderH = 0;
   layouts.forEach((r, id) => { if (!mounted.has(id)) placeholderH += r.h; });
   let mountedH = 0;
@@ -192,6 +227,63 @@ test('multi-player focus: computeFocusedCardIds selects top N cards closest to s
   assert.equal(focused.size, 4);
   assert.ok(focused.has('c2'));
   assert.ok(focused.has('c3'));
+});
+
+test('feed preview focus uses measured viewport/grid origin and excludes unsupported iOS-only clips', async () => {
+  const { FeedScreen, requests, viewport } = loadFeed();
+  await act(async () => { root = create(React.createElement(FeedScreen)); });
+  await act(async () => requests[0].resolve([
+    { ...post('mp4'), sampleUrl: 'https://cdn.test/sample.mp4' },
+    { ...post('webm'), previewVideoUrl: 'https://cdn.test/clip.webm' },
+    { ...post('photo'), fileExt: 'mp4' },
+  ]));
+  await act(async () => root.root.findAllByType('ScrollView').find((n) => n.props.onLayout).props.onLayout({ nativeEvent: { layout: { height: 500 } } }));
+  await act(async () => root.root.findAllByType('View').find((node) => node.props.onLayout).props.onLayout({ nativeEvent: { layout: { y: 120 } } }));
+  assert.deepEqual(viewport.visible, { offset: -120, height: 500 });
+  assert.deepEqual([...viewport.focused.playable], ['mp4']);
+  await act(async () => root.root.findAllByType('ScrollView').find((n) => n.props.onScroll).props.onScroll({
+    nativeEvent: { contentOffset: { y: 300 }, layoutMeasurement: { height: 480 }, contentSize: { height: 5000 } },
+  }));
+  assert.deepEqual(viewport.visible, { offset: 180, height: 480 });
+  assert.equal(viewport.focused.offset, 180);
+});
+
+test('Explore header frees the full viewport when hidden and restores covered-area video accounting on reveal', async () => {
+  const { FeedScreen, requests, viewport, headerAnimations } = loadFeed();
+  await act(async () => { root = create(React.createElement(FeedScreen)); });
+  await act(async () => requests[0].resolve([post('one')]));
+  await act(async () => root.root.findByProps({ testID: 'scroll-away-header' }).props.onLayout({ nativeEvent: { layout: { height: 120 } } }));
+  const scroll = () => root.root.findAllByType('ScrollView').find((n) => n.props.onScroll);
+  assert.equal(scroll().props.contentContainerStyle.at(-1).paddingTop, 132);
+  const move = (y) => act(async () => scroll().props.onScroll({ nativeEvent: {
+    contentOffset: { y }, layoutMeasurement: { height: 500 }, contentSize: { height: 5000 },
+  } }));
+  await move(0); await move(300);
+  assert.equal(headerAnimations.at(-1).config.toValue, -120);
+  assert.equal(viewport.visible.height, 500);
+  await move(270);
+  assert.equal(headerAnimations.at(-1).config.toValue, 0);
+  assert.equal(viewport.visible.height, 380);
+});
+
+test('explore header opens the in-place source sheet and manage leaves for Settings', async () => {
+  const { FeedScreen, requests, navigated } = loadFeed();
+  await act(async () => { root = create(React.createElement(FeedScreen)); });
+  await act(async () => requests[0].resolve([]));
+  const pill = root.root.findAllByType('TouchableOpacity').find((node) =>
+    typeof node.props.accessibilityLabel === 'string' && node.props.accessibilityLabel.includes('Change source')
+  );
+  assert.ok(pill, 'source pill opens the sheet in place');
+  assert.equal(root.root.findByType('SourceSheet').props.visible, false);
+  await act(async () => { pill.props.onPress(); });
+  assert.equal(root.root.findByType('SourceSheet').props.visible, true);
+  await act(async () => { root.root.findByType('SourceSheet').props.onClose(); });
+  assert.equal(root.root.findByType('SourceSheet').props.visible, false);
+  await act(async () => { pill.props.onPress(); });
+  await act(async () => { root.root.findByType('SourceSheet').props.onManage(); });
+  assert.equal(root.root.findByType('SourceSheet').props.visible, false);
+  assert.equal(navigated[0][0], 'Settings');
+  assert.equal(navigated[0][1].section, 'sources');
 });
 
 
