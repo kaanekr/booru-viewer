@@ -1,0 +1,3497 @@
+{
+  "checkedAt": "2026-10-16T19:43:23.183Z",
+  "transport": "direct (no device relay)",
+  "results": [
+    {
+      "source": "rule34",
+      "mode": "feed",
+      "button": "latest",
+      "label": "Latest",
+      "status": "credentials-required",
+      "httpStatus": 0,
+      "error": "Rule34 requires your own API key and user_id. Set them in Settings → Sources → Rule34.xxx → Account & API (rule34.xxx/index.php?page=account&s=options).",
+      "routes": []
+    },
+    {
+      "source": "realbooru",
+      "mode": "feed",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 18,
+      "httpStatus": 200,
+      "ids": [
+        "realbooru_1011760",
+        "realbooru_1011759",
+        "realbooru_1011758",
+        "realbooru_1011757",
+        "realbooru_1011756",
+        "realbooru_1011755",
+        "realbooru_1011754",
+        "realbooru_1011753"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "s"
+      ],
+      "routes": [
+        "https://realbooru.com/index.php?page=post&s=list&pid=0&tags=sort%3Aid%3Adesc"
+      ]
+    },
+    {
+      "source": "rule34",
+      "mode": "feed",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "credentials-required",
+      "httpStatus": 0,
+      "error": "Rule34 requires your own API key and user_id. Set them in Settings → Sources → Rule34.xxx → Account & API (rule34.xxx/index.php?page=account&s=options).",
+      "routes": []
+    },
+    {
+      "source": "rule34",
+      "mode": "search",
+      "button": "latest",
+      "label": "Latest",
+      "status": "credentials-required",
+      "httpStatus": 0,
+      "error": "Rule34 requires your own API key and user_id. Set them in Settings → Sources → Rule34.xxx → Account & API (rule34.xxx/index.php?page=account&s=options).",
+      "routes": []
+    },
+    {
+      "source": "rule34",
+      "mode": "search",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "credentials-required",
+      "httpStatus": 0,
+      "error": "Rule34 requires your own API key and user_id. Set them in Settings → Sources → Rule34.xxx → Account & API (rule34.xxx/index.php?page=account&s=options).",
+      "routes": []
+    },
+    {
+      "source": "realbooru",
+      "mode": "feed",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "realbooru_836719",
+        "realbooru_756838",
+        "realbooru_824208",
+        "realbooru_850276",
+        "realbooru_764069",
+        "realbooru_789848",
+        "realbooru_802443",
+        "realbooru_811046"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "s"
+      ],
+      "routes": [
+        "https://realbooru.com/index.php?page=post&s=list&pid=0&tags=sort%3Ascore%3Adesc"
+      ]
+    },
+    {
+      "source": "rule34",
+      "mode": "search",
+      "button": "safe",
+      "label": "Safe",
+      "status": "credentials-required",
+      "httpStatus": 0,
+      "error": "Rule34 requires your own API key and user_id. Set them in Settings → Sources → Rule34.xxx → Account & API (rule34.xxx/index.php?page=account&s=options).",
+      "routes": []
+    },
+    {
+      "source": "rule34",
+      "mode": "search",
+      "button": "score50",
+      "label": "50+ Points",
+      "status": "credentials-required",
+      "httpStatus": 0,
+      "error": "Rule34 requires your own API key and user_id. Set them in Settings → Sources → Rule34.xxx → Account & API (rule34.xxx/index.php?page=account&s=options).",
+      "routes": []
+    },
+    {
+      "source": "realbooru",
+      "mode": "search",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 20,
+      "httpStatus": 200,
+      "ids": [
+        "realbooru_1011750",
+        "realbooru_1011577",
+        "realbooru_1011575",
+        "realbooru_1011574",
+        "realbooru_1011540",
+        "realbooru_1011538",
+        "realbooru_1011536",
+        "realbooru_1011535"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "s"
+      ],
+      "routes": [
+        "https://realbooru.com/index.php?page=post&s=list&pid=0&tags=cosplay+sort%3Aid%3Adesc"
+      ]
+    },
+    {
+      "source": "cumst",
+      "mode": "feed",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 43,
+      "httpStatus": 200,
+      "ids": [
+        "cumst_2822154699",
+        "cumst_2822153577",
+        "cumst_172558029_1",
+        "cumst_172558029_2",
+        "cumst_2822147506",
+        "cumst_2821447687",
+        "cumst_2819113694",
+        "cumst_2819697852"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://cum.st/api/v1/posts?o=0&n=50&sort=recent"
+      ]
+    },
+    {
+      "source": "realbooru",
+      "mode": "search",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "realbooru_824208",
+        "realbooru_780476",
+        "realbooru_877596",
+        "realbooru_790807",
+        "realbooru_888904",
+        "realbooru_764224",
+        "realbooru_746157",
+        "realbooru_862206"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "s"
+      ],
+      "routes": [
+        "https://realbooru.com/index.php?page=post&s=list&pid=0&tags=cosplay+sort%3Ascore%3Adesc"
+      ]
+    },
+    {
+      "source": "cumst",
+      "mode": "feed",
+      "button": "day",
+      "label": "Daily Top",
+      "status": "parsed",
+      "count": 116,
+      "httpStatus": 200,
+      "ids": [
+        "cumst_1638856829",
+        "cumst_2190712084",
+        "cumst_926887953",
+        "cumst_955580316666318848",
+        "cumst_2803200318",
+        "cumst_2502072885",
+        "cumst_915873167321358336",
+        "cumst_2711323215"
+      ],
+      "scores": [
+        14,
+        13,
+        11,
+        10,
+        9,
+        9,
+        8,
+        8
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://cum.st/api/v1/posts/popular?period=day&o=0&n=50"
+      ]
+    },
+    {
+      "source": "realbooru",
+      "mode": "search",
+      "button": "safe",
+      "label": "Safe",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "realbooru_588549",
+        "realbooru_561628",
+        "realbooru_561627",
+        "realbooru_561626",
+        "realbooru_561625",
+        "realbooru_561622",
+        "realbooru_561611",
+        "realbooru_560631"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "s"
+      ],
+      "routes": [
+        "https://realbooru.com/index.php?page=post&s=list&pid=0&tags=cosplay+rating%3Asafe"
+      ]
+    },
+    {
+      "source": "cumst",
+      "mode": "feed",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "parsed",
+      "count": 57,
+      "httpStatus": 200,
+      "ids": [
+        "cumst_2729659107_1",
+        "cumst_2729659107_2",
+        "cumst_916785208349437952",
+        "cumst_2241054667",
+        "cumst_2711323215",
+        "cumst_719309226",
+        "cumst_716952413",
+        "cumst_942278287315464193"
+      ],
+      "scores": [
+        43,
+        43,
+        36,
+        29,
+        27,
+        26,
+        24,
+        22
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://cum.st/api/v1/posts/popular?period=week&o=0&n=50"
+      ]
+    },
+    {
+      "source": "realbooru",
+      "mode": "search",
+      "button": "score50",
+      "label": "50+ Points",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "realbooru_1011536",
+        "realbooru_1011535",
+        "realbooru_1011342",
+        "realbooru_1011341",
+        "realbooru_1011255",
+        "realbooru_1011130",
+        "realbooru_1011007",
+        "realbooru_1010924"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "s"
+      ],
+      "routes": [
+        "https://realbooru.com/index.php?page=post&s=list&pid=0&tags=cosplay+score%3A%3E%3D50"
+      ]
+    },
+    {
+      "source": "cumst",
+      "mode": "feed",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "parsed",
+      "count": 60,
+      "httpStatus": 200,
+      "ids": [
+        "cumst_716952413",
+        "cumst_1761437990",
+        "cumst_1999066837",
+        "cumst_954922681977827331",
+        "cumst_958471351365025792",
+        "cumst_719309226",
+        "cumst_1774528799",
+        "cumst_2729659107_1"
+      ],
+      "scores": [
+        62,
+        57,
+        53,
+        52,
+        47,
+        47,
+        45,
+        43
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://cum.st/api/v1/posts/popular?period=month&o=0&n=50"
+      ]
+    },
+    {
+      "source": "cumst",
+      "mode": "search",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 32,
+      "httpStatus": 200,
+      "ids": [
+        "cumst_967455362229751808",
+        "cumst_2819023893",
+        "cumst_967359182367895552",
+        "cumst_2820137980",
+        "cumst_967328983374901248",
+        "cumst_2820084077",
+        "cumst_967298784281255936",
+        "cumst_2820044334"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://cum.st/api/v1/posts?o=0&n=50&sort=recent&q=cosplay"
+      ]
+    },
+    {
+      "source": "cumst",
+      "mode": "search",
+      "button": "videos",
+      "label": "Videos",
+      "status": "parsed",
+      "count": 196,
+      "httpStatus": 200,
+      "ids": [
+        "cumst_967116470817402880",
+        "cumst_967093520579973120",
+        "cumst_967068566295699456",
+        "cumst_966859424742252544",
+        "cumst_966846551211134976",
+        "cumst_2817236738",
+        "cumst_966817958439436288_1",
+        "cumst_966817958439436288_2"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://cum.st/api/v1/posts?o=0&n=50&sort=recent&type=videos&q=cosplay"
+      ]
+    },
+    {
+      "source": "cumst",
+      "mode": "search",
+      "button": "onlyfans",
+      "label": "OnlyFans",
+      "status": "parsed",
+      "count": 38,
+      "httpStatus": 200,
+      "ids": [
+        "cumst_2819023893",
+        "cumst_2820137980",
+        "cumst_2820084077",
+        "cumst_2820044334",
+        "cumst_2819961410",
+        "cumst_2817425317",
+        "cumst_2817425287",
+        "cumst_2819845740"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://cum.st/api/v1/posts?o=0&n=50&sort=recent&service=onlyfans&q=cosplay"
+      ]
+    },
+    {
+      "source": "cumst",
+      "mode": "search",
+      "button": "fansly",
+      "label": "Fansly",
+      "status": "parsed",
+      "count": 25,
+      "httpStatus": 200,
+      "ids": [
+        "cumst_967455362229751808",
+        "cumst_967359182367895552",
+        "cumst_967328983374901248",
+        "cumst_967298784281255936",
+        "cumst_967268596562534400",
+        "cumst_967238388744724480",
+        "cumst_967208191601434624",
+        "cumst_967177992570691584"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://cum.st/api/v1/posts?o=0&n=50&sort=recent&service=fansly&q=cosplay"
+      ]
+    },
+    {
+      "source": "xhamster",
+      "mode": "feed",
+      "button": "default",
+      "label": "Discover",
+      "status": "parsed",
+      "count": 59,
+      "httpStatus": 200,
+      "ids": [
+        "xh_30582506",
+        "xh_30772666",
+        "xh_25889775",
+        "xh_9501259",
+        "xh_28728451",
+        "xh_27856954",
+        "xh_31115362",
+        "xh_30548274"
+      ],
+      "scores": [
+        2000000,
+        2400000,
+        22600000,
+        27500000,
+        21800000,
+        2400000,
+        713900,
+        3100000
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://xhamster.com/"
+      ]
+    },
+    {
+      "source": "xhamster",
+      "mode": "feed",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "parsed",
+      "count": 51,
+      "httpStatus": 200,
+      "ids": [
+        "xh_30612260",
+        "xh_30511339",
+        "xh_29654592",
+        "xh_29617641",
+        "xh_29469504",
+        "xh_30627130",
+        "xh_30514078",
+        "xh_28959490"
+      ],
+      "scores": [
+        16600000,
+        7200000,
+        100500000,
+        25400000,
+        44500000,
+        15300000,
+        16100000,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://xhamster.com/best"
+      ]
+    },
+    {
+      "source": "xhamster",
+      "mode": "feed",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "parsed",
+      "count": 51,
+      "httpStatus": 200,
+      "ids": [
+        "xh_31266306",
+        "xh_31243362",
+        "xh_31241101",
+        "xh_31243769",
+        "xh_31246870",
+        "xh_31238651",
+        "xh_31206967",
+        "xh_31233084"
+      ],
+      "scores": [
+        1600000,
+        2800000,
+        1000000,
+        778900,
+        2600000,
+        4000000,
+        248600,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://xhamster.com/best/weekly"
+      ]
+    },
+    {
+      "source": "xhamster",
+      "mode": "feed",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "parsed",
+      "count": 51,
+      "httpStatus": 200,
+      "ids": [
+        "xh_30911154",
+        "xh_31087059",
+        "xh_30913033",
+        "xh_30864621",
+        "xh_30979454",
+        "xh_30557346",
+        "xh_30802887",
+        "xh_31074060"
+      ],
+      "scores": [
+        6500000,
+        5400000,
+        2700000,
+        3400000,
+        2700000,
+        3000000,
+        3500000,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://xhamster.com/best/monthly"
+      ]
+    },
+    {
+      "source": "xhamster",
+      "mode": "search",
+      "button": "default",
+      "label": "Relevance",
+      "status": "parsed",
+      "count": 51,
+      "httpStatus": 200,
+      "ids": [
+        "xh_26641848",
+        "xh_25276409",
+        "xh_29287611",
+        "xh_25237578",
+        "xh_31281143",
+        "xh_13656970",
+        "xh_28964871",
+        "xh_30973079"
+      ],
+      "scores": [
+        162500,
+        3300000,
+        801800,
+        1200000,
+        5000,
+        499100,
+        696900,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://xhamster.com/search/cosplay"
+      ]
+    },
+    {
+      "source": "pornhub",
+      "mode": "feed",
+      "button": "default",
+      "label": "Discover",
+      "status": "parsed",
+      "count": 63,
+      "httpStatus": 200,
+      "ids": [
+        "ph_6abad9c2918a8",
+        "ph_6ab70d6b2fa3f",
+        "ph_6abc0966733df",
+        "ph_6ac7bde842d03",
+        "ph_6abffd6fa898b",
+        "ph_6aa9815914002",
+        "ph_6a9c635385021",
+        "ph_6ac6ee610ba65"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.pornhub.com/"
+      ]
+    },
+    {
+      "source": "xhamster",
+      "mode": "search",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 46,
+      "httpStatus": 200,
+      "ids": [
+        "xh_31300937",
+        "xh_31300802",
+        "xh_31300609",
+        "xh_31300504",
+        "xh_31300473",
+        "xh_31300318",
+        "xh_31313174",
+        "xh_31309989"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        205,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://xhamster.com/search/cosplay?sort=newest"
+      ]
+    },
+    {
+      "source": "xhamster",
+      "mode": "search",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "parsed",
+      "count": 46,
+      "httpStatus": 200,
+      "ids": [
+        "xh_21963999",
+        "xh_22764115",
+        "xh_24898247",
+        "xh_29102956",
+        "xh_22499579",
+        "xh_21572371",
+        "xh_22576126",
+        "xh_9717927"
+      ],
+      "scores": [
+        81300000,
+        62200000,
+        47600000,
+        40900000,
+        37400000,
+        33000000,
+        24500000,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://xhamster.com/search/cosplay?sort=views"
+      ]
+    },
+    {
+      "source": "pornhub",
+      "mode": "search",
+      "button": "default",
+      "label": "Relevance",
+      "status": "parsed",
+      "count": 30,
+      "httpStatus": 200,
+      "ids": [
+        "ph_69bee0b940f29",
+        "ph_69a9b7fe68091",
+        "ph_68a379fd5efea",
+        "ph_68cc2d2b32ab5",
+        "ph_683ef2e13cf5d",
+        "ph_6a2e4ed5be1ca",
+        "ph_69a8359fef369",
+        "ph_687e7a67c01ae"
+      ],
+      "scores": [
+        8687,
+        8393,
+        8879,
+        8369,
+        8959,
+        8280,
+        8637,
+        8994
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.pornhub.com/webmasters/search?search=cosplay&page=1&thumbsize=medium&ordering=featured&period=alltime",
+        "https://www.pornhub.com/video/search?search=cosplay&page=1"
+      ]
+    },
+    {
+      "source": "xhamster",
+      "mode": "search",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "parsed",
+      "count": 46,
+      "httpStatus": 200,
+      "ids": [
+        "xh_31256009",
+        "xh_31260043",
+        "xh_31234129",
+        "xh_31250702",
+        "xh_31279281",
+        "xh_31265189",
+        "xh_31196793",
+        "xh_31278170"
+      ],
+      "scores": [
+        69000,
+        42400,
+        15400,
+        15400,
+        13600,
+        11900,
+        11100,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://xhamster.com/search/cosplay?sort=views&date=weekly"
+      ]
+    },
+    {
+      "source": "xhamster",
+      "mode": "search",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "parsed",
+      "count": 46,
+      "httpStatus": 200,
+      "ids": [
+        "xh_30965167",
+        "xh_30807423",
+        "xh_31171917",
+        "xh_30759269",
+        "xh_31094926",
+        "xh_30973079",
+        "xh_31154117",
+        "xh_30972276"
+      ],
+      "scores": [
+        1900000,
+        261000,
+        206100,
+        192700,
+        188400,
+        171000,
+        152600,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://xhamster.com/search/cosplay?sort=views&date=monthly"
+      ]
+    },
+    {
+      "source": "pornhub",
+      "mode": "search",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 30,
+      "httpStatus": 200,
+      "ids": [
+        "ph_6aa6b9fc1c43d",
+        "ph_6ac7909ee321c",
+        "ph_6ac8573d33255",
+        "ph_6ac7900460b3e",
+        "ph_6ad0ec3b2686c",
+        "ph_6ad10d134eff4",
+        "ph_6acc7624838de",
+        "ph_6aca6d640d4ac"
+      ],
+      "scores": [
+        0,
+        10000,
+        10000,
+        10000,
+        9375,
+        10000,
+        10000,
+        10000
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.pornhub.com/webmasters/search?search=cosplay&page=1&thumbsize=medium&ordering=newest&period=alltime",
+        "https://www.pornhub.com/video/search?search=cosplay&page=1"
+      ]
+    },
+    {
+      "source": "xhamster",
+      "mode": "search",
+      "button": "rated",
+      "label": "Top Rated",
+      "status": "parsed",
+      "count": 46,
+      "httpStatus": 200,
+      "ids": [
+        "xh_25252716",
+        "xh_25317424",
+        "xh_24623884",
+        "xh_25153295",
+        "xh_23535717",
+        "xh_24438063",
+        "xh_30426842",
+        "xh_25752886"
+      ],
+      "scores": [
+        128800,
+        101400,
+        101000,
+        140000,
+        146400,
+        49700,
+        36400,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://xhamster.com/search/cosplay?sort=best"
+      ]
+    },
+    {
+      "source": "pornhub",
+      "mode": "search",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "parsed",
+      "count": 30,
+      "httpStatus": 200,
+      "ids": [
+        "ph_ph5f9f33677b74d",
+        "ph_ph5b11c7f2ddecc",
+        "ph_ph5c12ca4fb6c5c",
+        "ph_ph5627213538652",
+        "ph_66d2926c83b38",
+        "ph_ph5dc10cf2bb550",
+        "ph_664222b4e1f52",
+        "ph_ph5f75befacc6f4"
+      ],
+      "scores": [
+        8411,
+        6703,
+        6865,
+        7682,
+        8998,
+        8077,
+        8862,
+        8801
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.pornhub.com/webmasters/search?search=cosplay&page=1&thumbsize=medium&ordering=mostviewed&period=alltime",
+        "https://www.pornhub.com/video/search?search=cosplay&page=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "feed",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_1369",
+        "hh_1414",
+        "hh_98919",
+        "hh_98923",
+        "hh_98337",
+        "hh_3409",
+        "hh_3088",
+        "hh_6517"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/warden",
+        "https://api.hentaihaven.app/v1/hentai/all?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "feed",
+      "button": "trending",
+      "label": "Monthly Trends",
+      "status": "parsed",
+      "count": 20,
+      "httpStatus": 200,
+      "ids": [
+        "hh_98923",
+        "hh_98919",
+        "hh_99041",
+        "hh_30655",
+        "hh_99044",
+        "hh_87366",
+        "hh_3718",
+        "hh_98889"
+      ],
+      "scores": [
+        1053000,
+        810000,
+        687000,
+        603000,
+        576000,
+        531000,
+        441000,
+        309000
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/hentai/home"
+      ]
+    },
+    {
+      "source": "pornhub",
+      "mode": "search",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "parsed",
+      "count": 30,
+      "httpStatus": 200,
+      "ids": [
+        "ph_6acb28161c796",
+        "ph_6acbae763fbe9",
+        "ph_6acd87fa69594",
+        "ph_6ac935eea1efc",
+        "ph_6acb39da86589",
+        "ph_6acbac28b54ba",
+        "ph_6acdaf0e00cb9",
+        "ph_6acdc78284191"
+      ],
+      "scores": [
+        6839,
+        9313,
+        8519,
+        9941,
+        6203,
+        9834,
+        9577,
+        9298
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.pornhub.com/webmasters/search?search=cosplay&page=1&thumbsize=medium&ordering=mostviewed&period=weekly",
+        "https://www.pornhub.com/video/search?search=cosplay&page=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "feed",
+      "button": "episodes",
+      "label": "Latest Episodes",
+      "status": "parsed",
+      "count": 20,
+      "httpStatus": 0,
+      "ids": [
+        "hh_ep_4429",
+        "hh_ep_4428",
+        "hh_ep_4427",
+        "hh_ep_4426",
+        "hh_ep_4425",
+        "hh_ep_4424",
+        "hh_ep_4423",
+        "hh_ep_4422"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": []
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "feed",
+      "button": "yuri",
+      "label": "Yuri",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_96658",
+        "hh_96653",
+        "hh_96501",
+        "hh_87234",
+        "hh_87104",
+        "hh_80258",
+        "hh_43705",
+        "hh_9428"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/102?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "feed",
+      "button": "ecchi",
+      "label": "Ecchi",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_97458",
+        "hh_97339",
+        "hh_97323",
+        "hh_97114",
+        "hh_97037",
+        "hh_96900",
+        "hh_96729",
+        "hh_96703"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/2594?p=1"
+      ]
+    },
+    {
+      "source": "pornhub",
+      "mode": "search",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "parsed",
+      "count": 30,
+      "httpStatus": 200,
+      "ids": [
+        "ph_6ab63531a51c7",
+        "ph_6acb28161c796",
+        "ph_6ac3378226b45",
+        "ph_6ab66946bfd3e",
+        "ph_6abc597512a7e",
+        "ph_6aaf5f7d6c14b",
+        "ph_6ab33419e8233",
+        "ph_6aad01dbc702c"
+      ],
+      "scores": [
+        9073,
+        6839,
+        9066,
+        8427,
+        8790,
+        8692,
+        8244,
+        8625
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.pornhub.com/webmasters/search?search=cosplay&page=1&thumbsize=medium&ordering=mostviewed&period=monthly",
+        "https://www.pornhub.com/video/search?search=cosplay&page=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "feed",
+      "button": "incest",
+      "label": "Incest",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_98357",
+        "hh_97163",
+        "hh_97135",
+        "hh_96878",
+        "hh_96803",
+        "hh_96360",
+        "hh_87279",
+        "hh_87188"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/64?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "feed",
+      "button": "tentacle",
+      "label": "Tentacle",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_97073",
+        "hh_96985",
+        "hh_96888",
+        "hh_96837",
+        "hh_96825",
+        "hh_96724",
+        "hh_96658",
+        "hh_96501"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/244?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "feed",
+      "button": "uncensored",
+      "label": "Uncensored",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_30655",
+        "hh_9464",
+        "hh_9462",
+        "hh_9441",
+        "hh_9428",
+        "hh_9414",
+        "hh_9410",
+        "hh_9407"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/107?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "search",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_1369",
+        "hh_1414",
+        "hh_98919",
+        "hh_98923",
+        "hh_98337",
+        "hh_3409",
+        "hh_3088",
+        "hh_6517"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/warden",
+        "https://api.hentaihaven.app/v1/hentai/all?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "search",
+      "button": "trending",
+      "label": "Monthly Trends",
+      "status": "parsed",
+      "count": 20,
+      "httpStatus": 200,
+      "ids": [
+        "hh_98923",
+        "hh_98919",
+        "hh_99041",
+        "hh_30655",
+        "hh_99044",
+        "hh_87366",
+        "hh_3718",
+        "hh_98889"
+      ],
+      "scores": [
+        1053000,
+        810000,
+        687000,
+        603000,
+        576000,
+        531000,
+        441000,
+        309000
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/hentai/home"
+      ]
+    },
+    {
+      "source": "pornhub",
+      "mode": "search",
+      "button": "rated",
+      "label": "Top Rated",
+      "status": "parsed",
+      "count": 30,
+      "httpStatus": 200,
+      "ids": [
+        "ph_ph61749fb635fb9",
+        "ph_ph6248e87484460",
+        "ph_ph622f022b50ffb",
+        "ph_ph624c07e5e8dda",
+        "ph_ph6206eb49cdf58",
+        "ph_ph61ec7e78d5133",
+        "ph_ph622e8da8803db",
+        "ph_ph6244972ff3eaf"
+      ],
+      "scores": [
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000,
+        10000
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.pornhub.com/webmasters/search?search=cosplay&page=1&thumbsize=medium&ordering=rating&period=alltime",
+        "https://www.pornhub.com/video/search?search=cosplay&page=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "search",
+      "button": "episodes",
+      "label": "Latest Episodes",
+      "status": "parsed",
+      "count": 20,
+      "httpStatus": 0,
+      "ids": [
+        "hh_ep_4429",
+        "hh_ep_4428",
+        "hh_ep_4427",
+        "hh_ep_4426",
+        "hh_ep_4425",
+        "hh_ep_4424",
+        "hh_ep_4423",
+        "hh_ep_4422"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": []
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "search",
+      "button": "yuri",
+      "label": "Yuri",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_96658",
+        "hh_96653",
+        "hh_96501",
+        "hh_87234",
+        "hh_87104",
+        "hh_80258",
+        "hh_43705",
+        "hh_9428"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/102?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "search",
+      "button": "ecchi",
+      "label": "Ecchi",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_97458",
+        "hh_97339",
+        "hh_97323",
+        "hh_97114",
+        "hh_97037",
+        "hh_96900",
+        "hh_96729",
+        "hh_96703"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/2594?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "search",
+      "button": "incest",
+      "label": "Incest",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_98357",
+        "hh_97163",
+        "hh_97135",
+        "hh_96878",
+        "hh_96803",
+        "hh_96360",
+        "hh_87279",
+        "hh_87188"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/64?p=1"
+      ]
+    },
+    {
+      "source": "nhentai",
+      "mode": "feed",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 25,
+      "httpStatus": 200,
+      "ids": [
+        "nh_688242",
+        "nh_688241",
+        "nh_688240",
+        "nh_688239",
+        "nh_688238",
+        "nh_688237",
+        "nh_688236",
+        "nh_688235"
+      ],
+      "scores": [
+        1,
+        2,
+        1,
+        16,
+        2,
+        39,
+        13,
+        19
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://nhentai.net/api/v2/galleries?page=1&per_page=25"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "search",
+      "button": "tentacle",
+      "label": "Tentacle",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_97073",
+        "hh_96985",
+        "hh_96888",
+        "hh_96837",
+        "hh_96825",
+        "hh_96724",
+        "hh_96658",
+        "hh_96501"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/244?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "search",
+      "button": "uncensored",
+      "label": "Uncensored",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_30655",
+        "hh_9464",
+        "hh_9462",
+        "hh_9441",
+        "hh_9428",
+        "hh_9414",
+        "hh_9410",
+        "hh_9407"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/107?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "search",
+      "button": "genre-harem",
+      "label": "Harem",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_98885",
+        "hh_98660",
+        "hh_98418",
+        "hh_97280",
+        "hh_97163",
+        "hh_96869",
+        "hh_96697",
+        "hh_96493"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/all",
+        "https://api.hentaihaven.app/v1/genre/105?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "search",
+      "button": "genre-anal",
+      "label": "Anal",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_98357",
+        "hh_97941",
+        "hh_96888",
+        "hh_96653",
+        "hh_96477",
+        "hh_96460",
+        "hh_96365",
+        "hh_96058"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/222?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "search",
+      "button": "genre-milf",
+      "label": "Milf",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_99044",
+        "hh_98889",
+        "hh_98260",
+        "hh_97991",
+        "hh_97602",
+        "hh_97561",
+        "hh_97486",
+        "hh_97334"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/208?p=1"
+      ]
+    },
+    {
+      "source": "hentaihaven",
+      "mode": "search",
+      "button": "genre-bdsm",
+      "label": "Bdsm",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "hh_98236",
+        "hh_98233",
+        "hh_97991",
+        "hh_97443",
+        "hh_97411",
+        "hh_97347",
+        "hh_97339",
+        "hh_97130"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.hentaihaven.app/v1/genre/133?p=1"
+      ]
+    },
+    {
+      "source": "nhentai",
+      "mode": "feed",
+      "button": "day",
+      "label": "Daily Top",
+      "status": "parsed",
+      "count": 5,
+      "httpStatus": 200,
+      "ids": [
+        "nh_687968",
+        "nh_688042",
+        "nh_687770",
+        "nh_687781",
+        "nh_687479"
+      ],
+      "scores": [
+        19575,
+        12855,
+        29204,
+        25442,
+        41111
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://nhentai.net/api/v2/galleries/popular"
+      ]
+    },
+    {
+      "source": "nhentai",
+      "mode": "feed",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "parsed",
+      "count": 25,
+      "httpStatus": 200,
+      "ids": [
+        "nh_686737",
+        "nh_686230",
+        "nh_686542",
+        "nh_687479",
+        "nh_687368",
+        "nh_687079",
+        "nh_687770",
+        "nh_687781"
+      ],
+      "scores": [
+        48596,
+        48859,
+        41607,
+        41145,
+        32222,
+        30026,
+        29241,
+        25483
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://nhentai.net/api/v2/search?query=*&sort=popular-week&page=1"
+      ]
+    },
+    {
+      "source": "nhentai",
+      "mode": "feed",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "parsed",
+      "count": 25,
+      "httpStatus": 200,
+      "ids": [
+        "nh_682058",
+        "nh_684061",
+        "nh_686230",
+        "nh_686737",
+        "nh_684759",
+        "nh_682034",
+        "nh_685147",
+        "nh_682478"
+      ],
+      "scores": [
+        52943,
+        50878,
+        48859,
+        48596,
+        48309,
+        47282,
+        46860,
+        46128
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://nhentai.net/api/v2/search?query=*&sort=popular-month&page=1"
+      ]
+    },
+    {
+      "source": "nhentai",
+      "mode": "feed",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "parsed",
+      "count": 25,
+      "httpStatus": 200,
+      "ids": [
+        "nh_227910",
+        "nh_393878",
+        "nh_390009",
+        "nh_297974",
+        "nh_304307",
+        "nh_289857",
+        "nh_397325",
+        "nh_239990"
+      ],
+      "scores": [
+        171244,
+        156929,
+        154522,
+        152892,
+        152088,
+        148624,
+        144123,
+        142397
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://nhentai.net/api/v2/search?query=*&sort=popular&page=1"
+      ]
+    },
+    {
+      "source": "nhentai",
+      "mode": "search",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 25,
+      "httpStatus": 200,
+      "ids": [
+        "nh_687792",
+        "nh_687680",
+        "nh_687527",
+        "nh_687323",
+        "nh_687278",
+        "nh_687218",
+        "nh_687021",
+        "nh_686908"
+      ],
+      "scores": [
+        602,
+        546,
+        514,
+        513,
+        669,
+        345,
+        798,
+        253
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://nhentai.net/api/v2/search?query=cosplay&sort=date&page=1"
+      ]
+    },
+    {
+      "source": "nhentai",
+      "mode": "search",
+      "button": "day",
+      "label": "Daily Top",
+      "status": "parsed",
+      "count": 25,
+      "httpStatus": 200,
+      "ids": [
+        "nh_593158",
+        "nh_558719",
+        "nh_687792",
+        "nh_687680",
+        "nh_686168",
+        "nh_687527",
+        "nh_606166",
+        "nh_684322"
+      ],
+      "scores": [
+        49490,
+        66540,
+        602,
+        546,
+        10794,
+        514,
+        74362,
+        7834
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://nhentai.net/api/v2/search?query=cosplay&sort=popular-today&page=1"
+      ]
+    },
+    {
+      "source": "nhentai",
+      "mode": "search",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "parsed",
+      "count": 25,
+      "httpStatus": 200,
+      "ids": [
+        "nh_686168",
+        "nh_686496",
+        "nh_593158",
+        "nh_686177",
+        "nh_684911",
+        "nh_686029",
+        "nh_606166",
+        "nh_687021"
+      ],
+      "scores": [
+        10794,
+        2551,
+        49490,
+        6058,
+        5689,
+        5719,
+        74362,
+        798
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://nhentai.net/api/v2/search?query=cosplay&sort=popular-week&page=1"
+      ]
+    },
+    {
+      "source": "nhentai",
+      "mode": "search",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "parsed",
+      "count": 25,
+      "httpStatus": 200,
+      "ids": [
+        "nh_682942",
+        "nh_686168",
+        "nh_684322",
+        "nh_684480",
+        "nh_686177",
+        "nh_685466",
+        "nh_686029",
+        "nh_684911"
+      ],
+      "scores": [
+        26359,
+        10794,
+        7834,
+        6875,
+        6058,
+        5813,
+        5719,
+        5689
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://nhentai.net/api/v2/search?query=cosplay&sort=popular-month&page=1"
+      ]
+    },
+    {
+      "source": "nhentai",
+      "mode": "search",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "parsed",
+      "count": 25,
+      "httpStatus": 200,
+      "ids": [
+        "nh_504598",
+        "nh_490959",
+        "nh_366091",
+        "nh_540057",
+        "nh_315891",
+        "nh_388535",
+        "nh_579964",
+        "nh_360506"
+      ],
+      "scores": [
+        131029,
+        109946,
+        101005,
+        99471,
+        98052,
+        96242,
+        89599,
+        80105
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://nhentai.net/api/v2/search?query=cosplay&sort=popular&page=1"
+      ]
+    },
+    {
+      "source": "redgifs",
+      "mode": "feed",
+      "button": "default",
+      "label": "Trending",
+      "status": "parsed",
+      "count": 10,
+      "httpStatus": 200,
+      "ids": [
+        "rg_mediumseagreentrimhamster",
+        "rg_carefulinfantiledromaeosaur",
+        "rg_harmoniousvigorousavians",
+        "rg_deliriousmediumforestgreenfiddlercrab",
+        "rg_ediblewideeyedeider",
+        "rg_biginfinitechicken",
+        "rg_wornwatchfulfly",
+        "rg_rottendullgoldenretriever"
+      ],
+      "scores": [
+        18,
+        31,
+        1104,
+        27,
+        232,
+        10,
+        35,
+        20
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.redgifs.com/v2/auth/temporary",
+        "https://api.redgifs.com/v2/gifs/search?type=g&order=trending&count=12&page=1"
+      ]
+    },
+    {
+      "source": "redgifs",
+      "mode": "feed",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 11,
+      "httpStatus": 200,
+      "ids": [
+        "rg_sillydetailedhorseshoecrab",
+        "rg_worriedslategreymetamorphosis",
+        "rg_carefulsanecheetah",
+        "rg_thirstygorgeousmouse",
+        "rg_angrybountifulwallaby",
+        "rg_wheatpowderbluearkshell",
+        "rg_pointedacceptablekusimanse",
+        "rg_surprisedfatwaterbug"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.redgifs.com/v2/gifs/search?type=g&order=latest&count=12&page=1"
+      ]
+    },
+    {
+      "source": "redgifs",
+      "mode": "feed",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "rg_antiquewhitephysicalyellowbellylizard",
+        "rg_glisteningblaringbass",
+        "rg_trivialbewitchedbanteng",
+        "rg_vengefuljudiciousgreyhounddog",
+        "rg_simplehelplesswatussi",
+        "rg_femalefineleveret",
+        "rg_knottygoldengoldfinch",
+        "rg_superiorcavernoushart"
+      ],
+      "scores": [
+        1026,
+        6956,
+        2470,
+        1475,
+        4634,
+        1004,
+        3274,
+        2393
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.redgifs.com/v2/gifs/search?type=g&order=top7&count=12&page=1"
+      ]
+    },
+    {
+      "source": "redgifs",
+      "mode": "feed",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "rg_antiquewhitephysicalyellowbellylizard",
+        "rg_fickleembarrassedbanteng",
+        "rg_motherlyneighboringiriomotecat",
+        "rg_boldbarrenphalarope",
+        "rg_fabulousrashsnowyowl",
+        "rg_dearsecretsow",
+        "rg_smartgiddykingfisher",
+        "rg_crookedeachpeacock"
+      ],
+      "scores": [
+        1026,
+        4156,
+        3039,
+        4630,
+        3546,
+        13448,
+        7171,
+        2433
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.redgifs.com/v2/gifs/search?type=g&order=top28&count=12&page=1"
+      ]
+    },
+    {
+      "source": "redgifs",
+      "mode": "search",
+      "button": "default",
+      "label": "Trending",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "rg_handsomecoordinatedwoodchuck",
+        "rg_milkycornflowerbluegermanspitz",
+        "rg_imperfectdiscretehawaiianmonkseal",
+        "rg_rotatinglastingtahr",
+        "rg_watchfulpoisedstonefly",
+        "rg_definiteillfatedichidna",
+        "rg_untidykaleidoscopicvelvetworm",
+        "rg_wingedpaleadeliepenguin"
+      ],
+      "scores": [
+        99,
+        191,
+        974,
+        80,
+        12,
+        37,
+        113,
+        191
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.redgifs.com/v2/gifs/search?type=g&order=trending&count=12&page=1&tags=cosplay"
+      ]
+    },
+    {
+      "source": "redgifs",
+      "mode": "search",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "rg_unwittingclosepikeperch",
+        "rg_splendidlatebantamrooster",
+        "rg_validhopefulgangesdolphin",
+        "rg_confusedtreasuredsquamata",
+        "rg_unwelcomefamousprayingmantid",
+        "rg_yummyunknownamericansaddlebred",
+        "rg_feweminentantarcticfurseal",
+        "rg_whirlwindobviousemperorpenguin"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.redgifs.com/v2/gifs/search?type=g&order=latest&count=12&page=1&tags=cosplay"
+      ]
+    },
+    {
+      "source": "redgifs",
+      "mode": "search",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "rg_notabledesertedvulpesvulpes",
+        "rg_queasylongtermwildebeast",
+        "rg_cuddlyspiritedbrownbear",
+        "rg_darkturquoisewavygrouse",
+        "rg_sliminsubstantialwidgeon",
+        "rg_simplisticsquigglydorado",
+        "rg_trimfalsedrafthorse",
+        "rg_darkbluetediousmoose"
+      ],
+      "scores": [
+        464,
+        962,
+        626,
+        565,
+        411,
+        447,
+        859,
+        511
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.redgifs.com/v2/gifs/search?type=g&order=top7&count=12&page=1&tags=cosplay"
+      ]
+    },
+    {
+      "source": "redgifs",
+      "mode": "search",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "rg_triangularfrigidazurewingedmagpie",
+        "rg_definitiveliquidwarbler",
+        "rg_forestgreenmundanexenotarsosaurus",
+        "rg_dazzlingluminousarchaeocete",
+        "rg_quintessentialphysicalarthropods",
+        "rg_yellowperuchrysomelid",
+        "rg_shamelesssprycarp",
+        "rg_cornflowerblueplumpitalianbrownbear"
+      ],
+      "scores": [
+        2374,
+        2443,
+        2066,
+        1920,
+        2155,
+        1811,
+        246,
+        1520
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://api.redgifs.com/v2/gifs/search?type=g&order=top28&count=12&page=1&tags=cosplay"
+      ]
+    },
+    {
+      "source": "yandere",
+      "mode": "feed",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "1270637",
+        "1270636",
+        "1270635",
+        "1270634",
+        "1270633",
+        "1270632",
+        "1270631",
+        "1270630"
+      ],
+      "scores": [
+        1,
+        1,
+        0,
+        1,
+        5,
+        15,
+        21,
+        23
+      ],
+      "ratings": [
+        "e",
+        "q",
+        "s"
+      ],
+      "routes": [
+        "https://yande.re/post.json?page=1&limit=12&tags=order%3Aid_desc"
+      ]
+    },
+    {
+      "source": "yandere",
+      "mode": "feed",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "315186",
+        "332335",
+        "375120",
+        "347607",
+        "1237194",
+        "418470",
+        "507625",
+        "395473"
+      ],
+      "scores": [
+        1674,
+        1175,
+        1170,
+        1167,
+        1150,
+        1140,
+        1119,
+        1060
+      ],
+      "ratings": [
+        "e",
+        "q",
+        "s"
+      ],
+      "routes": [
+        "https://yande.re/post.json?page=1&limit=12&tags=order%3Ascore"
+      ]
+    },
+    {
+      "source": "yandere",
+      "mode": "feed",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "1270519",
+        "1270295",
+        "1270168",
+        "1270250",
+        "1270234",
+        "1270595",
+        "1270256",
+        "1270166"
+      ],
+      "scores": [
+        153,
+        115,
+        110,
+        94,
+        93,
+        89,
+        86,
+        86
+      ],
+      "ratings": [
+        "q",
+        "e"
+      ],
+      "routes": [
+        "https://yande.re/post.json?page=1&limit=12&tags=order%3Ascore+date%3A2026-10-09..2026-10-16"
+      ]
+    },
+    {
+      "source": "yandere",
+      "mode": "feed",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "1269999",
+        "1269609",
+        "1268947",
+        "1269998",
+        "1269605",
+        "1270519",
+        "1269553",
+        "1268943"
+      ],
+      "scores": [
+        183,
+        177,
+        171,
+        170,
+        153,
+        153,
+        148,
+        146
+      ],
+      "ratings": [
+        "e",
+        "q"
+      ],
+      "routes": [
+        "https://yande.re/post.json?page=1&limit=12&tags=order%3Ascore+date%3A2026-09-16..2026-10-16"
+      ]
+    },
+    {
+      "source": "yandere",
+      "mode": "search",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "1270356",
+        "1270355",
+        "1270354",
+        "1270353",
+        "1270344",
+        "1270343",
+        "1270342",
+        "1269822"
+      ],
+      "scores": [
+        27,
+        16,
+        15,
+        11,
+        20,
+        16,
+        14,
+        18
+      ],
+      "ratings": [
+        "s"
+      ],
+      "routes": [
+        "https://yande.re/post.json?page=1&limit=12&tags=landscape+order%3Aid_desc"
+      ]
+    },
+    {
+      "source": "yandere",
+      "mode": "search",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "365125",
+        "373971",
+        "315846",
+        "317740",
+        "391895",
+        "406553",
+        "292912",
+        "305610"
+      ],
+      "scores": [
+        427,
+        397,
+        347,
+        280,
+        280,
+        260,
+        240,
+        215
+      ],
+      "ratings": [
+        "q",
+        "e",
+        "s"
+      ],
+      "routes": [
+        "https://yande.re/post.json?page=1&limit=12&tags=landscape+order%3Ascore"
+      ]
+    },
+    {
+      "source": "yandere",
+      "mode": "search",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "parsed",
+      "count": 7,
+      "httpStatus": 200,
+      "ids": [
+        "1270356",
+        "1270344",
+        "1270355",
+        "1270343",
+        "1270354",
+        "1270342",
+        "1270353"
+      ],
+      "scores": [
+        27,
+        20,
+        16,
+        16,
+        15,
+        14,
+        11
+      ],
+      "ratings": [
+        "s"
+      ],
+      "routes": [
+        "https://yande.re/post.json?page=1&limit=12&tags=landscape+order%3Ascore+date%3A2026-10-09..2026-10-16"
+      ]
+    },
+    {
+      "source": "yandere",
+      "mode": "search",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "parsed",
+      "count": 11,
+      "httpStatus": 200,
+      "ids": [
+        "1269524",
+        "1270356",
+        "1270344",
+        "1269822",
+        "1269427",
+        "1270355",
+        "1270343",
+        "1270354"
+      ],
+      "scores": [
+        44,
+        27,
+        20,
+        18,
+        17,
+        16,
+        16,
+        15
+      ],
+      "ratings": [
+        "s"
+      ],
+      "routes": [
+        "https://yande.re/post.json?page=1&limit=12&tags=landscape+order%3Ascore+date%3A2026-09-16..2026-10-16"
+      ]
+    },
+    {
+      "source": "yandere",
+      "mode": "search",
+      "button": "safe",
+      "label": "Safe",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "1270356",
+        "1270355",
+        "1270354",
+        "1270353",
+        "1270344",
+        "1270343",
+        "1270342",
+        "1269822"
+      ],
+      "scores": [
+        27,
+        16,
+        15,
+        11,
+        20,
+        16,
+        14,
+        18
+      ],
+      "ratings": [
+        "s"
+      ],
+      "routes": [
+        "https://yande.re/post.json?page=1&limit=12&tags=landscape+rating%3As"
+      ]
+    },
+    {
+      "source": "gelbooru",
+      "mode": "feed",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 42,
+      "httpStatus": 200,
+      "ids": [
+        "gelbooru_15102587",
+        "gelbooru_15102586",
+        "gelbooru_15102585",
+        "gelbooru_15102584",
+        "gelbooru_15102583",
+        "gelbooru_15102582",
+        "gelbooru_15102581",
+        "gelbooru_15102580"
+      ],
+      "scores": [
+        1,
+        2,
+        0,
+        0,
+        0,
+        2,
+        0,
+        0
+      ],
+      "ratings": [
+        "s",
+        "e",
+        "q"
+      ],
+      "routes": [
+        "https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=12&pid=0&tags=sort%3Aid%3Adesc",
+        "https://gelbooru.com/index.php?page=post&s=list&pid=0&tags=sort%3Aid%3Adesc"
+      ]
+    },
+    {
+      "source": "yandere",
+      "mode": "search",
+      "button": "score50",
+      "label": "50+ Points",
+      "status": "parsed",
+      "count": 12,
+      "httpStatus": 200,
+      "ids": [
+        "1265961",
+        "1248352",
+        "1242911",
+        "1240156",
+        "1223688",
+        "1208154",
+        "1167908",
+        "1163610"
+      ],
+      "scores": [
+        52,
+        71,
+        51,
+        50,
+        93,
+        57,
+        51,
+        67
+      ],
+      "ratings": [
+        "q",
+        "s"
+      ],
+      "routes": [
+        "https://yande.re/post.json?page=1&limit=12&tags=landscape+score%3A%3E%3D50"
+      ]
+    },
+    {
+      "source": "gelbooru",
+      "mode": "feed",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "parsed",
+      "count": 42,
+      "httpStatus": 200,
+      "ids": [
+        "gelbooru_197798",
+        "gelbooru_8892348",
+        "gelbooru_6272407",
+        "gelbooru_1301504",
+        "gelbooru_2391501",
+        "gelbooru_5499734",
+        "gelbooru_6346884",
+        "gelbooru_6963468"
+      ],
+      "scores": [
+        31192,
+        12487,
+        5408,
+        4739,
+        4419,
+        4359,
+        4223,
+        4161
+      ],
+      "ratings": [
+        "s",
+        "e"
+      ],
+      "routes": [
+        "https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=12&pid=0&tags=sort%3Ascore%3Adesc",
+        "https://gelbooru.com/index.php?page=post&s=list&pid=0&tags=sort%3Ascore%3Adesc"
+      ]
+    },
+    {
+      "source": "gelbooru",
+      "mode": "search",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 42,
+      "httpStatus": 200,
+      "ids": [
+        "gelbooru_15095979",
+        "gelbooru_15089789",
+        "gelbooru_15089395",
+        "gelbooru_15085809",
+        "gelbooru_15083718",
+        "gelbooru_15083130",
+        "gelbooru_15082677",
+        "gelbooru_15081106"
+      ],
+      "scores": [
+        0,
+        0,
+        3,
+        2,
+        0,
+        7,
+        1,
+        3
+      ],
+      "ratings": [
+        "s",
+        "q"
+      ],
+      "routes": [
+        "https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=12&pid=0&tags=landscape+sort%3Aid%3Adesc",
+        "https://gelbooru.com/index.php?page=post&s=list&pid=0&tags=landscape+sort%3Aid%3Adesc"
+      ]
+    },
+    {
+      "source": "gelbooru",
+      "mode": "search",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "parsed",
+      "count": 42,
+      "httpStatus": 200,
+      "ids": [
+        "gelbooru_12408922",
+        "gelbooru_4957559",
+        "gelbooru_5796309",
+        "gelbooru_12059251",
+        "gelbooru_14665901",
+        "gelbooru_5796307",
+        "gelbooru_4963558",
+        "gelbooru_12366837"
+      ],
+      "scores": [
+        635,
+        567,
+        530,
+        475,
+        464,
+        457,
+        419,
+        403
+      ],
+      "ratings": [
+        "e",
+        "q",
+        "s"
+      ],
+      "routes": [
+        "https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=12&pid=0&tags=landscape+sort%3Ascore%3Adesc",
+        "https://gelbooru.com/index.php?page=post&s=list&pid=0&tags=landscape+sort%3Ascore%3Adesc"
+      ]
+    },
+    {
+      "source": "gelbooru",
+      "mode": "search",
+      "button": "safe",
+      "label": "Safe",
+      "status": "parsed",
+      "count": 42,
+      "httpStatus": 200,
+      "ids": [
+        "gelbooru_15095979",
+        "gelbooru_15089789",
+        "gelbooru_15089395",
+        "gelbooru_15085809",
+        "gelbooru_15083718",
+        "gelbooru_15082677",
+        "gelbooru_15080953",
+        "gelbooru_15079499"
+      ],
+      "scores": [
+        0,
+        0,
+        3,
+        2,
+        0,
+        1,
+        1,
+        10
+      ],
+      "ratings": [
+        "s"
+      ],
+      "routes": [
+        "https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=12&pid=0&tags=landscape+rating%3Ageneral",
+        "https://gelbooru.com/index.php?page=post&s=list&pid=0&tags=landscape+rating%3Ageneral"
+      ]
+    },
+    {
+      "source": "gelbooru",
+      "mode": "search",
+      "button": "score50",
+      "label": "50+ Points",
+      "status": "parsed",
+      "count": 42,
+      "httpStatus": 200,
+      "ids": [
+        "gelbooru_15065494",
+        "gelbooru_14665901",
+        "gelbooru_14586559",
+        "gelbooru_14560994",
+        "gelbooru_14554500",
+        "gelbooru_14295757",
+        "gelbooru_14295756",
+        "gelbooru_14202551"
+      ],
+      "scores": [
+        63,
+        464,
+        57,
+        50,
+        123,
+        52,
+        59,
+        75
+      ],
+      "ratings": [
+        "s",
+        "e",
+        "q"
+      ],
+      "routes": [
+        "https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1&limit=12&pid=0&tags=landscape+score%3A%3E%3D50",
+        "https://gelbooru.com/index.php?page=post&s=list&pid=0&tags=landscape+score%3A%3E%3D50"
+      ]
+    },
+    {
+      "source": "danbooru",
+      "mode": "feed",
+      "button": "latest",
+      "label": "Latest",
+      "status": "blocked-or-error",
+      "httpStatus": 403,
+      "error": "Danbooru API error: 403 ",
+      "routes": [
+        "https://danbooru.donmai.us/posts.json?page=1&limit=12&tags=order%3Aid"
+      ]
+    },
+    {
+      "source": "xvideos",
+      "mode": "feed",
+      "button": "default",
+      "label": "Discover",
+      "status": "parsed",
+      "count": 48,
+      "httpStatus": 200,
+      "ids": [
+        "xv_92300482",
+        "xv_92299909",
+        "xv_92144737",
+        "xv_92312179",
+        "xv_92295547",
+        "xv_91953184",
+        "xv_92314561",
+        "xv_92296258"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.xvideos.com/"
+      ]
+    },
+    {
+      "source": "xvideos",
+      "mode": "feed",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 27,
+      "httpStatus": 200,
+      "ids": [
+        "xv_92241511",
+        "xv_92304235",
+        "xv_92284669",
+        "xv_92289310",
+        "xv_92288869",
+        "xv_92302927",
+        "xv_92266693",
+        "xv_92287372"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.xvideos.com/new/1"
+      ]
+    },
+    {
+      "source": "danbooru",
+      "mode": "feed",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "blocked-or-error",
+      "httpStatus": 403,
+      "error": "Danbooru API error: 403 ",
+      "routes": [
+        "https://danbooru.donmai.us/posts.json?page=1&limit=12&tags=order%3Ascore"
+      ]
+    },
+    {
+      "source": "danbooru",
+      "mode": "feed",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "blocked-or-error",
+      "httpStatus": 403,
+      "error": "Danbooru API error: 403 ",
+      "routes": [
+        "https://danbooru.donmai.us/posts.json?page=1&limit=12&tags=age%3A%3C1week+order%3Ascore"
+      ]
+    },
+    {
+      "source": "xvideos",
+      "mode": "feed",
+      "button": "monthly-best",
+      "label": "Monthly Best",
+      "status": "parsed",
+      "count": 27,
+      "httpStatus": 200,
+      "ids": [
+        "xv_91666093",
+        "xv_91753552",
+        "xv_91636102",
+        "xv_91950310",
+        "xv_91859989",
+        "xv_90966829",
+        "xv_91752481",
+        "xv_91680952"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.xvideos.com/best"
+      ]
+    },
+    {
+      "source": "xvideos",
+      "mode": "search",
+      "button": "default",
+      "label": "Relevance",
+      "status": "parsed",
+      "count": 25,
+      "httpStatus": 200,
+      "ids": [
+        "xv_91378843",
+        "xv_68388105",
+        "xv_76114443",
+        "xv_87394953",
+        "xv_89313268",
+        "xv_90234928",
+        "xv_84924303",
+        "xv_46802767"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.xvideos.com/?k=cosplay&sort=relevance&durf=allduration&datef=all&quality=all"
+      ]
+    },
+    {
+      "source": "danbooru",
+      "mode": "feed",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "blocked-or-error",
+      "httpStatus": 403,
+      "error": "Danbooru API error: 403 ",
+      "routes": [
+        "https://danbooru.donmai.us/posts.json?page=1&limit=12&tags=age%3A%3C1month+order%3Ascore"
+      ]
+    },
+    {
+      "source": "danbooru",
+      "mode": "search",
+      "button": "latest",
+      "label": "Latest",
+      "status": "blocked-or-error",
+      "httpStatus": 403,
+      "error": "Danbooru API error: 403 ",
+      "routes": [
+        "https://danbooru.donmai.us/posts.json?page=1&limit=12&tags=landscape+order%3Aid"
+      ]
+    },
+    {
+      "source": "xvideos",
+      "mode": "search",
+      "button": "latest",
+      "label": "Latest",
+      "status": "parsed",
+      "count": 23,
+      "httpStatus": 200,
+      "ids": [
+        "xv_92295046",
+        "xv_92279836",
+        "xv_88462900",
+        "xv_92301745",
+        "xv_92297359",
+        "xv_92297713",
+        "xv_92285671",
+        "xv_92293366"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.xvideos.com/?k=cosplay&sort=uploaddate&durf=allduration&datef=all&quality=all"
+      ]
+    },
+    {
+      "source": "danbooru",
+      "mode": "search",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "blocked-or-error",
+      "httpStatus": 403,
+      "error": "Danbooru API error: 403 ",
+      "routes": [
+        "https://danbooru.donmai.us/posts.json?page=1&limit=12&tags=landscape+order%3Ascore"
+      ]
+    },
+    {
+      "source": "xvideos",
+      "mode": "search",
+      "button": "top",
+      "label": "Top · All time",
+      "status": "parsed",
+      "count": 21,
+      "httpStatus": 200,
+      "ids": [
+        "xv_63333799",
+        "xv_69033489",
+        "xv_55032807",
+        "xv_74050373",
+        "xv_54063079",
+        "xv_63502423",
+        "xv_48683269",
+        "xv_22044797"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.xvideos.com/?k=cosplay&sort=views&durf=allduration&datef=all&quality=all"
+      ]
+    },
+    {
+      "source": "danbooru",
+      "mode": "search",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "blocked-or-error",
+      "httpStatus": 403,
+      "error": "Danbooru API error: 403 ",
+      "routes": [
+        "https://danbooru.donmai.us/posts.json?page=1&limit=12&tags=landscape+age%3A%3C1week+order%3Ascore"
+      ]
+    },
+    {
+      "source": "xvideos",
+      "mode": "search",
+      "button": "week",
+      "label": "Weekly Top",
+      "status": "parsed",
+      "count": 27,
+      "httpStatus": 200,
+      "ids": [
+        "xv_92243038",
+        "xv_92241115",
+        "xv_92207275",
+        "xv_92271046",
+        "xv_92224957",
+        "xv_92261764",
+        "xv_92264530",
+        "xv_92241331"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.xvideos.com/?k=cosplay&sort=views&durf=allduration&datef=week&quality=all"
+      ]
+    },
+    {
+      "source": "danbooru",
+      "mode": "search",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "blocked-or-error",
+      "httpStatus": 403,
+      "error": "Danbooru API error: 403 ",
+      "routes": [
+        "https://danbooru.donmai.us/posts.json?page=1&limit=12&tags=landscape+age%3A%3C1month+order%3Ascore"
+      ]
+    },
+    {
+      "source": "xvideos",
+      "mode": "search",
+      "button": "month",
+      "label": "Monthly Top",
+      "status": "parsed",
+      "count": 26,
+      "httpStatus": 200,
+      "ids": [
+        "xv_92053825",
+        "xv_92056513",
+        "xv_92235610",
+        "xv_91954354",
+        "xv_90468829",
+        "xv_92150812",
+        "xv_91782463",
+        "xv_91737610"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.xvideos.com/?k=cosplay&sort=views&durf=allduration&datef=month&quality=all"
+      ]
+    },
+    {
+      "source": "danbooru",
+      "mode": "search",
+      "button": "safe",
+      "label": "Safe",
+      "status": "blocked-or-error",
+      "httpStatus": 403,
+      "error": "Danbooru API error: 403 ",
+      "routes": [
+        "https://danbooru.donmai.us/posts.json?page=1&limit=12&tags=landscape+rating%3Ag"
+      ]
+    },
+    {
+      "source": "xvideos",
+      "mode": "search",
+      "button": "rated",
+      "label": "Top Rated",
+      "status": "parsed",
+      "count": 19,
+      "httpStatus": 200,
+      "ids": [
+        "xv_4366189",
+        "xv_8249828",
+        "xv_9453574",
+        "xv_27429851",
+        "xv_28025049",
+        "xv_28470505",
+        "xv_29122939",
+        "xv_29153231"
+      ],
+      "scores": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "ratings": [
+        "e"
+      ],
+      "routes": [
+        "https://www.xvideos.com/?k=cosplay&sort=rating&durf=allduration&datef=all&quality=all"
+      ]
+    },
+    {
+      "source": "danbooru",
+      "mode": "search",
+      "button": "score50",
+      "label": "50+ Points",
+      "status": "blocked-or-error",
+      "httpStatus": 403,
+      "error": "Danbooru API error: 403 ",
+      "routes": [
+        "https://danbooru.donmai.us/posts.json?page=1&limit=12&tags=landscape+score%3A%3E%3D50"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+const { test, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
+const path = require('node:path');
+const React = require('react');
+const { create, act } = require('react-test-renderer');
+const { createLoader } = require('./helpers/load-typescript.cjs');
+global.IS_REACT_ACT_ENVIRONMENT = true;
+let root;
+afterEach(async () => { if (root) await act(() => root.unmount()); root = undefined; });
+
+function setup() {
+  const sources = [{ id: 'a' }, { id: 'b' }];
+  const posts = [{ id: '42', sourceId: 'a' }, { id: '42', sourceId: 'b' }];
+  const searches = []; const recent = [];
+  let focused = true;
+  let backCount = 0;
+  const load = createLoader({
+    react: React,
+    '@react-navigation/native': { useIsFocused: () => focused },
+    '../navigation/postsCache': { getCachedPosts: () => posts, deleteCachedPosts() {} },
+    '../navigation/rootNavigation': { pushSearchDetail: (...args) => searches.push(args) },
+    '../components/ImageViewerModal': { ImageViewerModal: 'Viewer' },
+    '../services/storage': { StorageService: { addRecentView: async (p) => recent.push(p) } },
+    '../utils/media': { isVideoPost: () => false },
+    '../context/MediaPlaybackContext': { useMediaPlaybackAllowed: () => true },
+    '../services/sources': { AVAILABLE_SOURCES: sources },
+  });
+  return {
+    ViewerScreen: load(path.resolve(__dirname, '../src/screens/ViewerScreen.tsx')).ViewerScreen,
+    props: {
+      route: { params: { postsKey: 'session', initialIndex: 0, originTags: ['landscape'] } },
+      navigation: { canGoBack: () => true, goBack: () => { backCount++; }, setOptions() {} },
+    },
+    searches, recent, backCount: () => backCount, focus: (value) => { focused = value; },
+  };
+}
+
+test('viewer close and tag callbacks stay stable across unrelated renders', async () => {
+  const { ViewerScreen, props } = setup();
+  await act(() => { root = create(React.createElement(ViewerScreen, props)); });
+  const first = root.root.findByType('Viewer').props;
+  await act(() => root.update(React.createElement(ViewerScreen, props)));
+  const second = root.root.findByType('Viewer').props;
+  for (const key of ['onClose', 'onTagPress', 'onAddTagToSearch', 'onExcludeTagFromSearch']) assert.equal(first[key], second[key]);
+});
+
+test('double close pops once and selecting a tag follows the current post source', async () => {
+  const { ViewerScreen, props, searches, backCount } = setup();
+  await act(() => { root = create(React.createElement(ViewerScreen, props)); });
+  await act(() => root.root.findByType('Viewer').props.onIndexChange(1));
+  const viewer = root.root.findByType('Viewer').props;
+  viewer.onTagPress('sky');
+  assert.equal(searches[0][2].id, 'b');
+  await act(() => { viewer.onClose(); viewer.onClose(); });
+  assert.equal(backCount(), 1);
+});
+
+test('suspended viewer does not keep adding recent views', async () => {
+  const { ViewerScreen, props, recent, focus } = setup();
+  await act(() => { root = create(React.createElement(ViewerScreen, props)); });
+  assert.equal(recent.length, 1);
+  focus(false);
+  await act(() => root.update(React.createElement(ViewerScreen, props)));
+  await act(() => root.root.findByType('Viewer').props.onIndexChange(1));
+  assert.equal(recent.length, 1);
+});

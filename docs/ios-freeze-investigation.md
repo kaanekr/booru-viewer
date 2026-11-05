@@ -1,84 +1,94 @@
-# iOS donması — 29 Eylül 2026
+# iOS freeze investigation — 29 Sep 2026
 
-Dal: `fix/ios-player-lifecycle`, başlangıç: `main` / `8403404`.
+Branch: `fix/ios-player-lifecycle`, start point: `main` / `8403404`.
 
-## Kodda doğrulanan kusurlar ve düzeltmeler
+## Defects confirmed in code and their fixes
 
-- `PostCard`, resim kartlarında da `useVideoPlayer(null)` çağırıyordu. Bu
-  çağrı native oyuncu oluşturur. Artık yalnız aktif video çocuğu oyuncu kurar.
-- MP4 kapak ile video önizlemesi aynı kartta iki oyuncu açabiliyordu. Tek
-  video yolu kullanılıyor; görünürlük kaybolduğunda çocuk unmount olur.
-- Keşfet/Arama önizlemelerinin görünürlük hesabı ekran odağını içermiyordu.
-  Sekme/stack odağı, uygulamanın ön planda olması ve uygulama kilidi artık
-  hesaba katılır. Dokunmayla başlamış önizleme de odak kaybında temizlenir.
-- Gerçek önizleme videosu varken video oynar (tek oynatıcı); kare dizisi
-  yalnız videosuz kartın fallback'idir. Ara sürümde slayt videoyu eziyordu:
-  XHamster'da 2 benzer kare 500ms'de titriyor, XVideos'ta video kayboluyordu.
-  Video aktifken slayt zamanlayıcısı da durur (gereksiz re-render yok).
-  Video gereken kartlarda hata sonrası en fazla bir proxy geçişi vardır;
-  terminal hatada oyuncu kaldırılır.
-- Grid'deki senkron `replace()` ve zamanlayıcılı tekrar denemeler kaldırıldı.
-  Sessiz önizlemelerde ses karışımı açıkça `mixWithOthers`; native video
-  dokunmaları ve Live Text analizi kapalı.
-- Keşfet'te eski kaynak/sıra istekleri yeni listeyi ve yüklenme durumunu
-  değiştirebiliyordu. İstek kimliği ve kaynak anahtarı kontrol ediliyor.
-  Boş/tekrarlanan sayfa otomatik sayfalamayı durduruyor; yenileme tekrar açıyor.
-- İzleyicide çözülmüş orijinal URL (WebM) öncelik sırasını atlayıp doğrudan
-  oynatıcıya gidiyordu: guard listedeki MP4'ü görüp geçiyor, oyuncu WebM'i
-  alıp AVFoundation -11828 uyarı fırtınası üretiyordu (realbooru vakası).
-  Birincil seçim `selectPrimaryVideoCandidate` (`media.ts`) altında toplandı:
-  iOS'ta açılamayan çözülmüş URL atlanır, sıradaki oynatılabilir aday oynar
-  (`ImageViewerModal.tsx`). `VideoPlayerView` ayrıca unmount sonrası biten
-  async devamlarında bırakılmış oyuncuya dokunmaz (NotFoundException gürültüsü
-  bitti) ve desteklenmeyen URL'yi yüklemeden hata kartına düşer.
-- XVideos CDN'leri (`thumb-cdn*`, `thumbs-gcore`, `mp4-cdn*`) TLS-kırılgan
-  listesinde (`proxyService.ts`): worker kayıtlıysa seçici proxy'lenir.
-  Direkt bacak terminal patlayan host oturumluk atlanır (`gridPreviews.ts`
-  ölü-host önbelleği) — her kart bir native deneme + uyarı üretmez,
-  statik kapakta kalır. Proxy bacağı başarısızlığı hostu öldürmez.
-- Ayarlar > Görsel Kalitesi altında "Video Önizlemeler" anahtarı:
-  kapalıysa ızgara kartları statik kapak gösterir, hiç oyuncu kurulmaz
-  (`src/utils/gridPreviews.ts`, `PostCard.tsx:109`). İzleyici oynatmayı etkilemez.
-- Keşfet/Arama `ScrollView` tüm kartları mountluyordu (`n=120-148`).
-  Ekran + 1500px overscan dışındaki kartlar artık yer tutucu `View`e düşer
+- `PostCard` called `useVideoPlayer(null)` even on image cards. That call
+  creates a native player. Now only the active video child creates a player.
+- An MP4 cover plus the video preview could open two players on the same card.
+  A single video path is used; when visibility is lost the child unmounts.
+- The Explore/Search preview visibility math did not include screen focus.
+  Tab/stack focus, the app being in the foreground, and the app lock are now
+  taken into account. A preview started by touch is also cleared on focus loss.
+- When a real preview video exists, video plays (single player); the frame
+  sequence is only the fallback for cards without video. In an intermediate
+  build the slideshow was overriding the video: on XHamster two similar frames
+  flickered at 500ms, on XVideos the video disappeared. While video is active
+  the slideshow timer also stops (no needless re-render). On cards that need
+  video there is at most one proxy attempt after an error; on a terminal error
+  the player is removed.
+- Removed the synchronous `replace()` in the grid and the timed retries.
+  Silent previews explicitly use `mixWithOthers`; native video touches and
+  Live Text analysis are off.
+- In Explore, stale source/order requests could change the new list and its
+  loading state. Request identity and the source key are checked. An
+  empty/duplicate page stops auto-pagination; refresh reopens it.
+- In the viewer, a resolved original URL (WebM) skipped the priority order and
+  went straight to the player: it saw and passed the MP4 on the guard list, so
+  the player got the WebM and produced an AVFoundation -11828 warning storm
+  (the realbooru case). Primary selection was consolidated under
+  `selectPrimaryVideoCandidate` (`media.ts`): a resolved URL that cannot open
+  on iOS is skipped and the next playable candidate plays
+  (`ImageViewerModal.tsx`). `VideoPlayerView` also no longer touches a released
+  player in async continuations that finish after unmount (NotFoundException
+  noise gone) and drops to the error card without loading an unsupported URL.
+- XVideos CDNs (`thumb-cdn*`, `thumbs-gcore`, `mp4-cdn*`) are on the
+  TLS-fragile list (`proxyService.ts`): if a worker is registered they are
+  selectively proxied. On the direct leg, a host that fails terminally is
+  skipped for the session (`gridPreviews.ts` dead-host cache) — each card does
+  not produce a native attempt plus a warning, it stays on the static cover. A
+  failure on the proxy leg does not kill the host.
+- Settings > Image Quality has a "Video Previews" switch: when off, grid cards
+  show static covers and no player is created at all
+  (`src/utils/gridPreviews.ts`, `PostCard.tsx:109`). It does not affect
+  viewer playback.
+- The Explore/Search `ScrollView` used to mount every card (`n=120-148`). Cards
+  outside the screen + 1500px overscan now fall back to a placeholder `View`
   (`src/utils/gridVisibility.ts:52`, `FeedScreen.tsx:469`,
-  `SearchScreen.tsx:1166`). Mount sayısı ~20'de kalır, kaydırma
-  yüksekliği korunur. Donma kaydında `delay 432ms -> 1329ms` ve `touch`
-  dengesizliği (`162/159`) liste büyürken çıkmıştı.
+  `SearchScreen.tsx:1166`). Mount count stays around 20 and scroll height is
+  preserved. In the freeze log, `delay 432ms -> 1329ms` and `touch`
+  imbalance (`162/159`) appeared while the list was growing.
 
-## Doğrulama
+## Verification
 
-- `npm run test:freeze`: 17 regresyon testi. 200 fotoğraf kartı, çift oyuncu,
-  odak kaybı, kare önizlemesi, terminal hata, yanlış JPEG kaynağı, geç kalan
-  kaynak yanıtı, tekrarlanan sayfa, eski isteğin `finally` yarışı, 6 RedGifs
-  token yarışı ve 2 mount-penceresi testi (148 kartta pencere boyutu, toplam
-  yükseklik korunumu, pencere kayması).
-- `npx tsc --noEmit`: başarılı.
-- iOS production bundle export: başarılı.
-- Testlerde native API'ler taklit edilir. Donma giderimi cihaz testiyle
-  doğrulanmalı: aynı turda `n=120+` sonrası takılma olmamalı.
+- `npm run test:freeze`: 17 regression tests. 200 photo cards, dual player,
+  focus loss, frame preview, terminal error, wrong JPEG source, late source
+  response, duplicate page, stale request `finally` race, 6 RedGifs token
+  races and 2 mount-window tests (window size at 148 cards, total height
+  preservation, window shift).
+- `npx tsc --noEmit`: clean.
+- iOS production bundle export: success.
+- Native APIs are stubbed in tests. The freeze fix must be verified on a
+  device: there should be no stall after `n=120+` in the same session.
 
-## Önceki teşhislere düzeltme
+## Corrections to earlier diagnoses
 
-Açık TCP bağlantısı reload'un cihazda işlendiğini kanıtlamaz. FPS değerlerinin
-değişmesi de tek başına deadlock/livelock ayrımı yaptırmaz. Önceki heartbeat
-Metro logundan önce senkron dosya okuduğu için iki çıktının susması iki bağımsız
-ölçüm değildi. Önceki rapordaki kesin thread/livelock hükümleri doğrulanmış değil.
+An open TCP connection does not prove reload was processed on the device. A
+change in FPS numbers alone does not separate deadlock from livelock. The
+earlier heartbeat read a file synchronously before the Metro log, so the two
+outputs going quiet is not two independent measurements. The definitive
+thread/livelock verdicts in the earlier report are not verified.
 
-Bu oturumdaki CDP sorguları zaman aşımına uğradı; kullanıcı telefonun arka
-planda/kapalı olduğunu belirtti. Bu ölçüm donma kanıtı olarak kullanılmadı.
+The CDP queries in that session timed out; the user reported the phone was
+backgrounded/locked. That measurement was not used as freeze evidence.
 
-## Cihaz testi
+## Device test
 
-1. Expo Go'yu tamamen kapatıp yeniden aç. Başlangıçta
-   `[FreezeProbe] ios-player-lifecycle-v3-sexcomdiag` görülmeli.
-2. RedGifs'te birkaç sayfa gez, Viewer'a gir/çık, Ayarlar'a geç, XVideos'a dön.
-3. Ayarlar'da `players=0` beklenir. Sayaç JS tarafında mount olmuş grid video
-   bileşenlerini sayar; native belleğin tamamen boşaldığını ölçmez.
-4. Donarsa uygulamayı önde tut. Son `[FreezeProbe]` satırını kaydet. `tick`
-   ilerliyor mu, dokunurken `touch` sayaçları değişiyor mu kontrol et.
-5. React Native DevTools konsolunda `globalThis.__freezeProbe()` son 30 olayı
-   ve sayaçları verir. Bu sorgu yalnız telefon ön plandayken yorumlanmalı.
+1. Fully close and reopen Expo Go. At start you should see
+   `[FreezeProbe] ios-player-lifecycle-v3-sexcomdiag`.
+2. Browse a few pages on RedGifs, enter/leave the Viewer, switch to Settings,
+   go back to XVideos.
+3. Expect `players=0` in the Settings output. The counter counts mounted grid
+   video components on the JS side; it does not measure native memory being
+   fully drained.
+4. If it freezes, keep the app in the foreground. Save the last `[FreezeProbe]`
+   line. Check whether `tick` still advances and whether the `touch` counters
+   change while you touch the screen.
+5. In the React Native DevTools console, `globalThis.__freezeProbe()` returns
+   the last 30 events and the counters. This query only evaluates while the
+   phone is in the foreground.
 
-Yeni ölçüm yalnız development modunda çalışır, diske yazmaz ve medya URL'lerini
-kaydetmez. Kök dokunma sayaçları ayrı native Modal pencerelerini kapsamaz.
+The new measurement works only in development mode, writes nothing to disk and
+does not record media URLs. The root touch counters do not cover separate
+native Modal windows.
