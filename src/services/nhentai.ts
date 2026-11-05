@@ -236,6 +236,11 @@ export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): Bo
       const cover = thumb
         .replace(/\/thumb\./i, '/cover.')
         .replace(NHENTAI_API_THUMB_BASE, NHENTAI_API_THUMB_FALLBACK_BASE);
+      // Thumb fallback on the NEXT cdn host (t2 primary -> t3), same path/extension.
+      // Derived from the thumb path (not the cover path): one dead thumb host must
+      // not leave every card at "Cover unavailable". Absolute thumb URLs and
+      // unparsable hosts yield null -> field stays omitted instead of a broken URL.
+      const previewFallback = rotateNhentaiThumbHost(thumb) || undefined;
       const width = Number(item.thumbnail_width) || 250;
       const height = Number(item.thumbnail_height) || 350;
       const aspectRatio = width > 0 && height > 0 ? width / height : 250 / 350;
@@ -248,6 +253,7 @@ export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): Bo
         sourceName: source.name,
         title: title || undefined,
         previewUrl: thumb,
+        previewFallbackUrl: previewFallback,
         sampleUrl: cover,
         originalUrl: `${NHENTAI_API_IMAGE_BASE}/galleries/${mediaId}/1.${ext}`,
         width,
@@ -286,27 +292,39 @@ export function parseNHentaiGalleryPages(
   try {
     const data = JSON.parse(trimmed);
     // v2: pages: [{number, path, width, height}]
+    // `number` is NOT guaranteed (older/partial payloads only carry `path`), so the
+    // array index is the ordering fallback. A page with a usable path is ALWAYS kept:
+    // dropping it on a missing `number` emptied the whole reader (black screen).
     if (Array.isArray(data?.pages)) {
       const v2Pages = data.pages
-        .map((p: any) => {
+        .map((p: any, idx: number) => {
           const path = typeof p === 'string' ? p : p?.path;
           if (!path) return '';
-          const n = typeof p === 'object' && p?.number ? p.number : 0;
+          const n =
+            typeof p === 'object' && typeof p?.number === 'number' && p.number > 0
+              ? p.number
+              : idx + 1;
           const abs = String(path).startsWith('http')
             ? String(path)
             : `${NHENTAI_API_IMAGE_BASE}/${String(path).replace(/^\//, '')}`;
-          return n ? `${n}|${abs}` : '';
+          return `${n}|${abs}`;
         })
         .filter(Boolean)
         .sort((a: string, b: string) => Number(a.split('|')[0]) - Number(b.split('|')[0]))
         .map((s: string) => s.slice(s.indexOf('|') + 1));
       if (v2Pages.length > 0) return v2Pages;
     }
-    // v1
+    // v1 (and v2 payloads that nest full paths under images.pages)
     const mediaId = data?.media_id;
     const pages = data?.images?.pages;
     if (mediaId && Array.isArray(pages)) {
       return pages.map((p, idx) => {
+        // A nested path is authoritative (keeps the real CDN extension).
+        if (typeof p?.path === 'string' && p.path) {
+          return String(p.path).startsWith('http')
+            ? String(p.path)
+            : `${NHENTAI_API_IMAGE_BASE}/${String(p.path).replace(/^\//, '')}`;
+        }
         const ext = extFromType(p?.t);
         return `${NHENTAI_IMAGE_BASE}/galleries/${mediaId}/${idx + 1}.${ext}`;
       });
@@ -390,9 +408,11 @@ export async function resolveNHentaiGalleryDetail(
 
   // 1. Official v2 API detail: GET /api/v2/galleries/{id}
   const v2Text = await fetchWithTimeout(`${NHENTAI_API_BASE}/galleries/${rawId}`, 12000);
+  let v2Detail: { tags: BooruTagGroups; allTags: string[]; numFavorites: number } | null = null;
   if (v2Text) {
     const pages = parseNHentaiGalleryPages(v2Text, rawId);
     const detail = parseNHentaiV2DetailTags(v2Text);
+    v2Detail = detail;
     if (pages.length > 0) {
       return {
         pages,
@@ -404,17 +424,62 @@ export async function resolveNHentaiGalleryDetail(
     }
   }
 
-  // 2. Synthetic CDN safety net on network failure (i1.nhentai.net)
-  if (post.mediaId && post.pageCount && post.pageCount > 0) {
-    const ext = (post.fileExt || 'webp').toLowerCase().replace('jpeg', 'jpg');
-    const synthetic: string[] = [];
-    for (let p = 1; p <= post.pageCount; p++) {
-      synthetic.push(`${NHENTAI_API_IMAGE_BASE}/galleries/${post.mediaId}/${p}.${ext}`);
-    }
-    return { ...empty, pages: synthetic, pageCount: synthetic.length };
+  // 2. Synthetic CDN safety net (i3.nhentai.net).
+  // Runs when the v2 call failed OR answered without a usable `pages` array. The
+  // v2 body itself is the better metadata source (real media_id / num_pages /
+  // page extension), post list metadata is the last resort.
+  const synth = syntheticNHentaiPages(v2Text, post);
+  if (synth.length > 0) {
+    return {
+      pages: synth,
+      tags: v2Detail?.tags ?? empty.tags,
+      allTags: v2Detail?.allTags ?? empty.allTags,
+      pageCount: synth.length,
+      numFavorites: v2Detail?.numFavorites || undefined,
+    };
   }
 
   return empty;
+}
+
+/**
+ * Builds page URLs from metadata alone (no per-page paths): media_id + page count
+ * + extension. Used as the safety net when the detail payload carries no usable
+ * `pages` entries, so the reader still gets real images instead of an empty list.
+ */
+function syntheticNHentaiPages(
+  v2Text: string | null,
+  post: { mediaId?: string; pageCount?: number; fileExt?: string }
+): string[] {
+  let mediaId = post.mediaId ? String(post.mediaId) : '';
+  let pageCount = Number(post.pageCount) || 0;
+  let ext = (post.fileExt || '').toLowerCase().replace('jpeg', 'jpg');
+
+  if (v2Text) {
+    try {
+      const data = JSON.parse(v2Text);
+      const apiMediaId = data?.media_id;
+      if (!mediaId && apiMediaId !== undefined && apiMediaId !== null) {
+        mediaId = String(apiMediaId);
+      }
+      const apiPageCount = Number(data?.num_pages) || 0;
+      if (apiPageCount > 0) pageCount = apiPageCount;
+      else if (Array.isArray(data?.pages) && data.pages.length > 0) pageCount = data.pages.length;
+      const first = Array.isArray(data?.pages) ? data.pages[0] : undefined;
+      const firstPath = typeof first === 'string' ? first : first?.path;
+      const m = String(firstPath || '').match(/\.([a-z0-9]{2,4})(?:\?|$)/i);
+      if (m) ext = m[1].toLowerCase().replace('jpeg', 'jpg');
+    } catch {}
+  }
+
+  if (!mediaId || pageCount <= 0) return [];
+  if (!ext) ext = 'webp';
+
+  const pages: string[] = [];
+  for (let p = 1; p <= pageCount; p++) {
+    pages.push(`${NHENTAI_API_IMAGE_BASE}/galleries/${mediaId}/${p}.${ext}`);
+  }
+  return pages;
 }
 
 /**
@@ -612,4 +677,22 @@ export function rotateNhentaiImageHost(url: string | undefined): string | null {
   );
   if (idx < 0 || idx + 1 >= NHENTAI_API_IMAGE_HOSTS.length) return null;
   return `${NHENTAI_API_IMAGE_HOSTS[idx + 1]}${m[2]}`;
+}
+
+/**
+ * Thumb/cover CDN host rotation for cards (t2 -> t3 -> t4 -> t1).
+ * The same path is served by all t-hosts (webp/png/jpg verified live), so one
+ * blocked or unreachable host can be skipped without losing the image.
+ * Protocol, path and query string are preserved. t1 is the end of the list:
+ * null there (give up) rather than looping back to a host that already failed.
+ */
+export const NHENTAI_THUMB_HOSTS = ['t2', 't3', 't4', 't1'];
+
+export function rotateNhentaiThumbHost(url: string | undefined): string | null {
+  if (!url || typeof url !== 'string') return null;
+  const m = url.match(/^(https?:\/\/)(t\d)\.nhentai\.net(\/.*)$/i);
+  if (!m) return null;
+  const idx = NHENTAI_THUMB_HOSTS.indexOf(m[2].toLowerCase());
+  if (idx < 0 || idx + 1 >= NHENTAI_THUMB_HOSTS.length) return null;
+  return `${m[1]}${NHENTAI_THUMB_HOSTS[idx + 1]}.nhentai.net${m[3]}`;
 }
