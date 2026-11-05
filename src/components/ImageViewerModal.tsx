@@ -1104,6 +1104,12 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         if (!alive) return;
         if (detail.pages && detail.pages.length > 0) {
           setMangaPages(detail.pages);
+        } else {
+          // No page list (API blocked/rate-limited and no mediaId+pageCount on the
+          // post): show the first image we do have instead of an empty black reader.
+          const firstImage = post.originalUrl || post.sampleUrl || post.previewUrl;
+          console.warn('[nhentai] Gallery detail returned no pages:', post.id, firstImage);
+          if (firstImage) setMangaPages([firstImage]);
         }
         // Forward detail-resolved categorized tags to the Info panel
         if (detail.allTags && detail.allTags.length > 0) {
@@ -1112,7 +1118,13 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           onTagsResolved?.(post.tags, post.allTags, detail.numFavorites);
         }
       })
-      .catch(() => {})
+      .catch((err) => {
+        console.warn('[nhentai] Gallery detail resolution failed:', err);
+        if (!alive) return;
+        // Keep the reader usable: fall back to the post's own first image.
+        const firstImage = post.originalUrl || post.sampleUrl || post.previewUrl;
+        if (firstImage) setMangaPages([firstImage]);
+      })
       .finally(() => {
         if (alive) setMangaLoading(false);
       });
@@ -1512,7 +1524,10 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
 
   // nhentai: manga reader (integrated global canvas zoom)
   if (post.sourceId === 'nhentai') {
-    const pages = mangaPages.length > 0 ? mangaPages : [post.sampleUrl || post.previewUrl];
+    // Before the page list resolves (or when it never does) show the best single
+    // image we have — the real page 1 first, so the reader is never blank black.
+    const firstImage = post.originalUrl || post.sampleUrl || post.previewUrl;
+    const pages = mangaPages.length > 0 ? mangaPages : firstImage ? [firstImage] : [];
     const pageHeight = Math.round(screenWidth * 1.42);
     return (
       <View style={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000' }}>
