@@ -5,9 +5,9 @@ const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
 
-// Gercek booruApi yuklenir; ag/storage baglari mocklanir (sorgu kurma senkron).
-// Cum.st haftalik/aylik capasi takvim basina yaslanir: ayni periyodun gunleri
-// birebir ayni sorguyu uretir (kayma yok).
+// Real booruApi is loaded; network/storage links are mocked (query building is sync).
+// Cum.st weekly/monthly anchors snap to the calendar start: days in the same
+// period produce byte-identical queries (no drift).
 function loadApi() {
   const CUMST = { id: 'cumst', name: 'Cum.st', baseUrl: 'https://cum.st', type: 'cumst' };
   const filename = path.resolve(__dirname, '../src/services/booruApi.ts');
@@ -48,7 +48,7 @@ function scoreFilter(overrides) {
   }, overrides);
 }
 
-test('same calendar week anchors produce byte-identical weekly query (2 gun once == bugun == dun)', () => {
+test('same calendar week anchors produce byte-identical weekly query (2 days ago == today == yesterday)', () => {
   const { api, CUMST } = loadApi();
   const q = (date) => api.buildQueryTags(scoreFilter({ timeRange: '1w', leaderboardDate: date }), CUMST);
   const expected = 'date:2026-09-28 period:week sort:popular';
@@ -120,7 +120,7 @@ function loadPeriods() {
   return module.exports;
 }
 
-// 4 Ekim 2026 Pazar gununden bakiliyor.
+// Viewed from Sunday, 4 Oct 2026.
 const FIXED_NOW = new Date(2026, 9, 4, 12, 0, 0);
 
 test('week picker offers Monday anchors, current week clears', () => {
@@ -128,10 +128,10 @@ test('week picker offers Monday anchors, current week clears', () => {
   const slots = weekDateOptions(FIXED_NOW);
   assert.equal(slots.length, 8);
   assert.equal(slots[0].value, undefined);
-  assert.ok(slots[0].label.includes('Bu Hafta'));
-  assert.ok(slots[0].label.includes('28 Eyl'));
+  assert.ok(slots[0].label.includes('This Week'));
+  assert.ok(slots[0].label.includes('28 Sep'));
   assert.equal(slots[1].value, '2026-09-21');
-  assert.ok(slots[1].label.includes('Geçen Hafta'));
+  assert.ok(slots[1].label.includes('Last Week'));
   assert.equal(slots[2].value, '2026-09-14');
   assert.ok(slots.every((s) => s.range === '1w'));
 });
@@ -141,9 +141,9 @@ test('month picker offers first-of-month anchors, current month clears', () => {
   const slots = monthDateOptions(FIXED_NOW);
   assert.equal(slots.length, 12);
   assert.equal(slots[0].value, undefined);
-  assert.ok(slots[0].label.includes('Bu Ay'));
+  assert.ok(slots[0].label.includes('This Month'));
   assert.equal(slots[1].value, '2026-09-01');
-  assert.ok(slots[1].label.includes('Geçen Ay'));
+  assert.ok(slots[1].label.includes('Last Month'));
   assert.equal(slots[11].value, '2025-11-01');
   assert.ok(slots.every((s) => s.range === '1m'));
 });
@@ -160,10 +160,10 @@ test('day picker keeps previous day-offset content with daily range', () => {
 
 test('row label shows effective week range and month name', () => {
   const { describeAnchor } = loadPeriods();
-  assert.equal(describeAnchor(undefined, '1w'), 'Bugün / En Güncel');
-  assert.equal(describeAnchor('2026-10-02', '1w'), '28 Eyl - 4 Eki');
-  assert.equal(describeAnchor('2026-09-21', '1w'), '21-27 Eyl');
-  assert.equal(describeAnchor('2026-09-15', '1m'), 'Eylül 2026');
+  assert.equal(describeAnchor(undefined, '1w'), 'Today / Latest');
+  assert.equal(describeAnchor('2026-10-02', '1w'), '28 Sep - 4 Oct');
+  assert.equal(describeAnchor('2026-09-21', '1w'), '21-27 Sep');
+  assert.equal(describeAnchor('2026-09-15', '1m'), 'September 2026');
   assert.equal(describeAnchor('2026-10-02', '1d'), '2026-10-02');
   assert.equal(describeAnchor('garbage', '1w'), 'garbage');
 });

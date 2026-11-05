@@ -59,8 +59,8 @@ test('nhentaiApiHeaders mimics Safari (no Referer, no encoding override)', () =>
   const nh = loadNHentai();
   const h = nh.nhentaiApiHeaders();
   assert.ok(h['User-Agent'].includes('Safari/'), 'tam Safari formu');
-  assert.ok(!('Referer' in h), 'doğrudan gezinme gibi Referer yok');
-  assert.ok(!('Accept-Encoding' in h), 'RN varsayılan sıkıştırma akışı kullanılır');
+  assert.ok(!('Referer' in h), 'no Referer, like direct navigation');
+  assert.ok(!('Accept-Encoding' in h), 'uses RN default compression stream');
   assert.equal(h['Accept'], 'application/json,*/*');
   const withExtra = nh.nhentaiApiHeaders({ 'Content-Type': 'application/json' });
   assert.equal(withExtra['Content-Type'], 'application/json');
@@ -73,11 +73,11 @@ test('buildNHentaiApiCandidates builds v2 feed, popular and search urls accordin
   const feed = nh.buildNHentaiApiCandidates(2, '', 'date');
   assert.equal(feed[0], 'https://nhentai.net/api/v2/galleries?page=2&per_page=25');
 
-  // Dokümana göre query=* tüm arşivi döner ve her sort türü için sayfalanabilir (25/sayfa)
+  // Per the docs query=* returns the whole archive and paginates for every sort (25/page)
   const popular = nh.buildNHentaiApiCandidates(1, '', 'popular');
   assert.equal(popular[0], 'https://nhentai.net/api/v2/search?query=*&sort=popular&page=1');
 
-  // Günün popülerleri için hızlı adanmış endpoint (94ms; query=* sorgusundan katbekat hızlı)
+  // Dedicated fast endpoint for today's popular (94ms, far faster than the query=* search)
   const today = nh.buildNHentaiApiCandidates(1, '', 'popular-today');
   assert.equal(today[0], 'https://nhentai.net/api/v2/galleries/popular');
   assert.equal(nh.buildNHentaiApiCandidates(2, '', 'popular-today').length, 0);
@@ -88,11 +88,11 @@ test('buildNHentaiApiCandidates builds v2 feed, popular and search urls accordin
   const search = nh.buildNHentaiApiCandidates(3, 'big breasts', 'popular-week');
   assert.equal(search[0], 'https://nhentai.net/api/v2/search?query=big%20breasts&sort=popular-week&page=3');
 
-  // Doküman: favorites:>=N yerel desteklenir, query sonuna otomatik eklenir
+  // Docs: favorites:>=N is supported locally and appended to the query automatically
   const withMinScore = nh.buildNHentaiApiCandidates(1, 'naruto', 'popular', 1000);
   assert.equal(withMinScore[0], 'https://nhentai.net/api/v2/search?query=naruto%20favorites%3A%3E%3D1000&sort=popular&page=1');
 
-  // tag: mekaniği ve dışlama aynen taşınır (tırnaklar encode edilir)
+  // tag: mechanics and exclusions carry over as-is (quotes get URL-encoded)
   const prefixed = nh.buildNHentaiApiCandidates(1, 'tag:"big breasts"', 'date');
   assert.equal(prefixed[0], 'https://nhentai.net/api/v2/search?query=tag%3A%22big%20breasts%22&sort=date&page=1');
 
@@ -110,10 +110,10 @@ test('nhentaiTagQuery builds prefix mechanics per category', () => {
   assert.equal(nh.nhentaiTagQuery('nunpokojin', 'artist'), 'artist:"nunpokojin"');
   assert.equal(nh.nhentaiTagQuery('english', 'meta'), 'language:"english"');
   assert.equal(nh.nhentaiTagQuery('doujinshi', 'meta'), 'category:"doujinshi"');
-  // Bilinmeyen meta öneksiz kalır (yanlış önek boş sonuç demek)
+  // Unknown meta categories stay prefix-free (a wrong prefix means empty results)
   assert.equal(nh.nhentaiTagQuery('color', 'meta'), 'color');
   assert.equal(nh.nhentaiTagQuery('mystery', undefined), 'mystery');
-  // Zaten önekli girdi normalize edilir, çift öneklenmez
+  // Already prefixed input is normalized and never double-prefixed
   assert.equal(nh.nhentaiTagQuery('tag:sole-female', 'general'), 'tag:sole-female');
   assert.equal(nh.nhentaiTagQuery('tag:big breasts', 'general'), 'tag:"big breasts"');
   assert.equal(nh.nhentaiTagQuery('artist:shindol', 'artist'), 'artist:shindol');
@@ -136,9 +136,9 @@ test('rotateNhentaiImageHost cycles i-hosts and stops at the end', () => {
     nh.rotateNhentaiImageHost('https://i4.nhentai.net/galleries/9/1.webp'),
     'https://i1.nhentai.net/galleries/9/1.webp'
   );
-  // Liste bitti -> null (vazgeç); yol korunur
+  // List exhausted -> null (give up); the path is preserved
   assert.equal(nh.rotateNhentaiImageHost('https://i1.nhentai.net/galleries/9/1.webp'), null);
-  // nhentai dışı URL'ye dokunulmaz
+  // Non-nhentai URLs are never touched
   assert.equal(nh.rotateNhentaiImageHost('https://example.com/1.jpg'), null);
   assert.equal(nh.rotateNhentaiImageHost(''), null);
   assert.equal(nh.rotateNhentaiImageHost(undefined), null);
@@ -168,18 +168,18 @@ test('parseNHentaiV2Listing maps num_favorites to score and favCount', () => {
   const p = posts[0];
   assert.equal(p.id, 'nh_685915');
   assert.equal(p.title, 'Furina Hu Tao [English]');
-  assert.equal(p.score, 454, 'skor favori sayısına eşlenir');
+  assert.equal(p.score, 454, 'score maps to favorite count');
   assert.equal(p.favCount, 454);
   assert.equal(p.pageCount, 21);
   assert.equal(p.mediaId, '4224557');
   assert.equal(p.previewUrl, 'https://t2.nhentai.net/galleries/4224557/thumb.webp');
   assert.equal(p.sampleUrl, 'https://t3.nhentai.net/galleries/4224557/cover.webp');
   assert.equal(p.originalUrl, 'https://i3.nhentai.net/galleries/4224557/1.webp');
-  // Ayna ve net ayrı id uzayına sahip: detay daima net'ten çözülmeli
+  // Mirror and net have separate id spaces: details must always resolve from net
   assert.equal(p.sourceLink, 'https://nhentai.net/g/685915/');
   assert.ok(Math.abs(p.aspectRatio - 250 / 350) < 0.001);
 
-  // popular endpoint düz dizi döner
+  // The popular endpoint returns a flat array
   const arr = nh.parseNHentaiV2Listing('[{"id":1,"media_id":"7","num_favorites":10}]', SOURCE);
   assert.equal(arr.length, 1);
   assert.equal(arr[0].score, 10);
@@ -191,7 +191,7 @@ test('parseNHentaiV2Listing keeps jpg galleries on the jpg CDN path', () => {
     result: [{ id: 210670, media_id: '1125595', thumbnail: 'galleries/1125595/thumb.jpg', num_pages: 25 }],
   });
   const p = nh.parseNHentaiV2Listing(body, SOURCE)[0];
-  // thumb.jpg -> 1.webp 404 veriyordu (canlı doğrulandı)
+  // thumb.jpg -> 1.webp returned 404 (verified live)
   assert.equal(p.fileExt, 'jpg');
   assert.equal(p.originalUrl, 'https://i3.nhentai.net/galleries/1125595/1.jpg');
 });
@@ -271,7 +271,7 @@ test('detail resolution uses only the v2 API detail endpoint', async () => {
   assert.equal(netDetail.numFavorites, 610);
   assert.ok(netCalls.every((u) => u.includes('/api/v2/galleries/685915')), 'v2 API detay endpointi cagrilir');
 
-  // Ağ hatasında sentetik güvenlik ağı (i3.nhentai.net)
+  // Synthetic safety net on network error (i3.nhentai.net)
   const nhOffline = loadNHentai(async () => ({ ok: false, status: 500 }));
   const fallback = await nhOffline.resolveNHentaiGalleryDetail({
     id: 'nh_685915',

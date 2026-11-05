@@ -252,10 +252,10 @@ test('official API warden token generation, caching, and single-flight mutex', a
 
   assert.equal(t1, 'mock-warden-jwt-token-xyz');
   assert.equal(t2, 'mock-warden-jwt-token-xyz');
-  // Single flight: aynı anda çağrıldığında sadece 1 kez /warden çağrılır
+  // Single flight: concurrent calls hit /warden only once
   assert.equal(callCount, 1);
 
-  // Önbellekten okuma
+  // Read from cache
   const t3 = await hh.getHentaiHavenToken();
   assert.equal(t3, 'mock-warden-jwt-token-xyz');
   assert.equal(callCount, 1);
@@ -340,7 +340,7 @@ test('fetchHentaiHavenPosts uses API for feed, genre, and text search', async ()
 
   const hh = loadHentai(null, mockFetch);
 
-  // 1. Boş sorgu -> hentai/all
+  // 1. Empty query -> hentai/all
   const feed = await hh.fetchHentaiHavenPosts(SOURCE, 1, '');
   assert.equal(feed.length, 1);
   assert.equal(feed[0].id, 'hh_7486');
@@ -349,13 +349,13 @@ test('fetchHentaiHavenPosts uses API for feed, genre, and text search', async ()
   assert.equal(feed[0].previewUrl, 'https://img.hentaihaven.xxx/cover.jpg');
   assert.equal(feed[0].sourceLink, 'https://hentaihaven.xxx/watch/kami-machi-sana-chan/');
 
-  // 2. Tür araması -> genre/102
+  // 2. Genre search -> genre/102
   const genrePosts = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'yuri');
   assert.equal(genrePosts.length, 1);
   assert.equal(genrePosts[0].id, 'hh_9999');
   assert.equal(genrePosts[0].title, 'Yuri Title');
 
-  // 3. Serbest metin araması -> search?q=maid
+  // 3. Free text search -> search?q=maid
   const searchPosts = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'maid');
   assert.equal(searchPosts.length, 1);
   assert.equal(searchPosts[0].id, 'hh_8888');
@@ -420,7 +420,7 @@ test('resolveHentaiHavenEpisodeUrls resolves episodes and direct HLS stream from
   });
 
   assert.ok(resolved);
-  // En yeni bölüm (EP 2) ilk seçilir
+  // The newest episode (EP 2) is picked first
   assert.equal(resolved.hls, 'https://octopusmanifest.org/6cbe2a20/playlist.m3u8');
   assert.equal(resolved.mp4, 'https://coverlanyvd.org/storage/preview2.mp4');
   assert.equal(resolved.views, 1801083);
@@ -432,7 +432,7 @@ test('resolveHentaiHavenEpisodeUrls resolves episodes and direct HLS stream from
   assert.ok(!resolved.tags.general.includes('eHentai'));
   assert.ok(resolved.tags.artist.includes('Studio A'));
 
-  // Tercihli bölüm (EP 1) seçildiğinde
+  // When a preferred episode (EP 1) is selected
   const ep1 = await hh.resolveHentaiHavenEpisodeUrls(
     { id: 'hh_7486', mediaId: '7486' },
     undefined,
@@ -488,7 +488,7 @@ test('cleanHentaiHavenTags filters out SEO spam tags and normalizes redundant su
     'Hentai Haven', 'HD', 'nHentai', 'Hentai Video',
     'Rule 34', 'Hentai Chan', 'Hentai Manga', 'Hentai Vid',
     'Gelbooru', 'Pornhub', 'xvideos', 'xhamster', 'hentaiporn',
-    // Gerçek anlamlı etiketler
+    // Genuinely meaningful tags
     'School', 'Hentai School', 'School Girl',
     'Anal', 'Anal Hentai', 'Hentai Anal',
     'Yuri', 'Yuri Hentai', 'Yuri Porn',
@@ -499,7 +499,7 @@ test('cleanHentaiHavenTags filters out SEO spam tags and normalizes redundant su
 
   const cleaned = hh.cleanHentaiHavenTags(dirtyTags);
 
-  // Spam etiketlerin hiçbiri kalmamalı
+  // None of the spam tags should remain
   assert.ok(!cleaned.includes('e Hentai'));
   assert.ok(!cleaned.includes('eHentai'));
   assert.ok(!cleaned.includes('Hentai'));
@@ -513,7 +513,7 @@ test('cleanHentaiHavenTags filters out SEO spam tags and normalizes redundant su
   assert.ok(!cleaned.includes('Sexy'));
   assert.ok(!cleaned.includes('Rule 34'));
 
-  // Gerçek etiketler korunmalı ve sadeleşmeli
+  // Real tags must be preserved and simplified
   assert.ok(cleaned.includes('School'));
   assert.ok(cleaned.includes('School Girl'));
   assert.ok(cleaned.includes('Anal'));
@@ -525,7 +525,7 @@ test('cleanHentaiHavenTags filters out SEO spam tags and normalizes redundant su
   assert.ok(cleaned.includes('Facial'));
   assert.ok(cleaned.includes('3D Hentai'));
 
-  // Tekrarlar elenmeli ('Anal', 'Anal Hentai', 'Hentai Anal' tek 'Anal' olmalı)
+  // Duplicates must be removed ('Anal', 'Anal Hentai', 'Hentai Anal' should collapse to 'Anal')
   assert.equal(cleaned.filter((t) => t.toLowerCase() === 'anal').length, 1);
   assert.equal(cleaned.filter((t) => t.toLowerCase() === 'yuri').length, 1);
   assert.equal(cleaned.filter((t) => t.toLowerCase() === 'paizuri').length, 1);
@@ -533,26 +533,26 @@ test('cleanHentaiHavenTags filters out SEO spam tags and normalizes redundant su
 
 test('parseHentaiHavenQuery tokenizes spaces, quotes, excludes and prefixes', () => {
   const hh = loadHentai();
-  // vm bağlamında üretilen nesnelerin prototipi farklıdır; JSON ile karşılaştır.
+  // Objects created in the vm context have a different prototype; compare via JSON.
   const parsed = (raw) => JSON.stringify(hh.parseHentaiHavenQuery(raw));
   const want = (include, exclude) => JSON.stringify({ include, exclude });
 
   assert.equal(parsed(''), want([], []));
   assert.equal(parsed('  '), want([], []));
 
-  // Boşluklu arama ayrı token'lara bölünür
+  // A spaced search splits into separate tokens
   assert.equal(parsed('school girl'), want(['school', 'girl'], []));
 
-  // Tırnaklı grup tek token kalır
+  // A quoted group stays a single token
   assert.equal(parsed('"big breasts" anal'), want(['big breasts', 'anal'], []));
 
-  // Dışlama ve booru önekleri
+  // Exclusions and booru prefixes
   assert.equal(parsed('yuri -anal tag:ecchi genre:harem'), want(['yuri', 'ecchi', 'harem'], ['anal']));
 
-  // Tırnaklı dışlama
+  // Quoted exclusion
   assert.equal(parsed('-"big breasts" yuri'), want(['yuri'], ['big breasts']));
 
-  // Tekrarlar tekilleşir
+  // Duplicates are deduped
   assert.equal(parsed('yuri Yuri YURI'), want(['yuri'], []));
 });
 
@@ -568,12 +568,12 @@ test('findHentaiHavenGenre matches spaced, hyphenated and affixed spellings', ()
 
   assert.equal(hh.findHentaiHavenGenre(genres, 'yuri').term_id, 102);
   assert.equal(hh.findHentaiHavenGenre(genres, 'YURI').term_id, 102);
-  // 'school girl' sıkıştırılınca 'schoolgirl' olur
+  // 'school girl' collapses to 'schoolgirl'
   assert.equal(hh.findHentaiHavenGenre(genres, 'school girl').term_id, 11732);
   assert.equal(hh.findHentaiHavenGenre(genres, 'school-girl').term_id, 11732);
-  // Birebir eşleşme önceliklidir
+  // An exact match takes priority
   assert.equal(hh.findHentaiHavenGenre(genres, 'school').term_id, 11714);
-  // ' Hentai' son eki düşebilir
+  // The ' Hentai' suffix can be dropped
   assert.equal(hh.findHentaiHavenGenre(genres, 'incest').term_id, 64);
   assert.equal(hh.findHentaiHavenGenre(genres, undefined), null);
   assert.equal(hh.findHentaiHavenGenre(genres, '!!!'), null);
@@ -589,7 +589,7 @@ function hhItem(id, title, name) {
   };
 }
 
-// genre/all bilerek eksik tutulur (Yuri yok) -> statik tamamlayıcı devreye girer.
+// genre/all is deliberately kept incomplete (no Yuri) so the static completer kicks in.
 function mockHentaiApi(log) {
   return async (url) => {
     if (log) log.push(url);
@@ -700,7 +700,7 @@ function mockHentaiApi(log) {
 
 test('spaced search intersects per-token results (AND), static genre fallback included', async () => {
   const hh = loadHentai(null, mockHentaiApi());
-  // 'anal' -> genre/222 [1,2]; 'yuri' -> statik 102 -> genre/102 [2,3]; kesişim [2]
+  // 'anal' -> genre/222 [1,2]; 'yuri' -> static 102 -> genre/102 [2,3]; intersection [2]
   const posts = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'anal yuri');
   assert.equal(posts.length, 1);
   assert.equal(posts[0].id, 'hh_2');
@@ -709,7 +709,7 @@ test('spaced search intersects per-token results (AND), static genre fallback in
 
 test('empty intersection falls back to union instead of empty screen', async () => {
   const hh = loadHentai(null, mockHentaiApi());
-  // genre/222 [1,2] ∩ genre/11732 [9] = boş -> birleşim [1,2,9]
+  // genre/222 [1,2] ∩ genre/11732 [9] = empty -> union [1,2,9]
   const posts = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'anal schoolgirl');
   assert.equal(JSON.stringify(posts.map((p) => p.id)), JSON.stringify(['hh_1', 'hh_2', 'hh_9']));
 });
@@ -778,19 +778,19 @@ test('tag suggestions include statically-known genres missing from genre/all', a
 test('tag: prefix keeps multi-word genres as one token (other sources mechanic)', async () => {
   const hh = loadHentai(null, mockHentaiApi());
 
-  // `tag:"big breasts" anal` -> ['big breasts', 'anal'] (önek sıyrılır)
+  // `tag:"big breasts" anal` -> ['big breasts', 'anal'] (prefix stripped)
   let parsed = hh.parseHentaiHavenQuery('tag:"big breasts" anal');
   assert.equal(
     JSON.stringify([parsed.include, parsed.exclude]),
     JSON.stringify([['big breasts', 'anal'], []])
   );
 
-  // `tag:"school girl"` tek token -> Schoolgirl tür sayfası
+  // `tag:"school girl"` single token -> Schoolgirl genre page
   const quoted = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'tag:"school girl"');
   assert.equal(quoted.length, 1);
   assert.equal(quoted[0].id, 'hh_9');
 
-  // `genre:` öneki de aynı işler
+  // The `genre:` prefix works the same way
   const genrePrefixed = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'genre:softcore');
   assert.equal(genrePrefixed.length, 1);
   assert.equal(genrePrefixed[0].id, 'hh_11');
@@ -798,15 +798,15 @@ test('tag: prefix keeps multi-word genres as one token (other sources mechanic)'
 
 test('hentaiHavenTagQuery qualifies info-window tags like other sources', () => {
   const hh = loadHentai();
-  // Boşluklu tür -> tag:"..."
+  // Spaced genre -> tag:"..."
   assert.equal(hh.hentaiHavenTagQuery('Hentai School'), 'tag:"hentai school"');
-  // Boşluksuz tür -> tag:...
+  // Genre without spaces -> tag:...
   assert.equal(hh.hentaiHavenTagQuery('Anal'), 'tag:anal');
-  // Kırmızı etiket (artist) boşluklu -> artist:"..."
+  // Red tag (artist) with spaces -> artist:"..."
   assert.equal(hh.hentaiHavenTagQuery('Pink Pineapple', 'artist'), 'artist:"pink pineapple"');
-  // Kırmızı etiket (artist) boşluksuz -> artist:...
+  // Red tag (artist) without spaces -> artist:...
   assert.equal(hh.hentaiHavenTagQuery('PoRO', 'artist'), 'artist:poro');
-  // Zaten önekli olanlar korunur
+  // Already prefixed ones are preserved
   assert.equal(hh.hentaiHavenTagQuery('tag:"yuri"'), 'tag:"yuri"');
   assert.equal(hh.hentaiHavenTagQuery('genre:harem'), 'genre:harem');
   assert.equal(hh.hentaiHavenTagQuery('artist:suiseisha'), 'artist:suiseisha');
@@ -816,7 +816,7 @@ test('hentaiHavenTagQuery qualifies info-window tags like other sources', () => 
 
 test('red artist tags resolve to official studio posts end-to-end', async () => {
   const hh = loadHentai(null, mockHentaiApi());
-  // 1. Bilgi penceresindeki kırmızı stüdyo etiketine tıklandığında üretilen artist sorgusu
+  // 1. The artist query produced when tapping a red studio tag in the info sheet
   const query = hh.hentaiHavenTagQuery('Pink Pineapple', 'artist');
   assert.equal(query, 'artist:"pink pineapple"');
 
@@ -825,7 +825,7 @@ test('red artist tags resolve to official studio posts end-to-end', async () => 
   assert.equal(posts[0].id, 'hh_1671');
   assert.equal(posts[1].id, 'hh_1672');
 
-  // 2. Düz metin olarak stüdyo adı arandığında da term_id 167 ile eşleşir
+  // 2. Searching the studio name as plain text also matches term_id 167
   const plainPosts = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'Pink Pineapple');
   assert.equal(plainPosts.length, 2);
   assert.equal(plainPosts[0].id, 'hh_1671');
@@ -846,7 +846,7 @@ test('isHentaiHavenOfficialGenre covers the /genres/ list leniently', () => {
 
 test('info-window tag tap resolves to the genre page end to end', async () => {
   const hh = loadHentai(null, mockHentaiApi());
-  // Bilgi penceresindeki 'Hentai School' satırı `tag:"hentai school"` olur
+  // The 'Hentai School' row in the info sheet becomes `tag:"hentai school"`
   const query = hh.hentaiHavenTagQuery('Hentai School');
   const posts = await hh.fetchHentaiHavenPosts(SOURCE, 1, query);
   assert.equal(posts.length, 1);
@@ -856,7 +856,7 @@ test('info-window tag tap resolves to the genre page end to end', async () => {
 test('harvested official genres resolve without genre/all', async () => {
   const hh = loadHentai(null, mockHentaiApi());
 
-  // softcore / umemaro 3d: genre/all'da yok, statik tamamlayıcıdan gelir
+  // softcore / umemaro 3d: absent from genre/all, comes from the static completer
   const softcore = await hh.fetchHentaiHavenPosts(SOURCE, 1, 'softcore');
   assert.equal(softcore.length, 1);
   assert.equal(softcore[0].id, 'hh_11');
@@ -865,7 +865,7 @@ test('harvested official genres resolve without genre/all', async () => {
   assert.equal(umemaro.length, 1);
   assert.equal(umemaro[0].id, 'hh_12');
 
-  // Önerilerde de görünürler
+  // They also show up in suggestions
   const sug = await hh.searchHentaiHavenTags('soft');
   assert.ok(sug.some((t) => t.name === 'Softcore'), 'Softcore must be suggested');
   const yaoi = await hh.searchHentaiHavenTags('yaoi');

@@ -123,3 +123,87 @@ test('failed authentication does not leave a rejected single-flight promise cach
   await api.fetchRedGifsNiches();
   assert.equal(authCalls, 2);
 });
+
+const redGifsSource = { id: 'redgifs', name: 'RedGifs', type: 'redgifs', baseUrl: 'https://www.redgifs.com' };
+const tagFilter = (tags) => ({ tags, sortBy: 'default', timeRange: 'all', rating: 'all' });
+
+test('RedGifs sends underscore-separated tag labels as spaced API search text', async () => {
+  const urls = [];
+  const { api } = loadApi(async (url, token) => {
+    if (!token) return response({ token: 'fresh' });
+    urls.push(new URL(url));
+    return response({ gifs: [] });
+  });
+  await api.fetchPostsWithFilter(tagFilter(['real_couples']), 1, 24, redGifsSource);
+  assert.equal(urls[0].searchParams.get('tags'), 'real couples');
+  await api.fetchPostsWithFilter(tagFilter(['real couples', 'outdoor']), 2, 24, redGifsSource);
+  assert.equal(urls[1].searchParams.get('tags'), 'real couples outdoor');
+  assert.equal(urls[1].searchParams.get('page'), '2');
+});
+
+test('RedGifs autocomplete normalizes partial underscore queries and its labels can be searched again', async () => {
+  const urls = [];
+  const { api } = loadApi(async (url, token) => {
+    if (!token) return response({ token: 'fresh' });
+    const parsed = new URL(url);
+    urls.push(parsed);
+    return parsed.pathname.endsWith('/suggest')
+      ? response([{ text: 'Real Couples', gifs: 10 }])
+      : response({ gifs: [] });
+  });
+  const suggestions = await api.searchTags('real_cou', 12, redGifsSource);
+  assert.equal(urls[0].searchParams.get('query'), 'real cou');
+  assert.equal(suggestions[0].name, 'real_couples');
+  await api.fetchPostsWithFilter(tagFilter([suggestions[0].name]), 1, 24, redGifsSource);
+  assert.equal(urls[1].searchParams.get('tags'), 'real couples');
+});
+
+test('RedGifs user/niche identifiers keep their underscores and tag exclusions still work locally', async () => {
+  const urls = [];
+  const { api } = loadApi(async (url, token) => {
+    if (!token) return response({ token: 'fresh' });
+    urls.push(new URL(url));
+    return response({ gifs: [
+      { id: 'keep', userName: 'creator_name', tags: ['Real Couples'] },
+      { id: 'exclude', userName: 'creator_name', tags: ['Real Couples', 'Single Person'] },
+      { id: 'unrelated', userName: 'creator_name', tags: ['Landscape'] },
+    ] });
+  });
+  const userPosts = await api.fetchPostsWithFilter(tagFilter(['user:creator_name', 'real_couples', '-single_person']), 1, 24, redGifsSource);
+  assert.equal(urls[0].pathname, '/v2/users/creator_name/search');
+  assert.equal(urls[0].searchParams.has('tags'), false);
+  assert.deepEqual(Array.from(userPosts, (p) => p.id), ['rg_keep']);
+  const nichePosts = await api.fetchPostsWithFilter(tagFilter(['niche:category_name', 'real_couples', '-single_person']), 1, 24, redGifsSource);
+  assert.equal(urls[1].pathname, '/v2/niches/category_name/gifs');
+  assert.deepEqual(Array.from(nichePosts, (p) => p.id), ['rg_keep']);
+});
+
+test('non-RedGifs providers retain underscore-separated booru tags', async () => {
+  const { api } = loadApi(async () => { throw new Error('Unexpected network request'); });
+  let received;
+  api.fetchDanbooruPosts = async (_source, _page, _limit, tags) => { received = tags; return []; };
+  await api.fetchPostsWithFilter(tagFilter(['real_couples']), 1, 24, { id: 'danbooru', type: 'danbooru' });
+  assert.equal(received, 'real_couples');
+});
+
+test('RedGifs mapping keeps the independent poster as an image fallback', () => {
+  const { api } = loadApi(async () => { throw new Error('Unexpected request'); });
+  const posts = api.mapRedGifsGifs(redGifsSource, [{ id: 'clip', urls: {
+    thumbnail: 'https://media.redgifs.com/Clip-mobile.jpg',
+    poster: 'https://media.redgifs.com/Clip-poster.jpg',
+    sd: 'https://media.redgifs.com/Clip-mobile.mp4',
+  } }]);
+  assert.equal(posts[0].previewUrl, 'https://media.redgifs.com/Clip-mobile.jpg');
+  assert.equal(posts[0].previewFallbackUrl, 'https://media.redgifs.com/Clip-poster.jpg');
+});
+
+test('RedGifs mapping ignores empty and non-string thumbnail values before choosing a poster', () => {
+  const { api } = loadApi(async () => { throw new Error('Unexpected request'); });
+  for (const thumbnail of ['  ', 42, null]) {
+    const [post] = api.mapRedGifsGifs(redGifsSource, [{ id: 'clip', urls: {
+      thumbnail, poster: 'https://media.redgifs.com/Clip-poster.jpg',
+    } }]);
+    assert.equal(post.previewUrl, 'https://media.redgifs.com/Clip-poster.jpg');
+    assert.equal(post.previewFallbackUrl, undefined);
+  }
+});
