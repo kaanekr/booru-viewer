@@ -354,12 +354,16 @@ export const BackupService = {
       }
 
       const fileAsset = result.assets[0];
-      const pickedFile = new File(fileAsset.uri);
       let fileContent: string;
-      try {
-        fileContent = await pickedFile.text();
-      } catch {
-        fileContent = pickedFile.textSync();
+      if (typeof window !== 'undefined' && typeof document !== 'undefined' && (fileAsset as any).file && typeof (fileAsset as any).file.text === 'function') {
+        fileContent = await (fileAsset as any).file.text();
+      } else {
+        const pickedFile = new File(fileAsset.uri);
+        try {
+          fileContent = await pickedFile.text();
+        } catch {
+          fileContent = pickedFile.textSync();
+        }
       }
 
       const parsedJson = JSON.parse(fileContent);
@@ -395,6 +399,23 @@ export const BackupService = {
 
       const jsonStr = JSON.stringify(backupObj, null, 2);
       const filename = `booru_backup_${new Date().toISOString().slice(0, 10)}.json`;
+
+      if (typeof document !== 'undefined') {
+        if (typeof Blob === 'undefined') {
+          return false;
+        }
+        const blob = new Blob([jsonStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        return true;
+      }
+
       const exportFile = new File(Paths.cache, filename);
 
       try {

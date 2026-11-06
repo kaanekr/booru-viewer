@@ -40,6 +40,7 @@
   },
   "scripts": {
     "test:freeze": "node --test tests/*lifecycle.test.cjs",
+    "proxy:cors": "node scripts/local-cors-proxy.cjs",
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",

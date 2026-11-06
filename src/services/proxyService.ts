@@ -126,21 +126,10 @@ class ProxyService {
     const target = this.proxyUrl(url);
     const scrub = !/redgifs\.com/i.test(url);
     let res: Response;
-    const startedAt = Date.now();
     try {
       res = await this.fetchWithTimeout(target, init, retryTimeoutMs);
-      this.reportProbe({ kind: 'response', target, status: res.status, ms: Date.now() - startedAt });
     } catch (e) {
       // A caller cancellation is final, not a reason to start a new download.
-      this.reportProbe({
-        kind: 'error',
-        target,
-        url,
-        message: String((e as Error)?.message ?? e),
-        name: (e as Error)?.name,
-        ms: Date.now() - startedAt,
-        worker: this.hasWorker(),
-      });
       this.throwIfAborted(init?.signal);
       const viaProxy = this.forceProxyUrl(url);
       if (!this.hasWorker() || viaProxy === target) throw e;
@@ -203,17 +192,6 @@ class ProxyService {
       if (timer) clearTimeout(timer);
       if (onAbort) signal?.removeEventListener('abort', onAbort);
     }
-  }
-
-  /** TEMP diagnostic: report failed/slow fetches to the LAN probe listener. */
-  private reportProbe(record: Record<string, unknown>): void {
-    try {
-      void fetch('http://192.168.1.136:8099/probe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(record),
-      }).catch(() => {});
-    } catch {}
   }
 
   proxyUrl(originalUrl: string | undefined): string {

@@ -148,7 +148,9 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   useEffect(() => {
     // Free mode is only granted while the media viewer is open
     return () => {
-      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+      if (Platform.OS !== 'web') {
+        ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+      }
     };
   }, []);
 
@@ -349,6 +351,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   };
 
   const toggleOrientation = async () => {
+    if (Platform.OS === 'web') return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     try {
       const current = await ScreenOrientation.getOrientationAsync();
@@ -1628,6 +1631,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
             {/* PH bot-wall fallback runs behind the loader while resolving. */}
             {pornhubWebviewOn &&
+            Platform.OS !== 'web' &&
             !resolvedOriginalUrl &&
             isActive &&
             !suspended &&
