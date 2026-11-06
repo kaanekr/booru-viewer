@@ -703,7 +703,7 @@ const MangaPageImage: React.FC<{
       {!failed ? (
         <Image
           source={{
-            uri: src,
+            uri: getMediaUrl(src) || src,
             headers: getMediaHeaders(src),
             cacheKey: `${src}:manga-page`,
           }}
