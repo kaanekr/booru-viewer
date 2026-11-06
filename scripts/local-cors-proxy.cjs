@@ -85,7 +85,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'HEAD' || !upstream.body) {
       res.end();
     } else {
-      Readable.fromWeb(upstream.body).pipe(res);
+      const stream = Readable.fromWeb(upstream.body);
+      stream.on('error', (err) => {
+        if (!res.headersSent) {
+          send(res, 502, `Stream error: ${err.message}`);
+        } else {
+          res.destroy(err);
+        }
+      });
+      stream.pipe(res);
     }
     console.log(`${req.method} ${upstream.status} ${parsed.toString()} (${Date.now() - startedAt}ms)`);
   } catch (error) {
@@ -94,7 +102,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
   console.log(`Local CORS proxy listening on http://localhost:${PORT}`);
   console.log('Usage: http://localhost:8085/?url=<encoded-target-url>');
 });

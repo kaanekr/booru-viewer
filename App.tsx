@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import {
   StyleSheet,
   View,
+  Platform,
   StatusBar as RNStatusBar,
   AppState,
   AppStateStatus,
@@ -57,7 +58,9 @@ function MainTabsNavigator() {
     <Tab.Navigator
       screenListeners={{
         tabPress: () => {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          if (Platform.OS !== 'web') {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+          }
         },
       }}
       screenOptions={{
@@ -137,7 +140,9 @@ function MainApp() {
   // Initialize proxy & security lock synchronously before rendering
   useEffect(() => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+    if (Platform.OS !== 'web') {
+      ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
+    }
     // Grid preview preference: cards behave correctly from launch
     StorageService.getGridPreviews().then(setGridPreviewsEnabled).catch(() => {});
     async function initApp() {

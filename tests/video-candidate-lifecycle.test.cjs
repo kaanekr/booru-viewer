@@ -23,6 +23,14 @@ function loadMedia(platformOS) {
       if (id === '../services/xvideos') return {};
       if (id === '../services/xhamster') return {};
       if (id === '../services/pornhub') return {};
+      if (id === './postIdentity') return { getPostKey: () => '' };
+      if (id === './guards') return {
+        urlEndsWith: (url, ...suffixes) => {
+          if (typeof url !== 'string') return false;
+          const clean = url.split(/[?#]/)[0].toLowerCase();
+          return suffixes.some((suffix) => clean.endsWith(suffix));
+        },
+      };
       throw new Error('Unexpected dependency: ' + id);
     },
     console: { warn() {} },
