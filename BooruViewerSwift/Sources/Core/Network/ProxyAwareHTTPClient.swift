@@ -66,12 +66,29 @@ struct ProxyAwareHTTPClient: HTTPClientProtocol, Sendable {
 
     /// Fallback leg (proxyService.ts:153-159 fetchViaProxy). Scrubbing applies the workerHeaders policy and disables cookies.
     private func send(_ request: URLRequest, original: URL, to target: URL, sanitize: Bool) async throws -> (Data, HTTPURLResponse) {
-        var routed = ProxyAwareHTTPClient.retarget(request, to: target)
-        if sanitize {
-            routed.allHTTPHeaderFields = ProxyRelay.workerHeaders(for: original, headers: request.allHTTPHeaderFields ?? [:])
-            // Keeps URLSession from adding a stored Cookie, so the leg really carries no Cookie header.
-            routed.httpShouldHandleCookies = false
+        guard sanitize else {
+            return try await direct.data(for: ProxyAwareHTTPClient.retarget(request, to: target))
         }
+        // Assigning `allHTTPHeaderFields` merges with the headers already on the request on Darwin, so the
+        // origin `Referer`/`Cookie` survived into the relayed leg. Build a fresh request instead: only the
+        // sanitized worker headers are ever set, so nothing from the original request leaks through.
+        var routed = URLRequest(url: target)
+        routed.httpMethod = request.httpMethod
+        if let body = request.httpBody {
+            routed.httpBody = body
+        } else if let stream = request.httpBodyStream {
+            routed.httpBodyStream = stream
+        }
+        routed.timeoutInterval = request.timeoutInterval
+        routed.cachePolicy = request.cachePolicy
+        // Keeps URLSession from adding a stored Cookie, so the leg really carries no Cookie header.
+        routed.httpShouldHandleCookies = false
+        for (name, value) in ProxyRelay.workerHeaders(for: original, headers: request.allHTTPHeaderFields ?? [:]) {
+            routed.setValue(value, forHTTPHeaderField: name)
+        }
+        // Defensive: make sure no implicit merge reintroduces a sensitive header.
+        routed.setValue(nil, forHTTPHeaderField: "Referer")
+        routed.setValue(nil, forHTTPHeaderField: "Cookie")
         return try await direct.data(for: routed)
     }
 
