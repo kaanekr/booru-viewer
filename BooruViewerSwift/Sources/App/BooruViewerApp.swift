@@ -34,40 +34,17 @@ struct BooruViewerApp: App {
 
     // MARK: - UIKit bars
 
-    /// Paints the tab bar and the navigation bar with the app palette.
+    /// Paints the navigation bar with the app palette.
     ///
-    /// A bare `TabView` keeps UIKit's default opaque tab-bar background, which is pure black and
-    /// reads as a solid strip under the content. Applying an explicit `UITabBarAppearance` with
-    /// `AppTheme.background` (#0B0D13) both for the standard and the scroll-edge appearance keeps
-    /// the bar identical to the rest of the window; the same treatment on `UINavigationBar` stops
-    /// pushed screens from flashing another bar colour. Shadows are cleared because the RN shell
-    /// draws no separator line above the bar.
+    /// The tab bar is deliberately not configured here: on iOS 26 it draws its own opaque
+    /// container that ignores `UITabBarAppearance` (a pure-black band, home indicator included),
+    /// so `RootTabView` hides the system tab bar entirely and draws its own floating pill on
+    /// `AppTheme.background`. The navigation bar still gets an explicit appearance so pushed
+    /// screens never flash another bar colour. Its shadow is cleared because the RN shell draws
+    /// no separator line under the bar.
     private static func configureBarAppearance() {
         #if canImport(UIKit)
         let background = UIColor(AppTheme.background)
-        let normalTint = UIColor(AppTheme.textMuted)
-        let selectedTint = UIColor(AppTheme.primary)
-
-        let tabBarAppearance = UITabBarAppearance()
-        tabBarAppearance.configureWithOpaqueBackground()
-        tabBarAppearance.backgroundColor = background
-        tabBarAppearance.shadowColor = .clear
-
-        // Item colours: muted grey at rest, brand indigo when selected (RN tabBar*TintColor).
-        for itemAppearance in [
-            tabBarAppearance.stackedLayoutAppearance,
-            tabBarAppearance.inlineLayoutAppearance,
-            tabBarAppearance.compactInlineLayoutAppearance
-        ] {
-            itemAppearance.normal.iconColor = normalTint
-            itemAppearance.normal.titleTextAttributes = [.foregroundColor: normalTint]
-            itemAppearance.selected.iconColor = selectedTint
-            itemAppearance.selected.titleTextAttributes = [.foregroundColor: selectedTint]
-        }
-
-        let tabBar = UITabBar.appearance()
-        tabBar.standardAppearance = tabBarAppearance
-        tabBar.scrollEdgeAppearance = tabBarAppearance
 
         let navigationBarAppearance = UINavigationBarAppearance()
         navigationBarAppearance.configureWithOpaqueBackground()

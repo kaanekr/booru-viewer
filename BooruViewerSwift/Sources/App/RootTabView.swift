@@ -10,11 +10,31 @@ import UIKit
 /// state so edits made in Settings (or by a backup import) reach Explore and Search.
 @MainActor
 struct RootTabView: View {
-    enum Tab: Hashable {
+    enum Tab: String, Hashable, CaseIterable {
         case explore
         case search
         case favorites
         case settings
+
+        /// Label under the icon in the floating tab bar.
+        var title: String {
+            switch self {
+            case .explore: return "Explore"
+            case .search: return "Search"
+            case .favorites: return "Favorites"
+            case .settings: return "Settings"
+            }
+        }
+
+        /// SF Symbol for the floating tab bar (the same icons the system bar used).
+        var symbol: String {
+            switch self {
+            case .explore: return "square.grid.2x2.fill"
+            case .search: return "magnifyingglass"
+            case .favorites: return "heart.fill"
+            case .settings: return "gearshape.fill"
+            }
+        }
     }
 
     /// The viewer needs its own identity: the same post list can be reopened.
@@ -24,27 +44,7 @@ struct RootTabView: View {
         let index: Int
     }
 
-    /// Keeps the tab bar on the app background in both the normal and the content-under-bar
-    /// (scroll-edge) state. `BooruViewerApp` also installs a matching `UITabBarAppearance`; this
-    /// modifier states the same intent at the SwiftUI layer so no code path can fall back to
-    /// UIKit's default black fill.
-    private struct TabBarBackground: ViewModifier {
-        func body(content: Content) -> some View {
-            content
-                .toolbarBackground(AppTheme.background, for: .tabBar)
-                .toolbarBackground(.visible, for: .tabBar)
-        }
-    }
-
     private let container: AppContainer
-
-    /// Breathing room kept under each tab's content.
-    ///
-    /// The tab bar's own height (and the home-indicator inset) is already reserved by the system,
-    /// so content stops above the bar without any manual clearance. This is only a small visual
-    /// gap so the last row does not sit flush against the bar; the old fixed 68pt reservation
-    /// left a dead band of unused space between the content and the tab bar.
-    private static let tabBarBreathingRoom: CGFloat = 8
 
     @State private var selectedTab: Tab = .explore
     @State private var explorePath: [TagSearchTarget] = []
@@ -101,24 +101,36 @@ struct RootTabView: View {
 
     var body: some View {
         ZStack {
+            // The iOS 26 system tab bar draws its own opaque container (a pure-black band,
+            // including the whole home-indicator floor) and ignores `UITabBarAppearance`, so
+            // every tab hides it and the shell draws `floatingTabBar` instead.
             TabView(selection: $selectedTab) {
                 exploreTab
-                    .tabItem { Label("Explore", systemImage: "square.grid.2x2.fill") }
+                    .tabItem { Label(Tab.explore.title, systemImage: Tab.explore.symbol) }
                     .tag(Tab.explore)
+                    .toolbar(.hidden, for: .tabBar)
 
                 searchTab
-                    .tabItem { Label("Search", systemImage: "magnifyingglass") }
+                    .tabItem { Label(Tab.search.title, systemImage: Tab.search.symbol) }
                     .tag(Tab.search)
+                    .toolbar(.hidden, for: .tabBar)
 
                 favoritesTab
-                    .tabItem { Label("Favorites", systemImage: "heart.fill") }
+                    .tabItem { Label(Tab.favorites.title, systemImage: Tab.favorites.symbol) }
                     .tag(Tab.favorites)
+                    .toolbar(.hidden, for: .tabBar)
 
                 settingsTab
-                    .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                    .tabItem { Label(Tab.settings.title, systemImage: Tab.settings.symbol) }
                     .tag(Tab.settings)
+                    .toolbar(.hidden, for: .tabBar)
             }
             .tint(AppTheme.primary)
+            // Reserves the bar's exact height for the scroll views of every tab, so nothing is
+            // clipped at the bottom edge any more (this replaces the old manual bottom padding).
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                floatingTabBar
+            }
 
             // The lock/curtain covers the whole window, including the tab bar.
             // `-forceLock` skips the biometric auto-prompt so the PIN pad stays on screen.
@@ -151,8 +163,6 @@ struct RootTabView: View {
             )
         }
         .onChange(of: selectedTab) { _, tab in
-            // RN fires a light impact on every tab press (App.tsx:60).
-            Self.playTabSelectionHaptic()
             Task { @MainActor in
                 await container.reloadSharedState()
                 if tab == .settings {
@@ -184,8 +194,6 @@ struct RootTabView: View {
                 detailScreen(for: target)
             }
         }
-        .modifier(TabBarBackground())
-        .padding(.bottom, Self.tabBarBreathingRoom)
     }
 
     private var searchTab: some View {
@@ -209,8 +217,6 @@ struct RootTabView: View {
             .toolbar(.hidden, for: .navigationBar)
             .id(searchToken)
         }
-        .modifier(TabBarBackground())
-        .padding(.bottom, Self.tabBarBreathingRoom)
     }
 
     private var favoritesTab: some View {
@@ -227,21 +233,95 @@ struct RootTabView: View {
                 onOpenPost: { posts, index in openViewer(posts, index) }
             )
         }
-        .modifier(TabBarBackground())
-        .padding(.bottom, Self.tabBarBreathingRoom)
     }
 
     private var settingsTab: some View {
         NavigationStack {
             SettingsScreen(viewModel: settingsModel)
         }
-        .modifier(TabBarBackground())
-        .padding(.bottom, Self.tabBarBreathingRoom)
+    }
+
+    // MARK: - Floating tab bar
+
+    /// Height of the pill (icon + label inside 6pt of inner padding).
+    private static let tabBarHeight: CGFloat = 54
+    /// Gap between the pill and the screen edges.
+    private static let tabBarHorizontalPadding: CGFloat = 16
+
+    /// The shell's own tab bar.
+    ///
+    /// It lives in `safeAreaInset(edge: .bottom)`, so SwiftUI reserves exactly the height it
+    /// occupies for every scroll view and no content is clipped at the bottom edge. The
+    /// container behind the pill paints `AppTheme.background` (#0B0D13) and bleeds into the
+    /// home-indicator area, so no pure-black region can show through around it.
+    private var floatingTabBar: some View {
+        HStack(spacing: 2) {
+            ForEach(Tab.allCases, id: \.self) { tab in
+                tabBarItem(for: tab)
+            }
+        }
+        .padding(6)
+        .frame(maxWidth: .infinity)
+        .frame(height: Self.tabBarHeight)
+        .background { tabBarPill }
+        .padding(.horizontal, Self.tabBarHorizontalPadding)
+        .padding(.top, 8)
+        .background(AppTheme.background.ignoresSafeArea(edges: .bottom))
+        .animation(.easeOut(duration: 0.16), value: selectedTab)
+    }
+
+    /// `AppTheme.surface` (#1E2230) pill with a hairline `AppTheme.border` stroke and a soft shadow.
+    private var tabBarPill: some View {
+        RoundedRectangle(cornerRadius: Self.tabBarHeight / 2, style: .continuous)
+            .fill(AppTheme.surface)
+            .overlay {
+                RoundedRectangle(cornerRadius: Self.tabBarHeight / 2, style: .continuous)
+                    .strokeBorder(AppTheme.border, lineWidth: 0.5)
+            }
+            .shadow(color: Color.black.opacity(0.45), radius: 14, x: 0, y: 6)
+    }
+
+    private func tabBarItem(for tab: Tab) -> some View {
+        let isSelected = selectedTab == tab
+        return Button {
+            select(tab)
+        } label: {
+            VStack(spacing: 3) {
+                Image(systemName: tab.symbol)
+                    .font(.system(size: 17, weight: isSelected ? .semibold : .regular))
+                Text(tab.title)
+                    .font(.system(size: 10, weight: isSelected ? .semibold : .regular))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(isSelected ? AppTheme.primary : AppTheme.textSecondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 21, style: .continuous)
+                        .fill(AppTheme.primary.opacity(0.18))
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(tab.title)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
     }
 
     // MARK: - Haptics
 
-    /// Light tap feedback on tab change, mirroring RN's `Haptics.impactAsync(.Light)`.
+    /// Selects a tab from the floating bar.
+    ///
+    /// Every press - including a re-tap on the current tab - gives the RN light impact. A re-tap
+    /// only gives feedback: each screen owns its own scroll-to-top gesture, so there is nothing
+    /// for the shell to trigger.
+    private func select(_ tab: Tab) {
+        Self.playTabSelectionHaptic()
+        guard tab != selectedTab else { return }
+        selectedTab = tab
+    }
+
+    /// Light tap feedback on every tab press, mirroring RN's `Haptics.impactAsync(.Light)`.
     private static func playTabSelectionHaptic() {
         #if canImport(UIKit)
         let generator = UISelectionFeedbackGenerator()
@@ -264,6 +344,7 @@ struct RootTabView: View {
             sourceProvider: container.sourceProvider,
             onOpenPost: { posts, index in openViewer(posts, index) }
         )
+        .toolbar(.hidden, for: .tabBar)
     }
 
     private func openViewer(_ posts: [BooruPost], _ index: Int) {
