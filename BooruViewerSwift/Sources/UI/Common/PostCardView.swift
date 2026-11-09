@@ -30,10 +30,15 @@ struct PostCardView: View {
     @State private var isOnScreen = false
     /// Index into the frame slideshow (PostCard.tsx:111, 192-200).
     @State private var frameIndex = 0
-    /// Explicit hold on the card, from the moment the long press succeeds until the
-    /// finger lifts (RN `touchPreviewActive`, PostCard.tsx:110, 261-268).
-    @State private var isPressing = false
-    /// Guards the long-press callback so one hold fires it exactly once.
+    /// Finger-down state of the card. Reported by the `Button`'s
+    /// `configuration.isPressed`, which also goes false when the enclosing
+    /// `ScrollView` takes the touch over or the press is cancelled.
+    @State private var isPressed = false
+    /// Held preview: raised once the 350 ms hold succeeds and kept until the press
+    /// ends (RN `touchPreviewActive`, PostCard.tsx:110, 261-268).
+    @State private var isHoldPreview = false
+    /// True once this press has become a long press: keeps `onLongPress` to one call
+    /// per hold and suppresses the tap the `Button` would otherwise send on release.
     @State private var didLongPress = false
 
     init(
@@ -107,7 +112,7 @@ struct PostCardView: View {
     /// Motion runs for on-screen cards and, additionally, while the card is held
     /// (PostCard.tsx:126-129, 146).
     private var isPreviewActive: Bool {
-        canPlayInline || (isPressing && isOnScreen && gridPreviewsEnabled && hasPreview)
+        canPlayInline || (isHoldPreview && isOnScreen && gridPreviewsEnabled && hasPreview)
     }
 
     /// Automatic listing clip. A hold widens the candidates to the full original,
@@ -117,7 +122,7 @@ struct PostCardView: View {
         return GridPreviewPolicy.videoCandidates(
             for: post,
             quality: imageQuality,
-            allowOriginal: isPressing
+            allowOriginal: isHoldPreview
         ).first
     }
 
@@ -139,6 +144,65 @@ struct PostCardView: View {
     }
 
     var body: some View {
+        // A `Button` (not a gesture recognizer) owns every touch on the card: inside
+        // the grid's `ScrollView` it yields the pan as soon as the drag starts, and it
+        // reports the whole press lifecycle through `configuration.isPressed`,
+        // including cancellation by the scroll view.
+        Button(action: handleTap) {
+            cardContent
+        }
+        .buttonStyle(PressableCardStyle(isPressed: $isPressed))
+        .onChange(of: isPressed) { _, pressed in
+            if pressed {
+                beginPress()
+            } else {
+                endHoldPreview()
+            }
+        }
+        // RN `delayLongPress={350}` measured from the same press state, so the hold
+        // needs no recognizer of its own: the sleep is cancelled the moment the press
+        // ends or the enclosing scroll view takes the touch over.
+        .task(id: isPressed) {
+            guard isPressed else { return }
+            do {
+                try await Task.sleep(
+                    nanoseconds: UInt64(Self.longPressDelayMilliseconds) * 1_000_000
+                )
+            } catch {
+                return
+            }
+            beginHoldPreview()
+        }
+        .onAppear { isOnScreen = true }
+        .onDisappear {
+            isOnScreen = false
+            isPressed = false
+            endHoldPreview()
+            didLongPress = false
+        }
+        .task(id: frameLoopKey) {
+            guard frameLoopKey > 0 else {
+                frameIndex = 0
+                return
+            }
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(
+                        nanoseconds: UInt64(GridPreviewTiming.frameIntervalMilliseconds) * 1_000_000
+                    )
+                } catch {
+                    return
+                }
+                frameIndex = GridPreviewTiming.nextFrameIndex(
+                    current: frameIndex,
+                    frameCount: frames.count
+                )
+            }
+        }
+    }
+
+    /// Card visuals only; all interaction lives on the enclosing `Button`.
+    private var cardContent: some View {
         Color.clear
             .aspectRatio(CGFloat(aspectRatio), contentMode: .fit)
             .overlay {
@@ -170,84 +234,27 @@ struct PostCardView: View {
                     .stroke(AppTheme.border, lineWidth: 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .onLongPressGesture(
-                minimumDuration: 0.35,
-                maximumDistance: 50,
-                pressing: handlePressingChange,
-                perform: beginHoldPreview
-            )
-            .simultaneousGesture(
-                // A succeeded `LongPressGesture` reports `pressing == false` at
-                // 0.35 s — finger still down — and never reports the real lift, so
-                // this zero-distance drag supplies RN's `onPressOut`
-                // (PostCard.tsx:268).
-                //
-                // An enclosing `ScrollView` cancels the gesture when it takes the
-                // touch over, and SwiftUI then never delivers `onEnded`, which
-                // would strand `isPressing` / `didLongPress` (preview keeps
-                // playing, card stops accepting long presses). Any movement past
-                // the press slop therefore ends the hold as well.
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        guard hypot(value.translation.width, value.translation.height)
-                            > Self.pressReleaseDistance else { return }
-                        endHoldPreview()
-                    }
-                    .onEnded { _ in endHoldPreview() }
-            )
-            .onTapGesture {
-                endHoldPreview()
-                onTap()
-            }
-            .onAppear { isOnScreen = true }
-            .onDisappear {
-                isOnScreen = false
-                endHoldPreview()
-            }
-            .task(id: frameLoopKey) {
-                guard frameLoopKey > 0 else {
-                    frameIndex = 0
-                    return
-                }
-                while !Task.isCancelled {
-                    do {
-                        try await Task.sleep(
-                            nanoseconds: UInt64(GridPreviewTiming.frameIntervalMilliseconds) * 1_000_000
-                        )
-                    } catch {
-                        return
-                    }
-                    frameIndex = GridPreviewTiming.nextFrameIndex(
-                        current: frameIndex,
-                        frameCount: frames.count
-                    )
-                }
-            }
     }
 
     // MARK: Press / long press
 
-    /// Movement past this many points means the enclosing `ScrollView` owns the
-    /// touch, so the hold must end even though SwiftUI never delivers the
-    /// cancelling drag's `onEnded`. `maximumDistance` on the long press is 50, so
-    /// this only ends holds that were really being dragged away.
-    private static let pressReleaseDistance: CGFloat = 12
+    /// RN `delayLongPress={350}` (PostCard.tsx:260).
+    private static let longPressDelayMilliseconds: Double = 350
 
-    /// `pressing` turns `true` at touch-down but back to `false` when the hold
-    /// *succeeds* (at `minimumDuration`, finger still down), so it only cancels a
-    /// hold that never completed; the real release arrives from the
-    /// zero-distance drag in `body`.
-    ///
-    /// A fresh touch-down also re-arms the hold, so `didLongPress` can never stay
-    /// stuck and a second long press on the same card always works.
-    private func handlePressingChange(_ pressing: Bool) {
-        if pressing {
-            isPressing = false
-            didLongPress = false
-            return
-        }
-        guard !didLongPress else { return }
+    /// Tap: RN suppresses `onPress` once a long press has fired (PostCard.tsx:256-267),
+    /// so a hold that opened the favorites action must not also open the viewer.
+    private func handleTap() {
+        let wasHold = didLongPress
         endHoldPreview()
+        guard !wasHold else { return }
+        onTap()
+    }
+
+    /// Fresh touch-down: re-arm the hold so `didLongPress` can never stay stuck and a
+    /// second long press on the same card always works.
+    private func beginPress() {
+        isHoldPreview = false
+        didLongPress = false
     }
 
     /// The hold reached 0.35 s: raise the inline preview and notify once
@@ -256,17 +263,16 @@ struct PostCardView: View {
         guard !didLongPress else { return }
         didLongPress = true
         if isOnScreen && gridPreviewsEnabled && hasPreview {
-            isPressing = true
+            isHoldPreview = true
         }
         onLongPress?()
     }
 
-    /// Finger up, or the card left the grid: stop the held preview and reset
-    /// (RN `onPressOut`, PostCard.tsx:268).
+    /// Press end, press cancellation, or the card leaving the grid: stop the held
+    /// preview (RN `onPressOut`, PostCard.tsx:268). `didLongPress` survives until the
+    /// next touch-down so a late `Button` action cannot open the viewer as well.
     private func endHoldPreview() {
-        guard isPressing || didLongPress else { return }
-        isPressing = false
-        didLongPress = false
+        isHoldPreview = false
     }
 
     // MARK: Badges
@@ -387,6 +393,24 @@ struct PostCardView: View {
         guard let raw = url?.absoluteString.lowercased() else { return false }
         let path = raw.split(whereSeparator: { $0 == "?" || $0 == "#" }).first.map { String($0) } ?? raw
         return path.hasSuffix(suffix)
+    }
+}
+
+/// Forwards the card's press lifecycle out of the `Button` without a gesture
+/// recognizer, so the card never competes with the grid's scroll pan: the button
+/// is cancelled (and `isPressed` goes back to false) as soon as the enclosing
+/// `ScrollView` takes the touch over.
+private struct PressableCardStyle: ButtonStyle {
+    /// `true` while the finger is down on the card.
+    let isPressed: Binding<Bool>
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .onChange(of: configuration.isPressed) { _, pressed in
+                if isPressed.wrappedValue != pressed {
+                    isPressed.wrappedValue = pressed
+                }
+            }
     }
 }
 
