@@ -181,10 +181,24 @@ struct PostCardView: View {
                 // 0.35 s — finger still down — and never reports the real lift, so
                 // this zero-distance drag supplies RN's `onPressOut`
                 // (PostCard.tsx:268).
+                //
+                // An enclosing `ScrollView` cancels the gesture when it takes the
+                // touch over, and SwiftUI then never delivers `onEnded`, which
+                // would strand `isPressing` / `didLongPress` (preview keeps
+                // playing, card stops accepting long presses). Any movement past
+                // the press slop therefore ends the hold as well.
                 DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard hypot(value.translation.width, value.translation.height)
+                            > Self.pressReleaseDistance else { return }
+                        endHoldPreview()
+                    }
                     .onEnded { _ in endHoldPreview() }
             )
-            .onTapGesture(perform: onTap)
+            .onTapGesture {
+                endHoldPreview()
+                onTap()
+            }
             .onAppear { isOnScreen = true }
             .onDisappear {
                 isOnScreen = false
@@ -213,12 +227,26 @@ struct PostCardView: View {
 
     // MARK: Press / long press
 
+    /// Movement past this many points means the enclosing `ScrollView` owns the
+    /// touch, so the hold must end even though SwiftUI never delivers the
+    /// cancelling drag's `onEnded`. `maximumDistance` on the long press is 50, so
+    /// this only ends holds that were really being dragged away.
+    private static let pressReleaseDistance: CGFloat = 12
+
     /// `pressing` turns `true` at touch-down but back to `false` when the hold
     /// *succeeds* (at `minimumDuration`, finger still down), so it only cancels a
     /// hold that never completed; the real release arrives from the
     /// zero-distance drag in `body`.
+    ///
+    /// A fresh touch-down also re-arms the hold, so `didLongPress` can never stay
+    /// stuck and a second long press on the same card always works.
     private func handlePressingChange(_ pressing: Bool) {
-        guard !pressing, !didLongPress else { return }
+        if pressing {
+            isPressing = false
+            didLongPress = false
+            return
+        }
+        guard !didLongPress else { return }
         endHoldPreview()
     }
 

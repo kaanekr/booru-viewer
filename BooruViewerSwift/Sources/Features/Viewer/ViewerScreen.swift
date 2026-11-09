@@ -20,9 +20,9 @@ struct ViewerScreen: View {
     /// Set once a drag has been classified as clearly vertical; horizontal drags
     /// then stay with the paged `TabView`.
     @State private var isVerticalDrag = false
-    /// Live horizontal offset of the whole viewer during the left-edge dismiss
-    /// (ImageViewerModal.tsx:284-324).
-    @State private var edgeDragOffset: CGFloat = 0
+    /// Latched when a left-edge drag turns out to be decisively horizontal, so the
+    /// release handling knows the strip claimed the touch
+    /// (ImageViewerModal.tsx:288-324).
     @State private var isEdgeDrag = false
     /// Mirrors the visible page's zoom so the viewer's own drags stand down while
     /// the media pan gesture owns the touch.
@@ -57,6 +57,10 @@ struct ViewerScreen: View {
         let vm = viewModel
 
         ZStack {
+            // The backdrop is always the opaque theme background and never moves:
+            // the viewer is presented in a `fullScreenCover`, so there is nothing
+            // behind it and following the finger would expose a black band
+            // (ImageViewerModal.tsx:284-287).
             AppTheme.background.ignoresSafeArea()
 
             TabView(selection: $viewModel.currentIndex) {
@@ -78,17 +82,19 @@ struct ViewerScreen: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
+            // Only the media content follows the vertical drag; the backdrop above
+            // stays put so a pull-down can never reveal an empty (black) band.
             .offset(y: verticalDragOffset)
             .opacity(mediaOpacity)
-            // Both drags are simultaneous so the `.page` `TabView` keeps its own
-            // horizontal paging; each one only acts after deciding the drag belongs
-            // to it (dominant axis, left-edge start).
+            // Simultaneous so the `.page` `TabView` keeps its own horizontal
+            // paging; the drag only acts after deciding it owns the touch
+            // (dominant axis beyond the ratio below).
             .simultaneousGesture(verticalDismissGesture)
-            .simultaneousGesture(edgeDismissGesture)
+
+            edgeDismissStrip
 
             overlays
         }
-        .offset(x: edgeDragOffset)
         .statusBarHidden(!showControls)
         .animation(.easeInOut(duration: 0.2), value: showControls)
         .onChange(of: vm.currentIndex) { _, _ in
@@ -125,14 +131,19 @@ struct ViewerScreen: View {
     /// (ImageViewerModal.tsx:1331-1372, PostPageItem scroll handler).
     ///
     /// It is attached simultaneously with the paged `TabView` and only claims a
-    /// drag once it is clearly vertical, so left/right swipes still page.
+    /// drag that is decisively vertical (`abs(dy) > abs(dx) * 1.5`), so a
+    /// diagonal swipe that drops a few points before travelling sideways stays
+    /// with the pager. The release re-checks that dominance, so a latched
+    /// vertical drag that turns horizontal springs back instead of closing.
     private var verticalDismissGesture: some Gesture {
-        DragGesture(minimumDistance: 20)
+        DragGesture(minimumDistance: Self.verticalMinimumDistance)
             .onChanged { value in
                 guard !isVerticalDismissSuspended else { return }
                 let translation = value.translation
                 if !isVerticalDrag {
-                    guard abs(translation.height) > abs(translation.width) else { return }
+                    guard abs(translation.height) > abs(translation.width) * Self.verticalAxisRatio else {
+                        return
+                    }
                     isVerticalDrag = true
                 }
                 verticalDragOffset = translation.height
@@ -145,10 +156,11 @@ struct ViewerScreen: View {
                     return
                 }
                 let dy = value.translation.height
-                if dy > Self.swipeDownThreshold {
+                let isDominantlyVertical = abs(dy) > abs(value.translation.width)
+                if isDominantlyVertical, dy > Self.swipeDownThreshold {
                     resetVerticalDrag()
                     onClose()
-                } else if dy < -Self.swipeUpThreshold {
+                } else if isDominantlyVertical, dy < -Self.swipeUpThreshold {
                     resetVerticalDrag(animated: true)
                     showInfo = true
                 } else {
@@ -157,35 +169,52 @@ struct ViewerScreen: View {
             }
     }
 
-    /// Interactive left-edge pan to dismiss (ImageViewerModal.tsx:284-324). Only a
-    /// drag that starts inside the left ~24 pt strip and travels sideways tracks;
-    /// anything else is left to the pager.
+    /// Claiming left-edge back strip (ImageViewerModal.tsx:432-437, 2512-2521).
+    ///
+    /// RN uses an overlay that owns the touch instead of a simultaneous gesture,
+    /// so the pager never sees the same drag. It is inset past the top bar and
+    /// the bottom ~150 pt video timeline area, and only exists on the first page,
+    /// where there is nothing to page back to. Nothing follows the finger: the
+    /// backdrop cannot move (see `body`), so dismissal is decided on release.
+    @ViewBuilder
+    private var edgeDismissStrip: some View {
+        if viewModel.currentIndex == 0, !isMediaZoomed {
+            Color.clear
+                .frame(width: Self.edgeStripWidth)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
+                .padding(.top, Self.edgeStripTopInset)
+                .padding(.bottom, Self.edgeStripBottomInset)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // The strip owns the touches it covers (the pager underneath is
+                // never hit), so vertical dismissal has to be re-attached here or a
+                // pull-down starting in the left strip would be lost.
+                .gesture(edgeDismissGesture.simultaneously(with: verticalDismissGesture))
+        }
+    }
+
+    /// Left-edge pan to dismiss (ImageViewerModal.tsx:288-324). Only a drag that
+    /// is decisively horizontal claims the touch — mirroring RN's
+    /// `onMoveShouldSetPanResponder` — and only a long, flat release dismisses.
     private var edgeDismissGesture: some Gesture {
-        DragGesture(minimumDistance: 10)
+        DragGesture(minimumDistance: Self.edgeMoveThreshold)
             .onChanged { value in
-                guard value.startLocation.x < Self.edgeStripWidth else { return }
                 guard !isMediaZoomed else { return }
+                guard !isEdgeDrag else { return }
                 let translation = value.translation
-                if !isEdgeDrag {
-                    guard translation.width > 0,
-                          abs(translation.width) > abs(translation.height) else { return }
-                    isEdgeDrag = true
-                }
-                edgeDragOffset = translation.width
+                guard translation.width > 0,
+                      abs(translation.width) > abs(translation.height) else { return }
+                isEdgeDrag = true
             }
             .onEnded { value in
                 guard isEdgeDrag else { return }
                 isEdgeDrag = false
-                let shouldDismiss = !isMediaZoomed
-                    && (value.translation.width > Self.edgeDismissThreshold
-                        || value.predictedEndTranslation.width > Self.edgePredictedThreshold)
+                guard !isMediaZoomed else { return }
+                let translation = value.translation
+                let shouldDismiss = translation.width > Self.edgeDismissThreshold
+                    && abs(translation.height) < Self.edgeMaximumVerticalDrift
                 if shouldDismiss {
-                    edgeDragOffset = 0
                     onClose()
-                } else {
-                    withAnimation(Self.springBack) {
-                        edgeDragOffset = 0
-                    }
                 }
             }
     }
@@ -205,9 +234,20 @@ struct ViewerScreen: View {
 
     private static let swipeDownThreshold: CGFloat = 80
     private static let swipeUpThreshold: CGFloat = 70
+    /// The vertical drag must clear this distance before it is classified at all.
+    private static let verticalMinimumDistance: CGFloat = 24
+    /// Vertical dominates only past this factor, so a diagonal swipe that drops a
+    /// little before travelling sideways is never latched as a dismissal.
+    private static let verticalAxisRatio: CGFloat = 1.5
     private static let edgeStripWidth: CGFloat = 24
+    /// RN inset: the top bar area and the bottom video-timeline strip
+    /// (ImageViewerModal.tsx:2512-2521).
+    private static let edgeStripTopInset: CGFloat = 75
+    private static let edgeStripBottomInset: CGFloat = 150
+    private static let edgeMoveThreshold: CGFloat = 10
     private static let edgeDismissThreshold: CGFloat = 80
-    private static let edgePredictedThreshold: CGFloat = 120
+    /// RN requires a flat swipe: `abs(dy) < 35` (ImageViewerModal.tsx:292-293, 300).
+    private static let edgeMaximumVerticalDrift: CGFloat = 35
     private static let springBack = Animation.spring(response: 0.32, dampingFraction: 0.86)
 
     private func resetVerticalDrag(animated: Bool = false) {
@@ -226,7 +266,6 @@ struct ViewerScreen: View {
         isVerticalDrag = false
         isEdgeDrag = false
         verticalDragOffset = 0
-        edgeDragOffset = 0
     }
 
     // MARK: Overlays
