@@ -90,12 +90,8 @@ enum MediaRequestConfiguration {
             // token is bound to this Origin.
             headers["Referer"] = "https://www.redgifs.com/"
             headers["Origin"] = "https://www.redgifs.com"
-        }
-        // nhentai (nhentai.net / i.nhentai.net / t.nhentai.net) intentionally gets no
-        // Referer: the CDN blocks/throttles requests that carry one
-        // (src/services/nhentai.ts:38).
-        if contains(target, "nhentai.net") {
-            headers.removeValue(forKey: "Referer")
+        } else if contains(target, "nhentai.net") {
+            headers["Referer"] = "https://nhentai.net/"
         }
 
         return headers

@@ -106,7 +106,7 @@ final class MasonryColumnsTests: XCTestCase {
 
     // MARK: - Height estimation
 
-    /// Mirrors `PostCardView`: clamp 0.6...1.4 with a 0.75 fallback plus the
+    /// Mirrors `PostCardView`: clamp 0.5...1.78 with a 0.75 fallback plus the
     /// badge/footer allowance.
     func testEstimatedHeightClampsAspectRatioPlusBadgeAllowance() {
         let columnWidth: CGFloat = 200
@@ -124,7 +124,7 @@ final class MasonryColumnsTests: XCTestCase {
                 for: makePost("tall", aspectRatio: 0.2),
                 columnWidth: columnWidth
             ),
-            columnWidth / 0.6 + MasonryColumns.badgeFooterAllowance,
+            columnWidth / 0.5 + MasonryColumns.badgeFooterAllowance,
             accuracy: 0.001
         )
         XCTAssertEqual(
@@ -132,7 +132,7 @@ final class MasonryColumnsTests: XCTestCase {
                 for: makePost("wide", aspectRatio: 3),
                 columnWidth: columnWidth
             ),
-            columnWidth / 1.4 + MasonryColumns.badgeFooterAllowance,
+            columnWidth / 1.78 + MasonryColumns.badgeFooterAllowance,
             accuracy: 0.001
         )
         XCTAssertEqual(

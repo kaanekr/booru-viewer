@@ -482,15 +482,20 @@ final class AllSourcesAuditTests: XCTestCase {
     func testHentaiHavenFetchEpisodesReturnsSortedEpisodes() async throws {
         await HentaiHavenSource.HentaiHavenWardenCache.shared.clear()
         await HentaiHavenSource.HentaiHavenEpisodeCache.shared.clear()
+        defer {
+            Task {
+                await HentaiHavenSource.HentaiHavenEpisodeCache.shared.clear()
+            }
+        }
 
         let source = HentaiHavenSource()
         let detailRule = AuditHTTPClient.Rule(
-            match: "api.hentaihaven.app/v1/hentai/321",
+            match: "api.hentaihaven.app/v1/hentai/999",
             body: """
-            {"data":{"post_ID":321,"post_name":"some-series","post_title":"Some Series","post_episodes":[
-              {"chapter_id":22,"chapter_name":"Episode 2","chapter_content":"https://cdn.hentaihaven.app/hls/321/ep2.m3u8","preview":"https://cdn.hentaihaven.app/ep2.mp4"},
-              {"chapter_id":11,"chapter_name":"Episode 1","chapter_content":"https://cdn.hentaihaven.app/hls/321/ep1.m3u8","preview":"https://cdn.hentaihaven.app/ep1.mp4"},
-              {"chapter_id":33,"chapter_name":"Episode 3","chapter_content":"https://cdn.hentaihaven.app/hls/321/ep3.m3u8","preview":"https://cdn.hentaihaven.app/ep3.mp4"}
+            {"data":{"post_ID":999,"post_name":"some-series","post_title":"Some Series","post_episodes":[
+              {"chapter_id":22,"chapter_name":"Episode 2","chapter_content":"https://cdn.hentaihaven.app/hls/999/ep2.m3u8","preview":"https://cdn.hentaihaven.app/ep2.mp4"},
+              {"chapter_id":11,"chapter_name":"Episode 1","chapter_content":"https://cdn.hentaihaven.app/hls/999/ep1.m3u8","preview":"https://cdn.hentaihaven.app/ep1.mp4"},
+              {"chapter_id":33,"chapter_name":"Episode 3","chapter_content":"https://cdn.hentaihaven.app/hls/999/ep3.m3u8","preview":"https://cdn.hentaihaven.app/ep3.mp4"}
             ]}}
             """
         )
@@ -502,11 +507,11 @@ final class AllSourcesAuditTests: XCTestCase {
         let sourceContext = context(http, for: .hentaihaven)
 
         let post = BooruPost(
-            id: "hh_321",
+            id: "hh_999",
             sourceID: .hentaihaven,
             sourceName: "hentaihaven",
             title: "Some Series",
-            previewURL: URL(string: "https://hentaihaven.xxx/img/321.jpg"),
+            previewURL: URL(string: "https://hentaihaven.xxx/img/999.jpg"),
             previewFallbackURL: nil,
             previewVideoURL: nil,
             previewThumbURL: nil,
@@ -528,7 +533,7 @@ final class AllSourcesAuditTests: XCTestCase {
             niches: nil,
             isPremium: nil,
             pageCount: nil,
-            mediaId: "321"
+            mediaId: "999"
         )
 
         let episodes: [HentaiHavenEpisode] = try await source.fetchEpisodes(for: post, context: sourceContext)

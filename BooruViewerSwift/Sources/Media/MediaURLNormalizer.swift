@@ -32,9 +32,9 @@ enum MediaURLNormalizer {
             let isThumbnail = loweredValue.contains("/thumbnails/") || loweredValue.contains("thumbnail_")
             if isThumbnail {
                 // Do NOT rewrite assets.gelbooru.com or img3.gelbooru.com for thumbnails.
-                // Only rewrite img1, img2, cdn, video-cdn to img4.gelbooru.com.
+                // Rewrite img1, img2, cdn, video-cdn, and apex gelbooru.com to img4.gelbooru.com.
                 value = replacing(
-                    #"^https?://(?:img[12]|cdn|video-cdn)\.gelbooru\.com/"#,
+                    #"^https?://(?:(?:img[12]|cdn|video-cdn)\.gelbooru\.com|gelbooru\.com)/"#,
                     in: value,
                     with: "https://img4.gelbooru.com/"
                 )
