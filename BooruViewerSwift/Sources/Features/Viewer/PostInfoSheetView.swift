@@ -193,7 +193,10 @@ struct PostInfoSheetView: View {
 
     private var tagsSection: some View {
         section("Tags") {
-            TagFlowLayout(spacing: 8) {
+            // Each row reserves a 44 pt hit target around a 28 pt pill. `lineSpacing`
+            // stays 0 (not negative) so neighbouring 44 pt targets never overlap and
+            // the drawn pills stay the same size as every other chip.
+            TagFlowLayout(spacing: 8, lineSpacing: 0) {
                 ForEach(tagItems, id: \.name) { item in
                     tagChipWithMenu(for: item)
                 }
@@ -202,30 +205,78 @@ struct PostInfoSheetView: View {
         }
     }
 
-    /// One tag chip plus its visible `•••` menu button, sharing the context menu
-    /// (RN `tagRowItem` + `yellowDotsBadge`, PostInfoModal.tsx:644-676).
-    private func tagChipWithMenu(for item: PostInfoTagItem) -> some View {
-        HStack(spacing: 2) {
-            TagChipView(
-                text: item.name,
-                category: item.category,
-                isSelected: viewModel.isPinnedTag(item.name),
-                onTap: { selectTag(item.name) }
-            )
+    /// One tag chip with its `•••` menu folded into the same category-coloured
+    /// pill (RN `tagRowItem` + `yellowDotsBadge`, PostInfoModal.tsx:644-676).
+    ///
+    /// The text and the menu are sibling buttons inside a shared pill, so tapping
+    /// the ellipsis never also runs the chip's search action. The pill row reserves
+    /// a 44 pt tall hit target while the drawn pill stays the same compact height
+    /// as every other chip, so small tags do not grow visually.
+    private func tagChipWithMenu(
+        for item: PostInfoTagItem,
+        displayText: String? = nil,
+        displayCategory: TagCategory? = nil
+    ) -> some View {
+        let text = displayText ?? item.name
+        let shown = text.replacingOccurrences(of: "_", with: " ")
+        let category = displayCategory ?? item.category
+        let isPinned = viewModel.isPinnedTag(item.name)
+
+        return HStack(spacing: 0) {
+            Button {
+                selectTag(item.name)
+            } label: {
+                Text(shown)
+                    .font(.system(size: 13, weight: isPinned ? .bold : .semibold))
+                    .foregroundStyle(AppTheme.tagColor(for: category))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.horizontal, 10)
+                    // Same 44 pt target as the menu; the pill drawn behind it stays
+                    // 28 pt tall, so the chip does not look bigger.
+                    .frame(height: 44)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(shown)
+            // Long-press on the tag text keeps opening the same seven-action menu
+            // it did before the ellipsis moved inside the pill.
             .contextMenu { tagMenu(for: item) }
+
+            Rectangle()
+                .fill(AppTheme.tagBorder(for: category))
+                .frame(width: 1, height: 14)
 
             Menu {
                 tagMenu(for: item)
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(AppTheme.textSecondary)
-                    .frame(width: 22, height: 22)
-                    .background(AppTheme.surface, in: Circle())
-                    .contentShape(Circle())
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(AppTheme.tagColor(for: category))
+                    // Full 44 pt target inside the pill; the drawn pill stays compact
+                    // because only this row's height grows, not the chip fill.
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
             }
-            .accessibilityLabel("Tag actions for \(item.name)")
+            .buttonStyle(.plain)
+            .accessibilityLabel("Tag actions for \(shown)")
+            .accessibilityIdentifier("info.tagMenu")
         }
+        .frame(height: 44)
+        .background(alignment: .center) {
+            RoundedRectangle(cornerRadius: 12)
+                .fill(
+                    isPinned
+                        ? AppTheme.tagColor(for: category).opacity(0.26)
+                        : AppTheme.tagBackground(for: category)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(AppTheme.tagBorder(for: category), lineWidth: isPinned ? 1.5 : 1)
+                )
+                .frame(height: 28)
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 12))
     }
 
     /// The seven tag actions of RN `PostInfoModal` (PostInfoModal.tsx:806-880).
@@ -297,29 +348,15 @@ struct PostInfoSheetView: View {
 
     private func nichesSection(_ niches: [String]) -> some View {
         section("Niches") {
-            TagFlowLayout(spacing: 8) {
+            TagFlowLayout(spacing: 8, lineSpacing: 0) {
                 ForEach(niches, id: \.self) { niche in
-                    let item = PostInfoTagItem(name: "niche:\(niche)", category: .general)
-                    HStack(spacing: 2) {
-                        TagChipView(
-                            text: niche.replacingOccurrences(of: "-", with: " "),
-                            category: .meta,
-                            onTap: { selectTag(item.name) }
-                        )
-                        .contextMenu { tagMenu(for: item) }
-
-                        Menu {
-                            tagMenu(for: item)
-                        } label: {
-                            Image(systemName: "ellipsis")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(AppTheme.textSecondary)
-                                .frame(width: 22, height: 22)
-                                .background(AppTheme.surface, in: Circle())
-                                .contentShape(Circle())
-                        }
-                        .accessibilityLabel("Tag actions for \(niche)")
-                    }
+                    // Same chip + inline ellipsis treatment as the Tags section, so
+                    // the two lists cannot drift apart visually.
+                    tagChipWithMenu(
+                        for: PostInfoTagItem(name: "niche:\(niche)", category: .general),
+                        displayText: niche.replacingOccurrences(of: "-", with: " "),
+                        displayCategory: .meta
+                    )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

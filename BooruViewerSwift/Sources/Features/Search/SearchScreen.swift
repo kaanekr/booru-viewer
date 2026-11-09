@@ -29,6 +29,10 @@ struct SearchScreen: View {
     @State private var pinnedTagKeys: Set<String> = []
     @State private var blacklistedTagKeys: Set<String> = []
     @FocusState private var isSearchFieldFocused: Bool
+    /// Measured height of the overlaid header; the lists reserve exactly this much space.
+    @State private var headerHeight: CGFloat = 64
+    /// Continuous collapse of the header, driven by the list scroll offset.
+    @State private var headerState = ScrollAwayHeaderState()
 
     /// RN `POPULAR_TAGS` (SearchScreen.tsx:66-77) plus a wider set of community favourites,
     /// so the popular section fills the viewport instead of leaving the lower half empty.
@@ -42,7 +46,9 @@ struct SearchScreen: View {
 
     /// Grid metrics shared by the masonry split (FeedScreen.tsx:504).
     private static let columnSpacing: CGFloat = 12
-    private static let horizontalPadding: CGFloat = 12
+    private static let horizontalPadding: CGFloat = AppTheme.Spacing.screenHorizontal
+    /// Named space the list offset readers measure against.
+    private static let listSpace = "searchList"
 
     /// - Parameters:
     ///   - activeSourceID: source the search opens on (RN default `gelbooru`).
@@ -96,18 +102,47 @@ struct SearchScreen: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            header
-            if isSearchFieldFocused, !model.suggestions.isEmpty {
-                suggestionList
-            } else if model.isSearchActive {
-                resultsContent
-            } else {
-                exploreContent
+        ZStack(alignment: .top) {
+            AppTheme.background.ignoresSafeArea()
+
+            currentContent
+
+            ScrollAwayHeaderView(
+                slideOffset: isHeaderPinned ? 0 : headerState.slide,
+                isPinned: isHeaderPinned,
+                isHidden: !isHeaderPinned && headerState.isFullyCollapsed
+            ) {
+                header
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(AppTheme.background.ignoresSafeArea())
+        .onPreferenceChange(ScrollAwayHeaderHeightKey.self) { height in
+            if height > 0, abs(height - headerHeight) > 0.5 {
+                headerHeight = height
+            }
+        }
+        .onChange(of: headerHeight) { _, _ in
+            resetHeaderSlide()
+        }
+        .onChange(of: isHeaderPinned) { _, _ in
+            // Editing, autocomplete, and the sheets keep the bar in place; when the pin
+            // ends the baseline is dropped too, so the first scroll sample rebases
+            // instead of replaying the distance scrolled while editing.
+            resetHeaderSlide()
+        }
+        .onChange(of: model.isSearchActive) { _, _ in
+            resetHeaderSlide()
+        }
+        .onChange(of: model.sourceID) { _, _ in
+            // A source switch rebuilds the results and chips; start from a shown header.
+            resetHeaderSlide()
+        }
+        .onChange(of: model.filter) { _, _ in
+            // Applying filters re-runs the search, so the header comes back with the new
+            // active-tag chips instead of staying mid-slide.
+            resetHeaderSlide()
+        }
         .task {
             await model.start()
             await reloadTagLists()
@@ -138,6 +173,53 @@ struct SearchScreen: View {
         }
     }
 
+    /// The header stays put while the field is being edited (keyboard, live autocomplete)
+    /// or a sheet is open, and only follows the list scroll otherwise.
+    private var isHeaderPinned: Bool {
+        isSearchFieldFocused || isFilterSheetPresented || isSourceSheetPresented
+    }
+
+    @ViewBuilder
+    private var currentContent: some View {
+        if isSearchFieldFocused, !model.suggestions.isEmpty {
+            suggestionList
+        } else if model.isSearchActive {
+            resultsContent
+        } else {
+            exploreContent
+        }
+    }
+
+    /// Applies the shared offset tracking to one list: the named space plus the
+    /// continuous header update.
+    private func tracksHeaderScroll<V: View>(_ list: V) -> some View {
+        list
+            .coordinateSpace(name: Self.listSpace)
+            .onPreferenceChange(ScrollAwayOffsetKey.self) { offset in
+                updateHeader(for: offset)
+            }
+    }
+
+    /// Continuous header collapse: follows the content offset on every sample, so a
+    /// short first scroll already starts the slide and any upward move reveals it.
+    private func updateHeader(for offset: CGFloat) {
+        // Pinned (refresh, sheet, editing): the `.onChange(of: isHeaderPinned)` reset
+        // already revealed the bar and dropped the baseline, so ignore scroll samples.
+        guard !isHeaderPinned else { return }
+        headerState.update(offset: offset, height: headerHeight)
+    }
+
+    private func resetHeaderSlide() {
+        headerState.syncHeight(headerHeight)
+        headerState.reset()
+    }
+
+    /// Space reserved at the top of every list for the overlaid header, so the first
+    /// row starts below the controls and the inset never changes while it hides.
+    private var headerSpacer: some View {
+        Color.clear.frame(height: headerHeight)
+    }
+
     private var filterBinding: Binding<SearchFilterConfig> {
         Binding(
             get: { model.filter },
@@ -148,8 +230,8 @@ struct SearchScreen: View {
     // MARK: Header
 
     private var header: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 10) {
+        VStack(spacing: AppTheme.Spacing.item) {
+            HStack(spacing: AppTheme.Spacing.item) {
                 sourcePill
                 searchField
                 filterButton
@@ -158,9 +240,9 @@ struct SearchScreen: View {
                 activeTagChips
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
+        .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
+        .padding(.top, AppTheme.Spacing.rowVertical)
+        .padding(.bottom, AppTheme.Spacing.item)
         .background(AppTheme.background)
     }
 
@@ -175,29 +257,32 @@ struct SearchScreen: View {
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "square.stack.3d.up.fill")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: AppTheme.Icon.small, weight: .semibold))
                     .foregroundStyle(AppTheme.primaryLight)
                 Text(sourceEntry.shortName)
-                    .font(.system(size: 11, weight: .bold))
+                    .font(AppTheme.Typography.caption)
                     .foregroundStyle(AppTheme.textPrimary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
+            .padding(.horizontal, AppTheme.Spacing.chipHorizontal)
+            .padding(.vertical, AppTheme.Spacing.chipVertical)
             .background(AppTheme.surface, in: Capsule())
             .overlay {
                 Capsule().stroke(AppTheme.border, lineWidth: 1)
             }
-            .contentShape(Capsule())
+            // Compact visual, full-size tap target.
+            .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Current source: \(sourceEntry.name). Change source")
     }
 
     private var searchField: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: AppTheme.Icon.small, weight: .semibold))
                 .foregroundStyle(AppTheme.textMuted)
 
             TextField("Search tags or creators...", text: queryBinding)
@@ -205,7 +290,7 @@ struct SearchScreen: View {
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .submitLabel(.search)
-                .font(.system(size: 14))
+                .font(AppTheme.Typography.body)
                 .foregroundStyle(AppTheme.textPrimary)
                 .onSubmit {
                     isSearchFieldFocused = false
@@ -217,14 +302,19 @@ struct SearchScreen: View {
                     model.setQuery("")
                 } label: {
                     Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: AppTheme.Icon.small))
                         .foregroundStyle(AppTheme.textMuted)
+                        // 44pt target inside the field, without inflating the bar.
+                        .frame(width: AppTheme.Spacing.minimumHitTarget, height: AppTheme.Spacing.minimumHitTarget)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear search text")
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 10)
+        // The field surface itself is the 44pt target, so the bar stays compact.
+        .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
         .background(AppTheme.card, in: RoundedRectangle(cornerRadius: 12))
         .overlay {
             RoundedRectangle(cornerRadius: 12)
@@ -245,14 +335,15 @@ struct SearchScreen: View {
             isFilterSheetPresented = true
         } label: {
             Image(systemName: "slider.horizontal.3")
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: AppTheme.Icon.standard, weight: .semibold))
                 .foregroundStyle(model.hasCustomFilters ? AppTheme.primaryLight : AppTheme.textSecondary)
-                .frame(width: 38, height: 38)
+                .frame(width: AppTheme.Spacing.minimumHitTarget, height: AppTheme.Spacing.minimumHitTarget)
                 .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 12))
                 .overlay {
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(model.hasCustomFilters ? AppTheme.primary : AppTheme.border, lineWidth: 1)
                 }
+                .contentShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Search filters")
@@ -262,8 +353,18 @@ struct SearchScreen: View {
         ScrollView(.horizontal) {
             HStack(spacing: 6) {
                 ForEach(model.filter.tags, id: \.self) { tag in
-                    TagChipView(text: tag, isSelected: true, onTap: { onOpenTag?(tag) })
-                        .contextMenu { tagContextMenu(for: tag) }
+                    // Wrapping button: compact chip, full 44pt target, no nested buttons.
+                    Button {
+                        onOpenTag?(tag)
+                    } label: {
+                        TagChipView(text: tag, isSelected: true)
+                            .accessibilityHidden(true)
+                            .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(tag.replacingOccurrences(of: "_", with: " "))
+                    .contextMenu { tagContextMenu(for: tag) }
                 }
             }
         }
@@ -273,37 +374,43 @@ struct SearchScreen: View {
     // MARK: Autocomplete
 
     private var suggestionList: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                ForEach(model.suggestions, id: \.name) { suggestion in
-                    Button {
-                        isSearchFieldFocused = false
-                        model.applySuggestion(suggestion, immediateSearch: true)
-                    } label: {
-                        HStack(spacing: 10) {
-                            Circle()
-                                .fill(AppTheme.tagColor(for: suggestion.category))
-                                .frame(width: 8, height: 8)
-                            Text(suggestion.name)
-                                .font(.system(size: 14, weight: .semibold))
-                                .lineLimit(1)
-                                .foregroundStyle(AppTheme.textPrimary)
-                            Spacer(minLength: 8)
-                            Text(TagChipView.abbreviated(suggestion.postCount))
-                                .font(.system(size: 11))
-                                .foregroundStyle(AppTheme.textMuted)
+        tracksHeaderScroll(
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    headerSpacer
+                    ForEach(model.suggestions, id: \.name) { suggestion in
+                        Button {
+                            isSearchFieldFocused = false
+                            model.applySuggestion(suggestion, immediateSearch: true)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Circle()
+                                    .fill(AppTheme.tagColor(for: suggestion.category))
+                                    .frame(width: 8, height: 8)
+                                Text(suggestion.name)
+                                    .font(AppTheme.Typography.body)
+                                    .lineLimit(1)
+                                    .foregroundStyle(AppTheme.textPrimary)
+                                Spacer(minLength: 8)
+                                Text(TagChipView.abbreviated(suggestion.postCount))
+                                    .font(AppTheme.Typography.caption)
+                                    .foregroundStyle(AppTheme.textMuted)
+                            }
+                            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
+                            .padding(.vertical, AppTheme.Spacing.rowVertical)
+                            // Rows stay comfortably tappable while the text gets smaller.
+                            .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
+                            .contentShape(Rectangle())
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 11)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                        .buttonStyle(.plain)
 
-                    Divider().overlay(AppTheme.divider)
+                        Divider().overlay(AppTheme.divider)
+                    }
                 }
+                .scrollAwayOffsetReader(space: Self.listSpace)
             }
-        }
-        .scrollDismissesKeyboard(.immediately)
+            .scrollDismissesKeyboard(.immediately)
+        )
     }
 
     // MARK: Results
@@ -311,30 +418,34 @@ struct SearchScreen: View {
     private var resultsContent: some View {
         GeometryReader { geometry in
             let columnWidth = Self.columnWidth(for: geometry.size.width)
-            ScrollView {
-                LazyVStack(spacing: 16) {
-                    if model.isLoading {
-                        loadingState
-                    } else if let message = model.errorMessage {
-                        errorState(message)
-                    } else {
-                        if !model.results.isEmpty {
-                            grid(columnWidth: columnWidth)
-                        }
-                        if model.isLoadingMore {
-                            ProgressView()
-                                .tint(AppTheme.primary)
-                                .padding(.vertical, 14)
-                        } else if model.blacklistedCount > 0, !model.filter.includeBlacklisted {
-                            hiddenPostsButton
+            tracksHeaderScroll(
+                ScrollView {
+                    LazyVStack(spacing: AppTheme.Spacing.section) {
+                        headerSpacer
+                        if model.isLoading {
+                            loadingState
+                        } else if let message = model.errorMessage {
+                            errorState(message)
+                        } else {
+                            if !model.results.isEmpty {
+                                grid(columnWidth: columnWidth)
+                            }
+                            if model.isLoadingMore {
+                                ProgressView()
+                                    .tint(AppTheme.primary)
+                                    .padding(.vertical, 12)
+                            } else if model.blacklistedCount > 0, !model.filter.includeBlacklisted {
+                                hiddenPostsButton
+                            }
                         }
                     }
+                    .padding(.horizontal, Self.horizontalPadding)
+                    .padding(.bottom, 12)
+                    .scrollAwayOffsetReader(space: Self.listSpace)
                 }
-                .padding(.horizontal, Self.horizontalPadding)
-                .padding(.vertical, 12)
-            }
-            .scrollIndicators(.hidden)
-            .scrollDismissesKeyboard(.interactively)
+                .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.interactively)
+            )
         }
     }
 
@@ -377,7 +488,7 @@ struct SearchScreen: View {
 
     /// Equal column width that fits the measured grid exactly.
     private static func columnWidth(for totalWidth: CGFloat) -> CGFloat {
-        let usable = totalWidth - horizontalPadding * 2 - columnSpacing
+        let usable = totalWidth - AppTheme.Spacing.screenHorizontal * 2 - Self.columnSpacing
         guard usable > 0 else { return 0 }
         return (usable / CGFloat(MasonryColumns.defaultColumnCount)).rounded(.down)
     }
@@ -450,27 +561,32 @@ struct SearchScreen: View {
     // MARK: Explore
 
     private var exploreContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                if !model.history.isEmpty {
-                    recentSearches
+        tracksHeaderScroll(
+            ScrollView {
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
+                    headerSpacer
+                    if !model.history.isEmpty {
+                        recentSearches
+                    }
+                    popularTagsSection
                 }
-                popularTagsSection
+                .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
+                .padding(.bottom, AppTheme.Spacing.section)
+                .scrollAwayOffsetReader(space: Self.listSpace)
             }
-            .padding(16)
-        }
-        .scrollIndicators(.hidden)
-        .scrollDismissesKeyboard(.interactively)
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
+        )
     }
 
     private var recentSearches: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
                 Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 11))
+                    .font(.system(size: AppTheme.Icon.small))
                     .foregroundStyle(AppTheme.textSecondary)
                 Text("Recent Searches")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(AppTheme.Typography.caption)
                     .kerning(0.5)
                     .textCase(.uppercase)
                     .foregroundStyle(AppTheme.textSecondary)
@@ -478,37 +594,52 @@ struct SearchScreen: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {
                     ForEach(model.history, id: \.self) { entry in
-                        TagChipView(text: entry, onTap: {
+                        // Compact chip inside a full-height button target.
+                        Button {
                             isSearchFieldFocused = false
                             model.search(text: entry)
-                        })
+                        } label: {
+                            TagChipView(text: entry)
+                                .accessibilityHidden(true)
+                                .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(entry.replacingOccurrences(of: "_", with: " "))
                         .contextMenu { tagContextMenu(for: entry) }
                     }
                 }
-                .padding(.vertical, 2)
             }
             .scrollIndicators(.hidden)
         }
     }
 
     private var popularTagsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
                 Image(systemName: "flame.fill")
-                    .font(.system(size: 11))
+                    .font(.system(size: AppTheme.Icon.small))
                     .foregroundStyle(AppTheme.goldAccent)
                 Text("Popular Tags")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(AppTheme.Typography.caption)
                     .kerning(0.5)
                     .textCase(.uppercase)
                     .foregroundStyle(AppTheme.textSecondary)
             }
-            PopularTagFlowLayout(spacing: 8, lineSpacing: 8) {
+            PopularTagFlowLayout(spacing: AppTheme.Spacing.item, lineSpacing: AppTheme.Spacing.item) {
                 ForEach(Self.popularTags, id: \.self) { tag in
-                    TagChipView(text: tag, onTap: {
+                    // Compact chip inside a full-height button target.
+                    Button {
                         isSearchFieldFocused = false
                         model.search(text: tag)
-                    })
+                    } label: {
+                        TagChipView(text: tag)
+                            .accessibilityHidden(true)
+                            .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(tag.replacingOccurrences(of: "_", with: " "))
                     .contextMenu { tagContextMenu(for: tag) }
                 }
             }

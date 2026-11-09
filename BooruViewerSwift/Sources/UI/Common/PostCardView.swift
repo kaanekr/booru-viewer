@@ -192,6 +192,21 @@ struct PostCardView: View {
         return frames[frameIndex % frames.count]
     }
 
+    /// Stable identity of the preview-frame layer: one card's frames reuse the same
+    /// view so the previous frame stays on screen while the next one loads. A
+    /// different post (or a different cover) gets a fresh layer, so no decoded frame
+    /// from the previous card can survive the swap.
+    private var frameLayerIdentity: String {
+        Self.frameLayerKey(postID: post.id, coverURL: coverURL)
+    }
+
+    /// Key for the frame overlay layer. Post id and cover both matter: the cover is
+    /// part of the key so a post whose primary cover changes re-seeds the layer
+    /// instead of keeping a frame decoded for the old cover.
+    static func frameLayerKey(postID: String, coverURL: URL?) -> String {
+        "\(postID)|\(coverURL?.absoluteString ?? "")"
+    }
+
     var body: some View {
         // A `Button` (not a gesture recognizer) owns every touch on the card: inside
         // the grid's `ScrollView` it yields the pan as soon as the drag starts, and it
@@ -233,6 +248,13 @@ struct PostCardView: View {
             isPressed = false
             endHoldPreview()
             didLongPress = false
+        }
+        // A recycled card that now shows another post (or whose cover changed) starts
+        // its slideshow over instead of inheriting the previous card's frame index.
+        // The measured ratio is not reset: the next cover load re-reports it, so the
+        // masonry column never reflows on the swap.
+        .onChange(of: frameLayerIdentity) { _, _ in
+            frameIndex = 0
         }
         .task(id: frameLoopKey) {
             guard frameLoopKey > 0 else {
@@ -296,8 +318,20 @@ struct PostCardView: View {
                     .clipped()
                     .allowsHitTesting(false)
             } else if let currentFrame {
-                AsyncMediaImage(url: currentFrame, contentMode: .fill)
-                    .id(currentFrame)
+                AsyncMediaImage(
+                    url: currentFrame,
+                    contentMode: .fill,
+                    // Transparent while loading and a kept previous frame: a pending
+                    // or failed timeline frame must never paint over the still-valid
+                    // base cover underneath (and never blank it).
+                    placeholder: AsyncMediaImage.overlayConfiguration.placeholder,
+                    keepsPreviousImageWhileLoading:
+                        AsyncMediaImage.overlayConfiguration.keepsPreviousImageWhileLoading
+                )
+                // Keyed by post+cover, not by frame URL: advancing the slideshow
+                // updates this same layer instead of tearing down a new one, so the
+                // last decoded frame holds while the next decodes.
+                .id(frameLayerIdentity)
             }
 
             LinearGradient(

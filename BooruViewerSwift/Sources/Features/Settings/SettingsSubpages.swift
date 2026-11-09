@@ -34,7 +34,7 @@ struct SettingsPageIntro: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 14))
+            .font(AppTheme.Typography.body)
             .foregroundStyle(AppTheme.color(0xA1A6BB))
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -54,19 +54,19 @@ struct SettingsSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.item) {
             Text(title.uppercased())
-                .font(.system(size: 10, weight: .bold))
-                .kerning(1.6)
+                .font(AppTheme.Typography.caption)
+                .kerning(1.4)
                 .foregroundStyle(AppTheme.textSecondary)
                 .padding(.leading, 4)
 
             VStack(spacing: 0) {
                 content
             }
-            .background(AppTheme.card, in: RoundedRectangle(cornerRadius: 18))
+            .background(AppTheme.card, in: RoundedRectangle(cornerRadius: 14))
             .overlay(
-                RoundedRectangle(cornerRadius: 18)
+                RoundedRectangle(cornerRadius: 14)
                     .stroke(AppTheme.border, lineWidth: 1)
             )
 
@@ -85,9 +85,9 @@ struct SettingsHint: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 12))
+            .font(AppTheme.Typography.secondary)
             .foregroundStyle(AppTheme.textSecondary)
-            .lineSpacing(3)
+            .lineSpacing(2)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -103,11 +103,11 @@ struct SettingsNoteBox<Content: View>: View {
 
     var body: some View {
         content
-            .padding(15)
+            .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(AppTheme.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 14))
+            .background(AppTheme.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
             .overlay(
-                RoundedRectangle(cornerRadius: 14)
+                RoundedRectangle(cornerRadius: 12)
                     .stroke(AppTheme.primary.opacity(0.15), lineWidth: 1)
             )
     }
@@ -119,7 +119,7 @@ struct SettingsStatusText: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 12))
+            .font(AppTheme.Typography.secondary)
             .foregroundStyle(AppTheme.color(0x82CDB1))
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -154,37 +154,38 @@ struct SettingsRow: View {
                 Rectangle()
                     .fill(AppTheme.divider)
                     .frame(height: 1)
-                    .padding(.leading, 16)
+                    .padding(.leading, 14)
             }
         }
     }
 
     private var rowContent: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: AppTheme.Spacing.item) {
             if let systemImage {
                 Image(systemName: systemImage)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: AppTheme.Icon.small, weight: .semibold))
                     .foregroundStyle(isDanger ? AppTheme.danger : AppTheme.primaryLight)
-                    .frame(width: 34, height: 34)
+                    .frame(width: 28, height: 28)
                     .background(
                         isDanger ? AppTheme.danger.opacity(0.06) : AppTheme.primary.opacity(0.07),
-                        in: RoundedRectangle(cornerRadius: 11)
+                        in: RoundedRectangle(cornerRadius: 9)
                     )
             }
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(AppTheme.Typography.body)
+                    .fontWeight(.medium)
                     .foregroundStyle(isDanger ? AppTheme.color(0xF28B94) : AppTheme.color(0xECEEF5))
                 if let subtitle {
                     Text(subtitle)
-                        .font(.system(size: 11))
+                        .font(AppTheme.Typography.secondary)
                         .foregroundStyle(AppTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: AppTheme.Spacing.item)
 
             if isBusy {
                 ProgressView()
@@ -193,20 +194,20 @@ struct SettingsRow: View {
             } else {
                 if let value {
                     Text(value)
-                        .font(.system(size: 12))
+                        .font(AppTheme.Typography.secondary)
                         .foregroundStyle(AppTheme.textSecondary)
                         .lineLimit(1)
                 }
                 if action != nil || showsDisclosure {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 12, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundStyle(AppTheme.textMuted)
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .frame(minHeight: 64)
+        .padding(.horizontal, 14)
+        .padding(.vertical, AppTheme.Spacing.rowVertical)
+        .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
         .contentShape(Rectangle())
     }
 }
@@ -222,28 +223,29 @@ struct SettingsToggleRow: View {
     let onChange: (Bool) -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: AppTheme.Spacing.item) {
             if let systemImage {
                 Image(systemName: systemImage)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: AppTheme.Icon.small, weight: .semibold))
                     .foregroundStyle(AppTheme.primaryLight)
-                    .frame(width: 34, height: 34)
-                    .background(AppTheme.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 11))
+                    .frame(width: 28, height: 28)
+                    .background(AppTheme.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 9))
             }
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(AppTheme.Typography.body)
+                    .fontWeight(.medium)
                     .foregroundStyle(AppTheme.color(0xECEEF5))
                 if let subtitle {
                     Text(subtitle)
-                        .font(.system(size: 11))
+                        .font(AppTheme.Typography.secondary)
                         .foregroundStyle(AppTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: AppTheme.Spacing.item)
 
             if isBusy {
                 ProgressView()
@@ -256,15 +258,15 @@ struct SettingsToggleRow: View {
                     .accessibilityLabel(title)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .frame(minHeight: 64)
+        .padding(.horizontal, 14)
+        .padding(.vertical, AppTheme.Spacing.rowVertical)
+        .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
         .overlay(alignment: .bottom) {
             if !isLast {
                 Rectangle()
                     .fill(AppTheme.divider)
                     .frame(height: 1)
-                    .padding(.leading, 16)
+                    .padding(.leading, 14)
             }
         }
     }
@@ -288,12 +290,13 @@ struct SettingsActionButton: View {
                         .tint(AppTheme.textPrimary)
                 } else {
                     Text(title)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(AppTheme.Typography.body)
+                        .fontWeight(.semibold)
                 }
             }
             .foregroundStyle(isDanger ? AppTheme.color(0xF28B94) : AppTheme.textPrimary)
-            .frame(maxWidth: .infinity, minHeight: 46)
-            .background(background, in: RoundedRectangle(cornerRadius: 12))
+            .frame(maxWidth: .infinity, minHeight: AppTheme.Spacing.minimumHitTarget)
+            .background(background, in: RoundedRectangle(cornerRadius: 10))
         }
         .buttonStyle(.plain)
         .disabled(isDisabled || isBusy)
@@ -318,9 +321,10 @@ struct SettingsField: View {
     var isURL = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(label)
-                .font(.system(size: 12, weight: .semibold))
+                .font(AppTheme.Typography.secondary)
+                .fontWeight(.semibold)
                 .foregroundStyle(AppTheme.color(0xC0C3D0))
 
             Group {
@@ -330,17 +334,17 @@ struct SettingsField: View {
                     TextField(placeholder, text: $text)
                 }
             }
-            .font(.system(size: 15))
+            .font(AppTheme.Typography.body)
             .foregroundStyle(AppTheme.textPrimary)
             .tint(AppTheme.primaryLight)
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .keyboardType(isNumeric ? .numberPad : (isURL ? .URL : .default))
-            .padding(.horizontal, 14)
-            .frame(minHeight: 48)
-            .background(AppTheme.color(0x10121B), in: RoundedRectangle(cornerRadius: 12))
+            .padding(.horizontal, 12)
+            .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
+            .background(AppTheme.color(0x10121B), in: RoundedRectangle(cornerRadius: 10))
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: 10)
                     .stroke(AppTheme.color(0x2A2E40), lineWidth: 1)
             )
         }
@@ -374,7 +378,7 @@ struct SourcesSettingsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
                 SettingsPageIntro(text: "Switch with a tap. Use the settings icon for account & API options.")
 
                 SettingsSection(title: "All sources") {
@@ -385,8 +389,8 @@ struct SourcesSettingsView: View {
 
                 SettingsHint(text: "Keys are saved on this device only. Each source needs its own key.")
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
+            .padding(.vertical, AppTheme.Spacing.section)
         }
         .background(AppTheme.background.ignoresSafeArea())
         .navigationTitle("Sources & API Keys")
@@ -401,25 +405,26 @@ struct SourcesSettingsView: View {
     private func sourceRow(_ entry: SourceSheetView.Entry, isLast: Bool) -> some View {
         let isActive = entry.id == model.activeSourceID
 
-        return HStack(spacing: 10) {
+        return HStack(spacing: AppTheme.Spacing.item) {
             Button {
                 Task { await model.selectSource(entry.id) }
             } label: {
-                HStack(spacing: 12) {
-                    SourceMarkBadge(entry: entry)
+                HStack(spacing: AppTheme.Spacing.item) {
+                    SourceMarkBadge(entry: entry, size: 34)
 
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 6) {
                             Text(entry.name)
-                                .font(.system(size: 14, weight: .semibold))
+                                .font(AppTheme.Typography.body)
+                                .fontWeight(.semibold)
                                 .foregroundStyle(AppTheme.textPrimary)
                             if isActive {
                                 Text("ACTIVE")
-                                    .font(.system(size: 8, weight: .heavy))
+                                    .font(.system(.caption2, weight: .heavy))
                                     .kerning(0.7)
                                     .foregroundStyle(AppTheme.primaryLight)
                                     .padding(.horizontal, 4)
-                                    .padding(.vertical, 2)
+                                    .padding(.vertical, 1)
                                     .background(
                                         AppTheme.primary.opacity(0.12),
                                         in: RoundedRectangle(cornerRadius: 4)
@@ -427,13 +432,15 @@ struct SourcesSettingsView: View {
                             }
                         }
                         Text("\(entry.kind) • \(entry.host)")
-                            .font(.system(size: 10))
+                            .font(AppTheme.Typography.caption)
                             .foregroundStyle(AppTheme.textSecondary)
                             .lineLimit(1)
                     }
 
                     Spacer(minLength: 0)
                 }
+                // The source row paints at 34 pt; the 44 pt frame is the row's own tap lane.
+                .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -443,22 +450,28 @@ struct SourcesSettingsView: View {
                 SourceDetailSettingsView(source: entry.id, model: model)
             } label: {
                 Image(systemName: "gearshape")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: AppTheme.Icon.small, weight: .semibold))
                     .foregroundStyle(AppTheme.textSecondary)
-                    .frame(width: 34, height: 34)
-                    .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 10))
+                    .frame(width: 28, height: 28)
+                    .background(AppTheme.surface, in: RoundedRectangle(cornerRadius: 9))
+                    // Real layout, not a painted overlay: the gear owns a 44 pt target while the
+                    // 28 pt badge above stays visually compact.
+                    .frame(
+                        minWidth: AppTheme.Spacing.minimumHitTarget,
+                        minHeight: AppTheme.Spacing.minimumHitTarget
+                    )
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("\(entry.name) settings")
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
         .overlay(alignment: .bottom) {
             if !isLast {
                 Rectangle()
                     .fill(AppTheme.divider)
                     .frame(height: 1)
-                    .padding(.leading, 66)
+                    .padding(.leading, 56)
             }
         }
     }
@@ -482,7 +495,7 @@ struct SourceDetailSettingsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
                 hero
 
                 if KeychainStore.authAccount(for: source) != nil {
@@ -515,8 +528,8 @@ struct SourceDetailSettingsView: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
+            .padding(.vertical, AppTheme.Spacing.section)
         }
         .background(AppTheme.background.ignoresSafeArea())
         .navigationTitle(entry.name)
@@ -527,41 +540,43 @@ struct SourceDetailSettingsView: View {
     private var hero: some View {
         let isActive = model.activeSourceID == source
 
-        return VStack(alignment: .center, spacing: 10) {
-            SourceMarkBadge(entry: entry, size: 64)
+        return VStack(alignment: .center, spacing: AppTheme.Spacing.item) {
+            SourceMarkBadge(entry: entry, size: 56)
             Text(entry.name)
-                .font(.system(size: 24, weight: .semibold))
+                .font(AppTheme.Typography.screenTitle)
                 .foregroundStyle(AppTheme.textPrimary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
             Text("\(entry.kind) source")
-                .font(.system(size: 12))
+                .font(AppTheme.Typography.secondary)
                 .foregroundStyle(AppTheme.textSecondary)
             Text(Self.description(for: source))
-                .font(.system(size: 12))
+                .font(AppTheme.Typography.secondary)
                 .foregroundStyle(AppTheme.color(0x9CA1B8))
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 12)
 
             if isActive {
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .bold))
+                        .font(.system(size: 11, weight: .bold))
                     Text("Your current source")
-                        .font(.system(size: 12))
+                        .font(AppTheme.Typography.secondary)
                 }
                 .foregroundStyle(AppTheme.color(0xA6ACFF))
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
             } else {
                 SettingsActionButton(
                     title: "Use \(entry.name)",
                     isBusy: model.busy == .source,
                     action: { Task { await model.selectSource(source) } }
                 )
-                .padding(.top, 4)
+                .padding(.top, 2)
             }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
+        .padding(.vertical, 6)
     }
 
     private var authSection: some View {
@@ -571,13 +586,14 @@ struct SourceDetailSettingsView: View {
             title: "Account & API",
             hint: "Keys are saved on this device. Each source needs its own key. Refresh your feed after saving."
         ) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 9) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
+                HStack(spacing: AppTheme.Spacing.item) {
                     Image(systemName: "key")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: AppTheme.Icon.standard, weight: .semibold))
                         .foregroundStyle(AppTheme.color(0xA0A7F5))
                     Text(isRule34 ? "API key required" : "Connect your account")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(AppTheme.Typography.body)
+                        .fontWeight(.semibold)
                         .foregroundStyle(AppTheme.color(0xE5E7F0))
                 }
 
@@ -589,19 +605,22 @@ struct SourceDetailSettingsView: View {
 
                 if let accountURL = URL(string: accountURLString) {
                     Link(destination: accountURL) {
-                        HStack(spacing: 5) {
+                        HStack(spacing: 4) {
                             Text("Get your API key")
-                                .font(.system(size: 12, weight: .medium))
+                                .font(AppTheme.Typography.secondary)
+                                .fontWeight(.medium)
                             Image(systemName: "arrow.up.right")
-                                .font(.system(size: 11, weight: .semibold))
+                                .font(.system(size: 10, weight: .semibold))
                         }
                         .foregroundStyle(AppTheme.color(0xA6ACFF))
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
                     }
                 }
 
                 ApiAuthForm(model: model, source: source)
             }
-            .padding(18)
+            .padding(14)
         }
     }
 
@@ -649,7 +668,7 @@ private struct ApiAuthForm: View {
         let isRule34 = source == .rule34
         let saved = model.savedAuth(for: source)
 
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
             SettingsField(
                 label: "User ID",
                 placeholder: isRule34 ? "Rule34 user_id" : "Gelbooru user_id",
@@ -664,7 +683,7 @@ private struct ApiAuthForm: View {
                 isSecure: true
             )
 
-            HStack(spacing: 10) {
+            HStack(spacing: AppTheme.Spacing.item) {
                 SettingsActionButton(
                     title: "Save",
                     isBusy: model.busy == .auth,
@@ -703,7 +722,7 @@ struct AppearanceSettingsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
                 SettingsPageIntro(text: "Image quality and motion preferences.")
 
                 SettingsSection(
@@ -739,8 +758,8 @@ struct AppearanceSettingsView: View {
                     )
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
+            .padding(.vertical, AppTheme.Spacing.section)
         }
         .background(AppTheme.background.ignoresSafeArea())
         .navigationTitle("Viewing")
@@ -758,19 +777,20 @@ private struct QualityChoiceRow: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 7) {
+            HStack(spacing: AppTheme.Spacing.item) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
                         Text(option.name)
-                            .font(.system(size: 14, weight: .semibold))
+                            .font(AppTheme.Typography.body)
+                            .fontWeight(.semibold)
                             .foregroundStyle(AppTheme.color(0xE5E7F0))
                         if option.id == .auto {
                             Text("RECOMMENDED")
-                                .font(.system(size: 8, weight: .bold))
+                                .font(.system(.caption2, weight: .bold))
                                 .kerning(0.5)
                                 .foregroundStyle(AppTheme.color(0xA5ABEA))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 3)
+                                .padding(.horizontal, 4)
+                                .padding(.vertical, 1)
                                 .background(
                                     AppTheme.primary.opacity(0.07),
                                     in: RoundedRectangle(cornerRadius: 4)
@@ -778,12 +798,12 @@ private struct QualityChoiceRow: View {
                         }
                     }
                     Text(option.description)
-                        .font(.system(size: 11))
+                        .font(AppTheme.Typography.secondary)
                         .foregroundStyle(AppTheme.color(0x959BB2))
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                Spacer(minLength: 8)
+                Spacer(minLength: AppTheme.Spacing.item)
 
                 ZStack {
                     Circle()
@@ -791,20 +811,20 @@ private struct QualityChoiceRow: View {
                             isSelected ? AppTheme.primary : AppTheme.color(0x363C52),
                             lineWidth: 1.5
                         )
-                        .frame(width: 21, height: 21)
+                        .frame(width: 19, height: 19)
                     if isSelected {
                         Circle()
                             .fill(AppTheme.primary)
-                            .frame(width: 21, height: 21)
+                            .frame(width: 19, height: 19)
                         Image(systemName: "checkmark")
-                            .font(.system(size: 10, weight: .bold))
+                            .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(Color.white)
                     }
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 16)
-            .frame(minHeight: 72)
+            .padding(.horizontal, 14)
+            .padding(.vertical, AppTheme.Spacing.rowVertical)
+            .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -814,7 +834,7 @@ private struct QualityChoiceRow: View {
                 Rectangle()
                     .fill(AppTheme.divider)
                     .frame(height: 1)
-                    .padding(.leading, 18)
+                    .padding(.leading, 14)
             }
         }
     }
@@ -836,31 +856,31 @@ struct BlacklistSettingsView: View {
         @Bindable var model = model
 
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
                 SettingsPageIntro(text: "Posts with these tags are hidden from feeds and search.")
 
                 SettingsSection(
                     title: "Blocked tags — \(model.blacklistedTags.count)",
                     hint: "Tags are normalized to lowercase with underscores between words."
                 ) {
-                    VStack(alignment: .leading, spacing: 14) {
-                        HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
+                        HStack(spacing: AppTheme.Spacing.item) {
                             TextField("Add a tag to block...", text: $model.newBlacklistTag)
-                                .font(.system(size: 14))
+                                .font(AppTheme.Typography.body)
                                 .foregroundStyle(AppTheme.textPrimary)
                                 .tint(AppTheme.primaryLight)
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .submitLabel(.done)
                                 .onSubmit { submitTag() }
-                                .padding(.horizontal, 14)
-                                .frame(minHeight: 46)
+                                .padding(.horizontal, 12)
+                                .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
                                 .background(
                                     AppTheme.color(0x10121B),
-                                    in: RoundedRectangle(cornerRadius: 12)
+                                    in: RoundedRectangle(cornerRadius: 10)
                                 )
                                 .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
+                                    RoundedRectangle(cornerRadius: 10)
                                         .stroke(AppTheme.color(0x2A2E40), lineWidth: 1)
                                 )
 
@@ -870,31 +890,32 @@ struct BlacklistSettingsView: View {
                                 isDisabled: model.newBlacklistTag.trimmingCharacters(in: .whitespaces).isEmpty,
                                 action: { submitTag() }
                             )
-                            .frame(width: 96)
+                            .frame(width: 88)
                         }
 
                         if model.blacklistedTags.isEmpty {
-                            HStack(spacing: 10) {
+                            HStack(spacing: AppTheme.Spacing.item) {
                                 Image(systemName: "eye.slash")
-                                    .font(.system(size: 20))
+                                    .font(.system(size: AppTheme.Icon.standard))
                                     .foregroundStyle(AppTheme.textMuted)
-                                VStack(alignment: .leading, spacing: 3) {
+                                VStack(alignment: .leading, spacing: 2) {
                                     Text("Nothing blocked")
-                                        .font(.system(size: 14, weight: .medium))
+                                        .font(AppTheme.Typography.body)
+                                        .fontWeight(.medium)
                                         .foregroundStyle(AppTheme.color(0xD9DCE9))
                                     Text("Your blocked tags will appear here.")
-                                        .font(.system(size: 12))
+                                        .font(AppTheme.Typography.secondary)
                                         .foregroundStyle(AppTheme.textSecondary)
                                 }
                             }
-                            .padding(.vertical, 8)
+                            .padding(.vertical, 6)
                         } else {
                             FlexibleTagFlow(tags: model.blacklistedTags) { tag in
                                 Task { await model.removeBlacklistedTag(tag) }
                             }
                         }
                     }
-                    .padding(16)
+                    .padding(12)
                 }
 
                 if !model.blacklistedTags.isEmpty {
@@ -911,8 +932,8 @@ struct BlacklistSettingsView: View {
                     }
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
+            .padding(.vertical, AppTheme.Spacing.section)
         }
         .background(AppTheme.background.ignoresSafeArea())
         .navigationTitle("Blacklist")
@@ -943,14 +964,14 @@ private struct FlexibleTagFlow: View {
     let tags: [String]
     let onRemove: (String) -> Void
 
-    private let columns = [GridItem(.adaptive(minimum: 110), spacing: 8)]
+    private let columns = [GridItem(.adaptive(minimum: 110), spacing: AppTheme.Spacing.item)]
 
     var body: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: AppTheme.Spacing.item) {
             ForEach(tags, id: \.self) { tag in
                 HStack(spacing: 2) {
                     Text(tag)
-                        .font(.system(size: 12))
+                        .font(AppTheme.Typography.secondary)
                         .foregroundStyle(AppTheme.color(0xD2D6E7))
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -960,14 +981,24 @@ private struct FlexibleTagFlow: View {
                         Image(systemName: "xmark")
                             .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(AppTheme.color(0xC5C8D5))
-                            .frame(width: 30, height: 34)
+                            // The remove control now spends real layout on a 44 x 44 target.
+                            // Only the pill's background is inset vertically, so the painted
+                            // chip stays compact while the tap area is fully allocated.
+                            .frame(
+                                minWidth: AppTheme.Spacing.minimumHitTarget,
+                                minHeight: AppTheme.Spacing.minimumHitTarget
+                            )
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Unblock \(tag)")
                 }
-                .padding(.leading, 10)
-                .background(AppTheme.color(0x252A3C), in: RoundedRectangle(cornerRadius: 9))
+                .padding(.leading, AppTheme.Spacing.chipHorizontal)
+                .background(
+                    RoundedRectangle(cornerRadius: 9)
+                        .fill(AppTheme.color(0x252A3C))
+                        .padding(.vertical, 5)
+                )
             }
         }
     }
@@ -987,7 +1018,7 @@ struct AppLockSettingsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
                 SettingsPageIntro(text: "Control access to the app and what appears in your feed.")
 
                 SettingsSection(
@@ -1054,8 +1085,8 @@ struct AppLockSettingsView: View {
 
                 SettingsHint(text: "The PIN is stored as a salted hash in the Keychain. Only the hash leaves the settings document, and only as a migration placeholder.")
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
+            .padding(.vertical, AppTheme.Spacing.section)
         }
         .background(AppTheme.background.ignoresSafeArea())
         .navigationTitle("Privacy & safety")
@@ -1090,7 +1121,7 @@ struct BackupSettingsView: View {
         @Bindable var model = model
 
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
                 SettingsPageIntro(text: "Back up your library and manage local data.")
 
                 SettingsSection(
@@ -1140,8 +1171,8 @@ struct BackupSettingsView: View {
                     SettingsHint(text: "Imports always merge: existing favorites are kept and favorites, tags and history are deduplicated.")
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
+            .padding(.vertical, AppTheme.Spacing.section)
         }
         .background(AppTheme.background.ignoresSafeArea())
         .navigationTitle("Storage & backup")
@@ -1196,7 +1227,7 @@ struct NetworkSettingsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
                 SettingsPageIntro(text: "Choose how you connect.")
 
                 connectionBanner
@@ -1220,8 +1251,8 @@ struct NetworkSettingsView: View {
 
                 diagnosticsSection
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
+            .padding(.vertical, AppTheme.Spacing.section)
         }
         .background(AppTheme.background.ignoresSafeArea())
         .navigationTitle("Connection")
@@ -1230,28 +1261,30 @@ struct NetworkSettingsView: View {
     }
 
     private var connectionBanner: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: AppTheme.Spacing.item) {
             Image(systemName: "antenna.radiowaves.left.and.right")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: AppTheme.Icon.standard, weight: .semibold))
                 .foregroundStyle(AppTheme.color(0xA0A7F5))
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(model.networkSummary)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(AppTheme.Typography.body)
+                    .fontWeight(.semibold)
                     .foregroundStyle(AppTheme.color(0xE5E7F0))
+                    .fixedSize(horizontal: false, vertical: true)
                 Text("Applies to all sources")
-                    .font(.system(size: 11))
+                    .font(AppTheme.Typography.secondary)
                     .foregroundStyle(AppTheme.color(0x959BB2))
             }
             Spacer(minLength: 0)
         }
-        .padding(18)
-        .background(AppTheme.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 16))
+        .padding(14)
+        .background(AppTheme.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private var workerForm: some View {
         @Bindable var model = model
 
-        return VStack(alignment: .leading, spacing: 14) {
+        return VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
             SettingsField(
                 label: "Worker URL",
                 placeholder: "https://your-worker.workers.dev",
@@ -1259,7 +1292,7 @@ struct NetworkSettingsView: View {
                 isURL: true
             )
 
-            HStack(spacing: 10) {
+            HStack(spacing: AppTheme.Spacing.item) {
                 SettingsActionButton(
                     title: "Save URL",
                     isBusy: model.busy == .worker,
@@ -1284,7 +1317,7 @@ struct NetworkSettingsView: View {
                 }
             }
         }
-        .padding(18)
+        .padding(14)
     }
 
     private var diagnosticsSection: some View {
@@ -1292,7 +1325,7 @@ struct NetworkSettingsView: View {
             title: "Diagnostics",
             hint: "Compares direct and relay access. Tests do not send your API keys."
         ) {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
                 SettingsHint(text: "Check which sources can be reached on your current connection.")
 
                 SettingsActionButton(
@@ -1307,7 +1340,7 @@ struct NetworkSettingsView: View {
                     resultsTable
                 }
             }
-            .padding(18)
+            .padding(14)
         }
     }
 
@@ -1315,34 +1348,34 @@ struct NetworkSettingsView: View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
                 Text("SOURCE")
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.system(.caption2, weight: .bold))
                     .kerning(0.7)
                     .foregroundStyle(AppTheme.color(0x747B96))
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text("DIRECT")
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.system(.caption2, weight: .bold))
                     .kerning(0.7)
                     .foregroundStyle(AppTheme.color(0x747B96))
                     .frame(width: 76, alignment: .trailing)
                 Text("RELAY")
-                    .font(.system(size: 8, weight: .bold))
+                    .font(.system(.caption2, weight: .bold))
                     .kerning(0.7)
                     .foregroundStyle(AppTheme.color(0x747B96))
                     .frame(width: 76, alignment: .trailing)
             }
-            .padding(.vertical, 10)
+            .padding(.vertical, AppTheme.Spacing.rowVertical)
 
             ForEach(model.connectionRows) { row in
                 HStack(spacing: 6) {
                     Text(row.name)
-                        .font(.system(size: 11))
+                        .font(AppTheme.Typography.secondary)
                         .foregroundStyle(AppTheme.color(0xC2C6D9))
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .lineLimit(1)
                     resultCell(row.direct)
                     resultCell(row.relay)
                 }
-                .padding(.vertical, 11)
+                .padding(.vertical, AppTheme.Spacing.rowVertical)
                 .overlay(alignment: .top) {
                     Rectangle()
                         .fill(AppTheme.divider)
@@ -1354,7 +1387,7 @@ struct NetworkSettingsView: View {
 
     private func resultCell(_ result: NetworkDiagnosticResult?) -> some View {
         Text(Self.statusLabel(result))
-            .font(.system(size: 10, design: .monospaced))
+            .font(.system(.caption, design: .monospaced))
             .foregroundStyle(Self.statusColor(result))
             .frame(width: 76, alignment: .trailing)
             .lineLimit(1)
@@ -1391,22 +1424,22 @@ struct AboutSettingsView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
+                VStack(spacing: AppTheme.Spacing.item) {
                     Image(systemName: "square.stack.3d.up")
-                        .font(.system(size: 32, weight: .light))
+                        .font(.system(size: 28, weight: .light))
                         .foregroundStyle(AppTheme.color(0xB1B5FF))
-                        .frame(width: 76, height: 76)
-                        .background(AppTheme.color(0x1B1E39), in: RoundedRectangle(cornerRadius: 24))
+                        .frame(width: 64, height: 64)
+                        .background(AppTheme.color(0x1B1E39), in: RoundedRectangle(cornerRadius: 20))
                     Text("Booru Viewer")
-                        .font(.system(size: 26, weight: .semibold))
+                        .font(AppTheme.Typography.screenTitle)
                         .foregroundStyle(AppTheme.textPrimary)
                     Text("Your library. Your way.")
-                        .font(.system(size: 12))
+                        .font(AppTheme.Typography.secondary)
                         .foregroundStyle(AppTheme.color(0x969BB3))
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
 
                 SettingsSection(title: "Application") {
                     SettingsRow(title: "Version", value: "1.0.0")
@@ -1416,8 +1449,8 @@ struct AboutSettingsView: View {
 
                 SettingsHint(text: "An independent multi-source viewer. Not affiliated with any content source. Adults only (18+).")
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 16)
+            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
+            .padding(.vertical, AppTheme.Spacing.section)
         }
         .background(AppTheme.background.ignoresSafeArea())
         .navigationTitle("About")

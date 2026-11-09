@@ -35,9 +35,9 @@ struct SettingsScreen: View {
                         dataGroup
                         footer
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
                     .padding(.top, 4)
-                    .padding(.bottom, 32)
+                    .padding(.bottom, 24)
                     .frame(maxWidth: 680)
                     .frame(maxWidth: .infinity)
                 }
@@ -65,70 +65,74 @@ struct SettingsScreen: View {
         return VStack(alignment: .leading, spacing: 0) {
             HStack {
                 Text("YOUR SOURCE")
-                    .font(.system(size: 9, weight: .bold))
-                    .kerning(1.5)
+                    .font(.system(.caption2, weight: .bold))
+                    .kerning(1.4)
                     .foregroundStyle(AppTheme.color(0x9B9FBA))
 
-                Spacer(minLength: 8)
+                Spacer(minLength: AppTheme.Spacing.item)
 
                 HStack(spacing: 5) {
                     Circle()
                         .fill(AppTheme.color(0xA6ACFF))
                         .frame(width: 4, height: 4)
                     Text("Selected")
-                        .font(.system(size: 10, weight: .medium))
+                        .font(AppTheme.Typography.caption)
+                        .fontWeight(.medium)
                         .foregroundStyle(AppTheme.color(0xAFB4E3))
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
+                .padding(.horizontal, AppTheme.Spacing.chipHorizontal)
+                .padding(.vertical, 3)
                 .background(AppTheme.primary.opacity(0.05), in: Capsule())
             }
 
-            HStack(spacing: 14) {
-                SourceMarkBadge(entry: entry, size: 46)
+            HStack(spacing: AppTheme.Spacing.item) {
+                SourceMarkBadge(entry: entry, size: 40)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(entry.name)
-                        .font(.system(size: 21, weight: .semibold))
+                        .font(AppTheme.Typography.screenTitle)
                         .foregroundStyle(AppTheme.color(0xF2F3FA))
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                     Text("\(entry.kind) • \(entry.host)")
-                        .font(.system(size: 11))
+                        .font(AppTheme.Typography.caption)
                         .foregroundStyle(AppTheme.color(0x959AB4))
+                        .lineLimit(1)
                 }
 
-                Spacer(minLength: 8)
+                Spacer(minLength: AppTheme.Spacing.item)
 
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: AppTheme.Icon.small, weight: .semibold))
                     .foregroundStyle(AppTheme.color(0x9B9FC0))
             }
-            .padding(.top, 18)
+            .padding(.top, 12)
 
-            HStack(spacing: 7) {
+            HStack(spacing: 6) {
                 Image(systemName: "square.stack.3d.up")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                 Text("Browse & manage sources")
-                    .font(.system(size: 11))
+                    .font(AppTheme.Typography.caption)
                 Spacer(minLength: 0)
                 Image(systemName: "arrow.up.right")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
             }
             .foregroundStyle(AppTheme.color(0x949AC4))
-            .padding(.top, 16)
+            .padding(.top, 12)
             .overlay(alignment: .top) {
                 Rectangle()
                     .fill(Color.white.opacity(0.035))
                     .frame(height: 1)
             }
-            .padding(.top, 20)
+            .padding(.top, 14)
         }
-        .padding(18)
-        .background(AppTheme.color(0x171B2C), in: RoundedRectangle(cornerRadius: 22))
+        .padding(14)
+        .background(AppTheme.color(0x171B2C), in: RoundedRectangle(cornerRadius: 18))
         .overlay(
-            RoundedRectangle(cornerRadius: 22)
+            RoundedRectangle(cornerRadius: 18)
                 .stroke(AppTheme.color(0x343953), lineWidth: 1)
         )
-        .padding(.bottom, 24)
+        .padding(.bottom, 18)
     }
 
     // MARK: - Groups
@@ -175,7 +179,7 @@ struct SettingsScreen: View {
             }
             .buttonStyle(.plain)
         }
-        .padding(.bottom, 24)
+        .padding(.bottom, 18)
     }
 
     private var dataGroup: some View {
@@ -217,29 +221,29 @@ struct SettingsScreen: View {
             }
             .buttonStyle(.plain)
         }
-        .padding(.bottom, 24)
+        .padding(.bottom, 18)
     }
 
     // MARK: - Footer
 
     private var footer: some View {
-        VStack(spacing: 10) {
-            HStack(spacing: 14) {
+        VStack(spacing: AppTheme.Spacing.item) {
+            HStack(spacing: AppTheme.Spacing.section) {
                 Rectangle()
                     .fill(AppTheme.color(0x242839))
                     .frame(height: 1)
                 Text("BOORU VIEWER")
-                    .font(.system(size: 8, weight: .bold))
-                    .kerning(2.2)
+                    .font(.system(.caption2, weight: .bold))
+                    .kerning(2.0)
                     .foregroundStyle(AppTheme.color(0x656B86))
                 Rectangle()
                     .fill(AppTheme.color(0x242839))
                     .frame(height: 1)
             }
-            .padding(.horizontal, 26)
+            .padding(.horizontal, 22)
 
             Text("Version 1.0.0")
-                .font(.system(size: 10))
+                .font(AppTheme.Typography.caption)
                 .foregroundStyle(AppTheme.color(0x666C82))
         }
         .padding(.top, 4)

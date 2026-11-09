@@ -21,8 +21,8 @@ struct FavoritesScreen: View {
     @State private var blacklistedTagKeys: Set<String> = []
 
     /// Masonry metrics (same layout as `FeedScreen`).
-    private static let columnSpacing: CGFloat = 12
-    private static let horizontalPadding: CGFloat = 16
+    private static let columnSpacing: CGFloat = AppTheme.Spacing.item
+    private static let horizontalPadding: CGFloat = AppTheme.Spacing.screenHorizontal
 
     /// - Parameters:
     ///   - favoritesStore: saved posts.
@@ -67,9 +67,9 @@ struct FavoritesScreen: View {
                 }
             }
             .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.top, 8)
-            .padding(.bottom, 10)
+            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
+            .padding(.top, 6)
+            .padding(.bottom, AppTheme.Spacing.item)
 
             switch model.segment {
             case .savedPosts:
@@ -124,13 +124,13 @@ struct FavoritesScreen: View {
         GeometryReader { geometry in
             let columnWidth = Self.columnWidth(for: geometry.size.width)
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+                LazyVStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
                     sourceFilterBar
                     if model.isLoading {
                         ProgressView()
                             .tint(AppTheme.primary)
                             .frame(maxWidth: .infinity)
-                            .padding(.top, 60)
+                            .padding(.top, 48)
                     } else if model.visibleFavorites.isEmpty {
                         emptyState(
                             systemImage: "heart",
@@ -146,14 +146,14 @@ struct FavoritesScreen: View {
                     }
                 }
                 .padding(.horizontal, Self.horizontalPadding)
-                .padding(.bottom, 20)
+                .padding(.bottom, 16)
             }
             .refreshable { await model.load() }
         }
     }
 
     private var sourceFilterBar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: AppTheme.Spacing.item) {
             Menu {
                 Button {
                     model.sourceFilter = nil
@@ -183,16 +183,21 @@ struct FavoritesScreen: View {
                     Image(systemName: "chevron.down")
                         .font(.caption2)
                 }
-                .font(.footnote.weight(.semibold))
+                .font(AppTheme.Typography.body.weight(.semibold))
                 .foregroundStyle(AppTheme.primary)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
                 .background(AppTheme.card, in: Capsule())
                 .overlay(Capsule().stroke(AppTheme.border, lineWidth: 1))
+                // The capsule keeps its compact paint (~28 pt) because the background is applied
+                // first. The frame below is real layout, so the menu owns an honest 44 pt tap
+                // target and nothing extends past its bounds into the first card.
+                .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
+                .contentShape(Rectangle())
             }
             Spacer(minLength: 0)
             Text("\(model.visibleFavorites.count)")
-                .font(.footnote)
+                .font(AppTheme.Typography.body)
                 .foregroundStyle(AppTheme.textSecondary)
         }
     }
@@ -202,14 +207,14 @@ struct FavoritesScreen: View {
     private var favoriteTagsSection: some View {
         List {
             Section {
-                HStack(spacing: 8) {
+                HStack(spacing: AppTheme.Spacing.item) {
                     TextField("Add a tag", text: $newTagText)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .onSubmit(submitNewTag)
                         .foregroundStyle(AppTheme.textPrimary)
                     Button("Add", action: submitNewTag)
-                        .font(.footnote.weight(.semibold))
+                        .font(AppTheme.Typography.body.weight(.semibold))
                         .disabled(newTagText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
@@ -220,7 +225,7 @@ struct FavoritesScreen: View {
                         .foregroundStyle(AppTheme.textSecondary)
                 } else {
                     ForEach(model.favoriteTags, id: \.self) { tag in
-                        HStack(spacing: 10) {
+                        HStack(spacing: AppTheme.Spacing.item) {
                             TagChipView(text: tag, onTap: { onSelectTag(tag) })
                                 .contextMenu { tagContextMenu(for: tag) }
                             Spacer(minLength: 0)
@@ -228,7 +233,15 @@ struct FavoritesScreen: View {
                                 Task { await model.removeFavoriteTag(tag) }
                             } label: {
                                 Image(systemName: "trash")
+                                    .font(.system(size: AppTheme.Icon.small))
                                     .foregroundStyle(AppTheme.danger)
+                                    // A real 44 pt frame, not padding: the tap target is fully
+                                    // allocated inside the row.
+                                    .frame(
+                                        minWidth: AppTheme.Spacing.minimumHitTarget,
+                                        minHeight: AppTheme.Spacing.minimumHitTarget
+                                    )
+                                    .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("Remove \(tag)")
@@ -256,17 +269,21 @@ struct FavoritesScreen: View {
         GeometryReader { geometry in
             let columnWidth = Self.columnWidth(for: geometry.size.width)
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 10) {
+                LazyVStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
+                    HStack(spacing: AppTheme.Spacing.item) {
                         Text("\(model.recentViews.count) posts")
-                            .font(.footnote)
+                            .font(AppTheme.Typography.body)
                             .foregroundStyle(AppTheme.textSecondary)
                         Spacer(minLength: 0)
                         Button(role: .destructive) {
                             isConfirmingClear = true
                         } label: {
                             Label("Clear", systemImage: "trash")
-                                .font(.footnote.weight(.semibold))
+                                .font(AppTheme.Typography.body.weight(.semibold))
+                                // Real layout height instead of padding handback: the button owns a
+                                // 44 pt tap target and nothing bleeds outside the header row.
+                                .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
+                                .contentShape(Rectangle())
                         }
                         .disabled(model.recentViews.isEmpty)
                         .accessibilityLabel("Clear recent views")
@@ -276,7 +293,7 @@ struct FavoritesScreen: View {
                         ProgressView()
                             .tint(AppTheme.primary)
                             .frame(maxWidth: .infinity)
-                            .padding(.top, 60)
+                            .padding(.top, 48)
                     } else if model.recentViews.isEmpty {
                         emptyState(
                             systemImage: "clock.arrow.circlepath",
@@ -288,7 +305,7 @@ struct FavoritesScreen: View {
                     }
                 }
                 .padding(.horizontal, Self.horizontalPadding)
-                .padding(.bottom, 20)
+                .padding(.bottom, 16)
             }
             .refreshable { await model.load() }
         }

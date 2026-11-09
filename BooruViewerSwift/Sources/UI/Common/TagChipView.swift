@@ -35,9 +35,19 @@ struct TagChipView: View {
 
     var body: some View {
         if let onTap {
-            Button(action: onTap) { chip }
-                .buttonStyle(.plain)
-                .accessibilityLabel(displayName)
+            // Interactive chips get an honest 44 x 44 layout box; the pill itself keeps its
+            // compact paint because the fill/border live on `chip`, which is centered inside
+            // this frame. Nothing is painted — or hit-tested — outside the allocated layout.
+            Button(action: onTap) {
+                chip
+                    .frame(
+                        minWidth: AppTheme.Spacing.minimumHitTarget,
+                        minHeight: AppTheme.Spacing.minimumHitTarget
+                    )
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(displayName)
         } else {
             chip
                 .accessibilityLabel(displayName)
@@ -49,16 +59,17 @@ struct TagChipView: View {
     }
 
     private var chip: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
             Text(displayName)
-                .font(.system(size: 13, weight: isSelected ? .bold : .semibold))
+                .font(AppTheme.Typography.body)
+                .fontWeight(isSelected ? .bold : .semibold)
                 .foregroundStyle(AppTheme.tagColor(for: category))
                 .lineLimit(1)
                 .truncationMode(.tail)
 
             if let count {
                 Text(Self.abbreviated(count))
-                    .font(.system(size: 10, weight: .bold))
+                    .font(.system(.caption2, weight: .bold))
                     .foregroundStyle(AppTheme.tagColor(for: category))
                     .opacity(0.85)
                     .padding(.horizontal, 4)
@@ -66,8 +77,8 @@ struct TagChipView: View {
                     .background(Color.black.opacity(0.15), in: RoundedRectangle(cornerRadius: 6))
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, AppTheme.Spacing.chipHorizontal)
+        .padding(.vertical, AppTheme.Spacing.chipVertical)
         .background(fill, in: RoundedRectangle(cornerRadius: 12))
         .overlay(
             RoundedRectangle(cornerRadius: 12)
