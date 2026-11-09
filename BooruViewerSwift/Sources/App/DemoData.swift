@@ -152,7 +152,7 @@ enum DemoData {
                 ),
                 allTags: ["pixel_studio", "original", "city", "skyline", "night", "architecture", "highres"],
                 sourceLink: URL(string: "https://example.com/post/demo-02"),
-                fileExt: "png",
+                fileExt: "mp4",
                 fileSize: 402_115,
                 createdAt: "2026-01-04 09:02:00",
                 niches: nil,

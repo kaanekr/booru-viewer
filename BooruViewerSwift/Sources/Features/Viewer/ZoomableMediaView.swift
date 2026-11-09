@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import Foundation
+import UIKit
 
 /// One page of the full-screen viewer: an image with pinch / double-tap zoom, a
 /// playing video, or a multi-page gallery/manga reader.
@@ -52,29 +53,16 @@ struct ZoomableMediaView: View {
     private var imagePage: some View {
         GeometryReader { proxy in
             let size = proxy.size
+            let imageChain = [media?.imageURL, media?.placeholderURL].compactMap { $0 }
 
             ZStack {
                 Color.black
 
-                if let url = media?.imageURL ?? media?.placeholderURL {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .empty:
-                            ProgressView()
-                                .tint(AppTheme.textPrimary)
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: size.width, height: size.height)
-                        case .failure:
-                            unavailable
-                        @unknown default:
-                            unavailable
-                        }
-                    }
-                } else {
+                if imageChain.isEmpty {
                     unavailable
+                } else {
+                    PrivateViewerImage(urls: imageChain)
+                        .frame(width: size.width, height: size.height)
                 }
 
                 if isLoading {
@@ -195,6 +183,72 @@ struct ZoomableMediaView: View {
         zoomOffset = .zero
         lastOffset = .zero
         zoomAnchor = .center
+    }
+}
+
+// MARK: - Loader-backed viewer image
+
+/// Full-resolution viewer image and manga page loaded through `MediaImageLoader`,
+/// so the request carries the per-host `Referer`/`User-Agent` headers and retries
+/// through the Cloudflare Worker relay (`ProxyRelay`) for TLS-fragile CDNs — the
+/// same route the feed covers get from `AsyncMediaImage`. Plain `AsyncImage` cannot
+/// express either, which left the full-screen image and every nhentai page bare.
+private struct PrivateViewerImage: View {
+    let urls: [URL]
+    var failureText = "Media unavailable"
+
+    @State private var image: UIImage?
+    @State private var didFail = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+            } else if didFail {
+                VStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .font(.title2)
+                    Text(failureText)
+                        .font(.footnote)
+                }
+                .foregroundStyle(AppTheme.textSecondary)
+            } else {
+                ProgressView()
+                    .tint(AppTheme.textPrimary)
+            }
+        }
+        .task(id: urls) { await load() }
+    }
+
+    /// Walks the chain until one URL decodes; a cached image is applied without a
+    /// visible placeholder frame. The loader already retried the other route leg.
+    private func load() async {
+        guard !urls.isEmpty else {
+            image = nil
+            didFail = true
+            return
+        }
+        didFail = false
+        for url in urls {
+            if Task.isCancelled { return }
+            if let cached = await MediaImageLoader.shared.cachedImage(for: url) {
+                if Task.isCancelled { return }
+                image = cached
+                return
+            }
+            do {
+                let loaded = try await MediaImageLoader.shared.image(for: url)
+                if Task.isCancelled { return }
+                image = loaded
+                return
+            } catch {
+                continue
+            }
+        }
+        image = nil
+        didFail = true
     }
 }
 
@@ -442,30 +496,9 @@ private struct PrivateMangaReaderView: View {
                         ForEach(pages.indices, id: \.self) { index in
                             let url = pages[index]
 
-                            AsyncImage(url: url) { phase in
-                                switch phase {
-                                case .empty:
-                                    ProgressView()
-                                        .tint(AppTheme.textPrimary)
-                                        .frame(maxWidth: .infinity, minHeight: 240)
-                                case .success(let image):
-                                    image
-                                        .resizable()
-                                        .scaledToFit()
-                                        .frame(maxWidth: .infinity)
-                                case .failure:
-                                    VStack(spacing: 8) {
-                                        Image(systemName: "exclamationmark.triangle")
-                                        Text("Page \(index + 1) unavailable")
-                                            .font(.footnote)
-                                    }
-                                    .foregroundStyle(AppTheme.textSecondary)
-                                    .frame(maxWidth: .infinity, minHeight: 240)
-                                @unknown default:
-                                    EmptyView()
-                                }
-                            }
-                            .id(index)
+                            PrivateViewerImage(urls: [url], failureText: "Page \(index + 1) unavailable")
+                                .frame(maxWidth: .infinity, minHeight: 240)
+                                .id(index)
                         }
                     }
                     .scrollTargetLayout()

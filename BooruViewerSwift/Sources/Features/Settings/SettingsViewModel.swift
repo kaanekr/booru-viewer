@@ -396,6 +396,7 @@ final class SettingsViewModel {
             try? await blacklistedStore.remove(tag)
         }
         blacklistedTags = []
+        notifySettingsChanged()
     }
 
     // MARK: - App lock
@@ -684,11 +685,13 @@ final class SettingsViewModel {
 
     // MARK: - Local data
 
-    /// Clears the shared `URLCache`, the native stand-in for the RN image cache purge.
+    /// Clears the shared `URLCache` and the decoded `MediaImageLoader` cache, the
+    /// native stand-in for the RN image cache purge.
     func clearCache() {
         busy = .clear
         defer { busy = nil }
         URLCache.shared.removeAllCachedResponses()
+        Task { await MediaImageLoader.shared.clearCache() }
         alert = AlertState(
             title: "Cache cleared",
             message: "Downloaded thumbnails and temporary post data were removed. Your favorites and settings were kept."
