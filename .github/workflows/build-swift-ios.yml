@@ -225,6 +225,126 @@ jobs:
             BooruViewerSwift/test.log
           if-no-files-found: warn
 
+  # Real-gesture UI tests (`BooruViewerUITests`): launches the app in `-demoMode`, swipes the
+  # Explore grid, taps a card to open the viewer, and switches every tab in the simulator, so
+  # a "scroll and tap stopped working" regression fails the run.
+  #
+  # `continue-on-error: true` is for the FIRST run only — drop it once the target is green in
+  # CI so a broken gesture blocks the IPA again.
+  ui-tests:
+    runs-on: macos-26
+    needs: build
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - name: ⬇️ Checkout repository
+        uses: actions/checkout@v5
+
+      - name: 🍎 Select Xcode (26.6 preferred, newest fallback)
+        run: |
+          set -e
+          set -o pipefail
+          ls /Applications | grep -i xcode || true
+
+          if [ -d /Applications/Xcode_26.6.app ]; then
+            XCODE_APP=/Applications/Xcode_26.6.app
+          else
+            echo "Xcode_26.6.app not found; falling back to newest available Xcode_*.app"
+            XCODE_APP=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -n 1 || true)
+          fi
+
+          if [ -z "$XCODE_APP" ] || [ ! -d "$XCODE_APP" ]; then
+            echo "ERROR: No Xcode installation found in /Applications"
+            ls -la /Applications
+            exit 1
+          fi
+
+          echo "Using Xcode at: $XCODE_APP"
+          sudo xcode-select -s "$XCODE_APP/Contents/Developer"
+          xcodebuild -version
+          swift --version
+
+      - name: 📦 Install XcodeGen
+        run: |
+          command -v xcodegen || brew install xcodegen
+          xcodegen --version
+
+      - name: ⚙️ Generate Xcode project
+        run: |
+          set -e
+          cd BooruViewerSwift
+          xcodegen generate
+          ls -la
+          echo "Generated project:"
+          ls -d *.xcodeproj
+
+      - name: 🧪 Run UI tests on simulator
+        run: |
+          set -e
+          set -o pipefail
+          cd BooruViewerSwift
+
+          # Select a simulator by UDID (robust when no device is pre-booted).
+          DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)["devices"]
+          cands=[]
+          for rt,devs in d.items():
+              if "iOS" not in rt: continue
+              for x in devs:
+                  if x.get("isAvailable") and "iPhone" in x["name"]:
+                      cands.append((rt,x["name"],x["udid"]))
+          if not cands:
+              sys.exit(1)
+          cands.sort(reverse=True)
+          print(cands[0][2])
+          ') || {
+            echo "ERROR: Failed to select an available iPhone simulator from simctl JSON."
+            echo "Available devices:"
+            xcrun simctl list devices available
+            exit 1
+          }
+
+          if [ -z "$DEVICE_ID" ]; then
+            echo "ERROR: Simulator UDID selection returned an empty value."
+            echo "Available devices:"
+            xcrun simctl list devices available
+            exit 1
+          fi
+
+          echo "Using simulator UDID: $DEVICE_ID"
+
+          xcrun simctl boot "$DEVICE_ID" || true
+          xcrun simctl bootstatus "$DEVICE_ID" -b || true
+
+          # `set -o pipefail` makes the pipeline fail when xcodebuild fails, so the job result
+          # reflects a real gesture regression instead of `tee`'s exit code.
+          xcodebuild test \
+            -project BooruViewer.xcodeproj \
+            -scheme BooruViewer \
+            -destination "id=$DEVICE_ID" \
+            -only-testing:BooruViewerUITests \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" | tee uitest.log
+
+          echo "=== UI test summary ==="
+          grep -E "Test Suite 'All tests'|Executed [0-9]+ test" uitest.log || true
+          echo "=== Failing tests ==="
+          grep -E "Test Case '.*' failed" uitest.log || true
+
+      - name: 🧾 Upload UI test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: swift-ios-uitest-logs
+          path: |
+            BooruViewerSwift/uitest.log
+            BooruViewerSwift/build/Logs/Test
+            BooruViewerSwift/build/**/*.xcresult
+          if-no-files-found: warn
+
   # Visual smoke run: boots the app in the simulator with demo launch arguments and captures
   # screenshots + a short video so the UI can be inspected without a Mac.
   # continue-on-error keeps this purely visual job from blocking the IPA.
