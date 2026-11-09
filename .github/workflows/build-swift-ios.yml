@@ -164,33 +164,66 @@ jobs:
         # Remove it once the simulator test lane is confirmed green.
         continue-on-error: true
         run: |
+          set -e
           set -o pipefail
           cd BooruViewerSwift
 
-          DEVICE=$(xcrun simctl list devices available | grep -m1 -E 'iPhone (16|15)' | sed -E 's/.*\((iPhone [^(]+)\).*/\1/' | xargs || true)
-          if [ -z "$DEVICE" ]; then
-            echo "No iPhone 16/15 simulator matched; falling back to any available iPhone"
-            DEVICE=$(xcrun simctl list devices available | grep -m1 'iPhone' | sed -E 's/.*\((iPhone [^(]+)\).*/\1/' | xargs || true)
-          fi
+          # Select a simulator by UDID (robust when no device is pre-booted).
+          DEVICE_ID=$(xcrun simctl list devices available --json | python3 -c '
+          import json,sys
+          d=json.load(sys.stdin)["devices"]
+          cands=[]
+          for rt,devs in d.items():
+              if "iOS" not in rt: continue
+              for x in devs:
+                  if x.get("isAvailable") and "iPhone" in x["name"]:
+                      cands.append((rt,x["name"],x["udid"]))
+          if not cands:
+              sys.exit(1)
+          cands.sort(reverse=True)
+          print(cands[0][2])
+          ') || {
+            echo "ERROR: Failed to select an available iPhone simulator from simctl JSON."
+            echo "Available devices:"
+            xcrun simctl list devices available
+            exit 1
+          }
 
-          if [ -z "$DEVICE" ]; then
-            echo "ERROR: No available iPhone simulator found"
+          if [ -z "$DEVICE_ID" ]; then
+            echo "ERROR: Simulator UDID selection returned an empty value."
+            echo "Available devices:"
             xcrun simctl list devices available
             exit 1
           fi
 
-          echo "Using simulator: $DEVICE"
+          echo "Using simulator UDID: $DEVICE_ID"
+
+          set +e
           xcodebuild test \
             -project BooruViewer.xcodeproj \
             -scheme BooruViewer \
-            -destination "platform=iOS Simulator,name=$DEVICE" \
+            -destination "id=$DEVICE_ID" \
             -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" | tee test.log
+          XCODEBUILD_STATUS=$?
+          set -e
+
+          echo "xcodebuild test exit code: $XCODEBUILD_STATUS"
+          echo "=== Test summary ==="
+          grep -E "Test Suite 'All tests'|Executed [0-9]+ test" test.log || true
+          echo "=== Failing tests ==="
+          grep -E "Test Case '.*' failed" test.log || true
+
+          exit $XCODEBUILD_STATUS
 
       - name: 🧾 Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: swift-ios-test-logs
-          path: BooruViewerSwift/build/Logs/Test
+          path: |
+            BooruViewerSwift/build/Logs/Test
+            BooruViewerSwift/test.log
           if-no-files-found: warn
