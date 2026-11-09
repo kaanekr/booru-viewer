@@ -5,17 +5,54 @@ import Foundation
 import UIKit
 #endif
 
+/// How an info-sheet tag action modifies the active search query
+/// (RN `handleTagSearch` / `handleTagAddToSearch` / `handleTagExcludeFromSearch`,
+/// PostInfoModal.tsx:312-377). The app layer applies it to the search bar.
+enum TagSearchModification: Sendable, Equatable {
+    case replace(String)
+    case include(String)
+    case exclude(String)
+}
+
 /// Bottom sheet with the visible post's metadata, copy actions and categorized
 /// tags. Mirrors RN `PostInfoModal` (src/components/PostInfoModal.tsx).
 ///
-/// Tap on a tag searches it (`onSelectTag`); long-press / context menu pins it to
-/// favorite tags, blacklists it, or copies it.
+/// Tap on a tag searches it (`onSelectTag`); the `•••` menu (and the chip's
+/// context menu) offers all seven RN tag actions: search, add to search, exclude
+/// from search, pin/unpin favorite tag, add/remove blacklist, save to history and
+/// copy.
 @MainActor
 struct PostInfoSheetView: View {
     let post: BooruPost
     let viewModel: ViewerViewModel
+    /// Search history used by "Save to Search History"; falls back to the view model's.
+    private let searchHistory: (any SearchHistoryStoring)?
+    /// Applies a search-bar modification; falls back to the view model's.
+    private let onModifySearch: (@Sendable (TagSearchModification) -> Void)?
+    /// Last played HentaiHaven episode per post id.
+    private let hentaiHavenLastEpisodes: [String: Int]
+    /// Callback to persist HentaiHaven episode progress.
+    private let onSaveHentaiHavenEpisode: (@Sendable (String, Int) -> Void)?
     /// Tap-to-search callback, e.g. `SearchQuery` push in the app layer.
     let onSelectTag: (String) -> Void
+
+    init(
+        post: BooruPost,
+        viewModel: ViewerViewModel,
+        searchHistory: (any SearchHistoryStoring)? = nil,
+        onModifySearch: (@Sendable (TagSearchModification) -> Void)? = nil,
+        hentaiHavenLastEpisodes: [String: Int] = [:],
+        onSaveHentaiHavenEpisode: (@Sendable (String, Int) -> Void)? = nil,
+        onSelectTag: @escaping (String) -> Void
+    ) {
+        self.post = post
+        self.viewModel = viewModel
+        self.searchHistory = searchHistory
+        self.onModifySearch = onModifySearch
+        self.hentaiHavenLastEpisodes = hentaiHavenLastEpisodes
+        self.onSaveHentaiHavenEpisode = onSaveHentaiHavenEpisode
+        self.onSelectTag = onSelectTag
+    }
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
@@ -158,38 +195,103 @@ struct PostInfoSheetView: View {
         section("Tags") {
             TagFlowLayout(spacing: 8) {
                 ForEach(tagItems, id: \.name) { item in
-                    TagChipView(
-                        text: item.name,
-                        category: item.category,
-                        isSelected: viewModel.isPinnedTag(item.name),
-                        onTap: { selectTag(item.name) }
-                    )
-                    .contextMenu {
-                        Button {
-                            Task { await viewModel.togglePinnedTag(item.name) }
-                        } label: {
-                            Label(
-                                viewModel.isPinnedTag(item.name) ? "Unpin Tag" : "Pin to Favorite Tags",
-                                systemImage: "pin"
-                            )
-                        }
-                        Button(role: .destructive) {
-                            Task { await viewModel.toggleBlacklistedTag(item.name) }
-                        } label: {
-                            Label(
-                                viewModel.isBlacklistedTag(item.name) ? "Remove from Blacklist" : "Add to Blacklist",
-                                systemImage: "eye.slash"
-                            )
-                        }
-                        Button {
-                            copyToPasteboard(item.name, label: "Tag")
-                        } label: {
-                            Label("Copy Tag", systemImage: "doc.on.doc")
-                        }
-                    }
+                    tagChipWithMenu(for: item)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// One tag chip plus its visible `•••` menu button, sharing the context menu
+    /// (RN `tagRowItem` + `yellowDotsBadge`, PostInfoModal.tsx:644-676).
+    private func tagChipWithMenu(for item: PostInfoTagItem) -> some View {
+        HStack(spacing: 2) {
+            TagChipView(
+                text: item.name,
+                category: item.category,
+                isSelected: viewModel.isPinnedTag(item.name),
+                onTap: { selectTag(item.name) }
+            )
+            .contextMenu { tagMenu(for: item) }
+
+            Menu {
+                tagMenu(for: item)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(AppTheme.textSecondary)
+                    .frame(width: 22, height: 22)
+                    .background(AppTheme.surface, in: Circle())
+                    .contentShape(Circle())
+            }
+            .accessibilityLabel("Tag actions for \(item.name)")
+        }
+    }
+
+    /// The seven tag actions of RN `PostInfoModal` (PostInfoModal.tsx:806-880).
+    @ViewBuilder
+    private func tagMenu(for item: PostInfoTagItem) -> some View {
+        let token = formattedSearchToken(for: item.name, category: item.category, sourceID: post.sourceID)
+        let isPinned = viewModel.favoriteTagSet.contains(ViewerViewModel.favoriteTagKey(item.name)) || viewModel.isPinnedTag(item.name)
+        let isBlacklisted = viewModel.blacklistedTagSet.contains(ViewerViewModel.blacklistTagKey(item.name)) || viewModel.isBlacklistedTag(item.name)
+
+        // 1. Search Tag
+        Button {
+            modifySearch(.replace(token), fallbackTag: token)
+        } label: {
+            Label("Search Tag", systemImage: "magnifyingglass")
+        }
+
+        // 2. Add to Search (+tag)
+        Button {
+            modifySearch(.include(token), fallbackTag: token)
+        } label: {
+            Label("Add to Search (+tag)", systemImage: "plus.circle")
+        }
+
+        // 3. Exclude from Search (-tag)
+        Button {
+            modifySearch(.exclude(token), fallbackTag: "-\(token)")
+        } label: {
+            Label("Exclude from Search (-tag)", systemImage: "minus.circle")
+        }
+
+        Divider()
+
+        // 4. Pin to Favorite Tags / Unpin Favorite Tag
+        Button {
+            Task { await viewModel.togglePinnedTag(item.name) }
+        } label: {
+            Label(
+                isPinned ? "Unpin Favorite Tag" : "Pin to Favorite Tags",
+                systemImage: isPinned ? "pin.slash" : "pin"
+            )
+        }
+
+        // 5. Add to Blacklist / Remove from Blacklist
+        Button {
+            Task { await viewModel.toggleBlacklistedTag(item.name) }
+        } label: {
+            Label(
+                isBlacklisted ? "Remove from Blacklist" : "Add to Blacklist",
+                systemImage: isBlacklisted ? "eye" : "eye.slash"
+            )
+        }
+
+        Divider()
+
+        // 6. Save to Search History
+        Button {
+            saveToSearchHistory(token.isEmpty ? item.name : token)
+        } label: {
+            Label("Save to Search History", systemImage: "clock")
+        }
+
+        // 7. Copy Tag
+        Button {
+            copyToPasteboard(item.name, label: "Tag")
+        } label: {
+            Label("Copy Tag", systemImage: "doc.on.doc")
         }
     }
 
@@ -197,11 +299,27 @@ struct PostInfoSheetView: View {
         section("Niches") {
             TagFlowLayout(spacing: 8) {
                 ForEach(niches, id: \.self) { niche in
-                    TagChipView(
-                        text: niche.replacingOccurrences(of: "-", with: " "),
-                        category: .meta,
-                        onTap: { selectTag("niche:\(niche)") }
-                    )
+                    let item = PostInfoTagItem(name: "niche:\(niche)", category: .general)
+                    HStack(spacing: 2) {
+                        TagChipView(
+                            text: niche.replacingOccurrences(of: "-", with: " "),
+                            category: .meta,
+                            onTap: { selectTag(item.name) }
+                        )
+                        .contextMenu { tagMenu(for: item) }
+
+                        Menu {
+                            tagMenu(for: item)
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(AppTheme.textSecondary)
+                                .frame(width: 22, height: 22)
+                                .background(AppTheme.surface, in: Circle())
+                                .contentShape(Circle())
+                        }
+                        .accessibilityLabel("Tag actions for \(niche)")
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -300,6 +418,92 @@ struct PostInfoSheetView: View {
     private func selectTag(_ tag: String) {
         dismiss()
         onSelectTag(tag)
+    }
+
+    /// Applies a search modification through `onModifySearch`, else falls back to
+    /// the plain tag search (RN falls back to `onSearchTag` when no modifier prop
+    /// is provided, PostInfoModal.tsx:347-353).
+    private func modifySearch(_ modification: TagSearchModification, fallbackTag: String) {
+        dismiss()
+        if let modify = onModifySearch ?? viewModel.onModifySearch {
+            modify(modification)
+        } else {
+            onSelectTag(fallbackTag)
+        }
+    }
+
+    private func saveToSearchHistory(_ query: String) {
+        guard let store = searchHistory ?? viewModel.searchHistory else {
+            showToast("Search history is unavailable.")
+            return
+        }
+        Task {
+            try? await store.record(query)
+            showToast("🕒 \"\(query)\" saved to search history!")
+        }
+    }
+
+    /// Source-specific search token for a tag (RN `nhentaiTagQuery`,
+    /// `hentaiHavenTagQuery`, and the RedGifs `user:` rule).
+    private func formattedSearchToken(for tag: String, category: TagCategory, sourceID: SourceID) -> String {
+        let clean = tag
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return "" }
+        switch sourceID {
+        case .redgifs:
+            guard category == .artist, !clean.lowercased().hasPrefix("user:") else { return clean }
+            return "user:\(clean)"
+        case .nhentai:
+            return Self.nhentaiTagQuery(clean, category: category)
+        case .hentaihaven:
+            return Self.hentaiHavenTagQuery(clean, category: category)
+        default:
+            return clean
+        }
+    }
+
+    /// RN `nhentaiTagQuery` (nhentai.ts:132-162): a prefixed tag is normalized to
+    /// `prefix:"value"` when it has spaces, otherwise every category gets its
+    /// `artist:` / `character:` / `parody:` / `tag:` prefix.
+    private static func nhentaiTagQuery(_ name: String, category: TagCategory) -> String {
+        if let colon = name.firstIndex(of: ":"),
+           name[..<colon].range(of: #"^[a-z][a-z-]*$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            let prefix = name[..<colon].lowercased()
+            let value = name[name.index(after: colon)...]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { return name }
+            return value.contains(where: { $0.isWhitespace })
+                ? "\(prefix):\"\(value)\""
+                : "\(prefix):\(value)"
+        }
+        let quoted = "\"\(name.replacingOccurrences(of: "\"", with: ""))\""
+        switch category {
+        case .artist:
+            return "artist:\(quoted)"
+        case .character:
+            return "character:\(quoted)"
+        case .copyright:
+            return "parody:\(quoted)"
+        case .general:
+            return "tag:\(quoted)"
+        case .meta:
+            return name
+        }
+    }
+
+    /// RN `hentaiHavenTagQuery` (hentaihavens.ts:533-540): already-prefixed tags are
+    /// untouched; otherwise `artist:"name"` for artists and `tag:"name"` for the rest.
+    private static func hentaiHavenTagQuery(_ name: String, category: TagCategory) -> String {
+        if name.range(of: #"^[a-z][a-z-]*:"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return name
+        }
+        let lower = name.lowercased()
+        let prefix = category == .artist ? "artist" : "tag"
+        return lower.contains(where: { $0.isWhitespace }) ? "\(prefix):\"\(lower)\"" : "\(prefix):\(lower)"
     }
 
     private func copyToPasteboard(_ text: String, label: String) {

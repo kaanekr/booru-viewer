@@ -52,15 +52,14 @@ enum SourceQuickFilterContext: Sendable {
 enum SourceQuickFilters {
     // MARK: Shared chips
 
-    private static let latest = order("latest", "Latest", sortBy: .id)
-    private static let top = order("top", "Top · All time", sortBy: .score)
+    private static let latest = order("latest", "Latest", sortBy: .default, timeRange: .all)
+    private static let top = order("top", "Top · All time", sortBy: .score, timeRange: .all)
+    private static let day = order("day", "Daily Top", sortBy: .score, timeRange: .oneDay)
     private static let week = order("week", "Weekly Top", sortBy: .score, timeRange: .oneWeek)
     private static let month = order("month", "Monthly Top", sortBy: .score, timeRange: .oneMonth)
-    private static let day = order("day", "Daily Top", sortBy: .score, timeRange: .oneDay)
     private static let relevance = order("default", "Relevance", sortBy: .default)
     private static let discover = order("default", "Discover", sortBy: .default)
     private static let rated = order("rated", "Top Rated", sortBy: .rating)
-    private static let monthlyBest = order("monthly-best", "Monthly Best", sortBy: .score, timeRange: .oneMonth)
 
     private static let safe = SourceQuickFilter(
         id: "safe",
@@ -111,29 +110,29 @@ enum SourceQuickFilters {
 
         switch source {
         case .danbooru, .yandere:
-            return [latest, top, week, month] + (search ? [safe, score] : [])
+            return [latest, top, day, week, month] + (search ? [safe, score] : [])
         case .gelbooru, .rule34, .realbooru:
-            return [latest, top] + (search ? [safe, score] : [])
+            // Explore exposes the same time-bounded tops as search: `sort:score:desc`
+            // is always sent, and the Gelbooru/Rule34 id-bound walk narrows the range
+            // (Realbooru has no date window, so a timed top degrades to the score order).
+            return [latest, top, day, week, month] + (search ? [safe, score] : [])
         case .redgifs:
-            return [order("default", "Trending", sortBy: .default), latest, week, month]
+            return [latest, top, day, week, month]
         case .cumst:
-            // `/posts/popular` is a keywordless leaderboard; with a query it switches to
-            // `/posts` and loses the period, so no timed search tops (:37-43).
-            return [latest]
-                + (hasQuery ? [] : [day, week, month])
+            return [latest, top, day, week, month]
                 + (search ? [videos, onlyfans, fansly] : [])
         case .xvideos:
             return search && hasQuery
-                ? [relevance, latest, top, week, month, rated]
-                : [discover, latest, monthlyBest]
+                ? [relevance, latest, top, day, week, month, rated]
+                : [latest, top, day, week, month]
         case .xhamster:
             return search && hasQuery
-                ? [relevance, latest, top, week, month, rated]
-                : [discover, top, week, month]
+                ? [relevance, latest, top, day, week, month, rated]
+                : [latest, top, day, week, month]
         case .pornhub:
             return search && hasQuery
-                ? [relevance, latest, top, week, month, rated]
-                : [discover]
+                ? [relevance, latest, top, day, week, month, rated]
+                : [latest, top, day, week, month]
         case .sexcom:
             return []
         case .nhentai:
@@ -208,6 +207,21 @@ enum SourceQuickFilters {
 
     /// RN `isQuickFilterActive` (:67-74): every patched field must match the filter.
     static func isActive(_ option: SourceQuickFilter, in filter: SearchFilterConfig) -> Bool {
+        switch option.id {
+        case "latest":
+            return filter.sortBy == .default && filter.timeRange == .all
+        case "top":
+            return filter.sortBy == .score && filter.timeRange == .all
+        case "day":
+            return filter.timeRange == .oneDay
+        case "week":
+            return filter.timeRange == .oneWeek
+        case "month":
+            return filter.timeRange == .oneMonth
+        default:
+            break
+        }
+
         let patch = option.patch
         if let value = patch.sortBy, filter.sortBy != value { return false }
         if let value = patch.timeRange, filter.timeRange != value { return false }
@@ -234,8 +248,27 @@ enum SourceQuickFilters {
         var next = filter
         let patch = option.patch
 
-        if let value = patch.sortBy { next.sortBy = value }
-        if let value = patch.timeRange { next.timeRange = value }
+        switch option.id {
+        case "latest":
+            next.sortBy = .default
+            next.timeRange = .all
+        case "top":
+            next.sortBy = .score
+            next.timeRange = .all
+        case "day":
+            next.sortBy = .score
+            next.timeRange = .oneDay
+        case "week":
+            next.sortBy = .score
+            next.timeRange = .oneWeek
+        case "month":
+            next.sortBy = .score
+            next.timeRange = .oneMonth
+        default:
+            if let value = patch.sortBy { next.sortBy = value }
+            if let value = patch.timeRange { next.timeRange = value }
+        }
+
         if let value = patch.rating { next.rating = value }
         if let value = patch.minScore { next.minScore = value }
         if let value = patch.cumstService { next.cumstService = value }
@@ -268,7 +301,7 @@ enum SourceQuickFilters {
             next.sortBy = .id
             next.timeRange = .all
             next.leaderboardDate = nil
-        } else if timedTopIDs.contains(option.id) {
+        } else if timedTopIDs.contains(option.id) || option.id == "top" {
             next.cumstMediaType = .all
             next.cumstService = .all
         }

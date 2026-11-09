@@ -74,7 +74,14 @@ struct PornhubSource: BooruSource {
         let period = Self.period(keyword: keyword, filter: query.filter)
 
         // Explore page 1 is the homepage: what the site currently features (booruApi.ts:2020-2043).
-        if keyword.isEmpty, pageNumber <= 1 {
+        // Only the untouched Discover/Latest feed does this. Any other Explore order (Top · All time,
+        // Daily/Weekly/Monthly Top) must reach the search endpoint, otherwise those quick-filter
+        // chips look like they do nothing.
+        if pageNumber <= 1,
+           query.tags.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           query.filter.tags.isEmpty,
+           query.filter.sortBy == .default,
+           query.filter.timeRange == .all {
             let homePosts = try await Self.homepagePosts(context: context)
             if !homePosts.isEmpty {
                 return PostPage(posts: homePosts, nextPage: pageNumber + 1, hasMore: true)
@@ -119,19 +126,24 @@ struct PornhubSource: BooruSource {
     // MARK: - Query mapping
 
     /// RN `fetchPornhubPosts` ordering rules (booruApi.ts:2006-2018). Explore and length/score sorts use views.
+    ///
+    /// Keywordless Explore used to ignore `sortBy` entirely, so every chip besides Discover
+    /// silently reopened the same most-viewed page; honouring `id` gives Latest a real order.
     static func ordering(keyword: String, filter: SearchFilterConfig) -> Ordering {
-        guard !keyword.isEmpty else { return .mostviewed }
         switch filter.sortBy {
         case .score, .height, .width: return .mostviewed
         case .rating: return .rating
         case .id: return .newest
-        default: return .featured
+        default: return keyword.isEmpty ? .mostviewed : .featured
         }
     }
 
     /// RN `pornhubPeriodForTimeRange` plus the explore default (pornhub.ts:54-59, booruApi.ts:2002-2005).
+    ///
+    /// Discover (default sort, no window) keeps the site's daily popular page; every explicit
+    /// order maps its window, and All Time asks for `alltime` so the Top chip is all-time.
     static func period(keyword: String, filter: SearchFilterConfig) -> Period {
-        if keyword.isEmpty, filter.timeRange == .all { return .daily }
+        if keyword.isEmpty, filter.sortBy == .default, filter.timeRange == .all { return .daily }
         switch filter.timeRange {
         case .oneDay: return .daily
         case .oneWeek: return .weekly

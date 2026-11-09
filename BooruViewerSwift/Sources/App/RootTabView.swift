@@ -146,6 +146,15 @@ struct RootTabView: View {
                 favorites: container.favoritesStore,
                 favoriteTags: container.favoriteTagsStore,
                 blacklistedTags: container.blacklistedTagsStore,
+                searchHistory: container.searchHistoryStore,
+                onModifySearch: { modification in
+                    viewer = nil
+                    applySearchModification(modification)
+                },
+                hentaiHavenLastEpisodes: container.settings.hentaiHavenLastEpisodes,
+                onSaveHentaiHavenEpisode: { postID, episode in
+                    saveHentaiHavenEpisode(postID, episode)
+                },
                 onSelectTag: { tag in
                     viewer = nil
                     openTag(tag)
@@ -185,6 +194,27 @@ struct RootTabView: View {
                     // Keep Explore, Search, and Settings on the same source.
                     Task { @MainActor in await container.persistActiveSource(id) }
                 },
+                onPinTag: { tag in
+                    Task { @MainActor in
+                        try? await container.favoriteTagsStore.add(tag)
+                    }
+                },
+                onBlacklistTag: { tag in
+                    Task { @MainActor in
+                        try? await container.blacklistedTagsStore.add(tag)
+                        await container.reloadSharedState()
+                    }
+                },
+                onSearchAction: { tag, action in
+                    switch action {
+                    case .replace:
+                        openTag(tag)
+                    case .include:
+                        appendToSearch(tag)
+                    case .exclude:
+                        appendToSearch("-" + tag)
+                    }
+                },
                 onOpenPost: { posts, index in openViewer(posts, index) }
             )
             .toolbar(.hidden, for: .navigationBar)
@@ -208,6 +238,8 @@ struct RootTabView: View {
                 contextVersion: container.contextVersion,
                 sourceProvider: container.sourceProvider,
                 initialQuery: pendingSearch,
+                favoriteTagsStore: container.favoriteTagsStore,
+                blacklistStore: container.blacklistedTagsStore,
                 onOpenTag: { tag in openTag(tag) },
                 onToggleFavorite: { post in
                     Task { @MainActor in await container.toggleFavorite(post) }
@@ -230,6 +262,7 @@ struct RootTabView: View {
                 isActive: selectedTab == .favorites,
                 imageQuality: container.settings.imageQuality,
                 gridPreviewsEnabled: container.settings.gridPreviews,
+                blacklistStore: container.blacklistedTagsStore,
                 onSelectTag: { tag in openTag(tag) },
                 onOpenPost: { posts, index in openViewer(posts, index) }
             )
@@ -281,6 +314,42 @@ struct RootTabView: View {
         pendingSearch = tag
         searchToken += 1
         selectedTab = .search
+    }
+
+    /// Appends a `+tag` / `-tag` token to the query pushed into the Search tab.
+    ///
+    /// The Search screen owns its live text, so the query this layer last pushed is the
+    /// base the token is appended to.
+    private func appendToSearch(_ token: String) {
+        let base = (pendingSearch ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        pendingSearch = base.isEmpty ? token : base + " " + token
+        searchToken += 1
+        selectedTab = .search
+    }
+
+    /// Applies a tag modification picked in the viewer tag menu (RN `onModifySearch`).
+    private func applySearchModification(_ modification: TagSearchModification) {
+        switch modification {
+        case .replace(let tag):
+            openTag(tag)
+        case .include(let tag):
+            appendToSearch(tag)
+        case .exclude(let tag):
+            appendToSearch("-" + tag)
+        }
+    }
+
+    /// Persists the HentaiHaven episode the viewer resumed, so the next visit starts there
+    /// (RN `lastHentaiHavenEpisodes`). The settings store is re-read first so a stale
+    /// snapshot cannot drop episodes saved from another tab.
+    private func saveHentaiHavenEpisode(_ postID: String, _ episode: Int) {
+        Task { @MainActor in
+            guard var updated = try? await container.settingsStore.load() else { return }
+            updated.hentaiHavenLastEpisodes[postID] = episode
+            try? await container.settingsStore.save(updated)
+            container.settings.hentaiHavenLastEpisodes[postID] = episode
+            await container.reloadSharedState()
+        }
     }
 
     private func reloadAfterViewer() {

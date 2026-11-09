@@ -1,4 +1,20 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+
+/// What a trending-tag context-menu action should do with the Search tab query.
+///
+/// Mirrors the viewer's tag menu (`TagSearchModification`): a plain tag search,
+/// `+tag` appended to the current query, or `-tag` appended to it.
+enum FeedTagSearchAction: Sendable {
+    /// Replace the query with the tag.
+    case replace
+    /// Append `+tag` to the current query.
+    case include
+    /// Append `-tag` to the current query.
+    case exclude
+}
 
 /// Explore tab: source switcher, source-aware quick filters, trending tags, a two-column
 /// masonry grid, pull-to-refresh and infinite pagination.
@@ -18,6 +34,12 @@ struct FeedScreen: View {
     private let contextVersion: Int
     /// Persists a source picked in the sheet so every tab follows the switch.
     private let onSelectSource: ((SourceID) -> Void)?
+    /// Long-press action: pin a trending tag to the favorite-tag list.
+    private let onPinTag: ((String) -> Void)?
+    /// Long-press action: add a trending tag to the blacklist.
+    private let onBlacklistTag: ((String) -> Void)?
+    /// Long-press action: rewrite the Search tab query with a trending tag.
+    private let onSearchAction: ((String, FeedTagSearchAction) -> Void)?
 
     @State private var model: FeedViewModel
     @State private var isSourceSheetOpen = false
@@ -59,6 +81,9 @@ struct FeedScreen: View {
     ///   - contextVersion: app-level change counter for the request context; a new value pushes
     ///     the fresh `context` into the view model without rebuilding the screen.
     ///   - onSelectSource: persists a source switch made in the sheet (FeedScreen.tsx:215-226).
+    ///   - onPinTag: trending-chip long press; adds the tag to the favorite tags.
+    ///   - onBlacklistTag: trending-chip long press; adds the tag to the blacklist.
+    ///   - onSearchAction: trending-chip long press; opens the Search tab with the tag.
     init(
         settings: AppSettings,
         context: SourceContext,
@@ -68,6 +93,9 @@ struct FeedScreen: View {
         sourceProvider: @escaping FeedViewModel.SourceProvider = { SourceRegistry.source(for: $0) },
         onSelectTag: ((String) -> Void)? = nil,
         onSelectSource: ((SourceID) -> Void)? = nil,
+        onPinTag: ((String) -> Void)? = nil,
+        onBlacklistTag: ((String) -> Void)? = nil,
+        onSearchAction: ((String, FeedTagSearchAction) -> Void)? = nil,
         onOpenPost: @escaping ([BooruPost], Int) -> Void
     ) {
         self.settings = settings
@@ -77,6 +105,9 @@ struct FeedScreen: View {
         self.context = context
         self.contextVersion = contextVersion
         self.onSelectSource = onSelectSource
+        self.onPinTag = onPinTag
+        self.onBlacklistTag = onBlacklistTag
+        self.onSearchAction = onSearchAction
         _model = State(initialValue: FeedViewModel(
             sourceID: settings.activeSourceID,
             context: context,
@@ -95,6 +126,9 @@ struct FeedScreen: View {
         contextVersion: Int = 0,
         onSelectTag: ((String) -> Void)? = nil,
         onSelectSource: ((SourceID) -> Void)? = nil,
+        onPinTag: ((String) -> Void)? = nil,
+        onBlacklistTag: ((String) -> Void)? = nil,
+        onSearchAction: ((String, FeedTagSearchAction) -> Void)? = nil,
         onOpenPost: @escaping ([BooruPost], Int) -> Void
     ) {
         self.settings = settings
@@ -104,6 +138,9 @@ struct FeedScreen: View {
         self.context = viewModel.context
         self.contextVersion = contextVersion
         self.onSelectSource = onSelectSource
+        self.onPinTag = onPinTag
+        self.onBlacklistTag = onBlacklistTag
+        self.onSearchAction = onSearchAction
         _model = State(initialValue: viewModel)
     }
 
@@ -490,6 +527,9 @@ struct FeedScreen: View {
                             count: tag.count,
                             onTap: tagTap(tag.name)
                         )
+                        .contextMenu {
+                            trendingTagMenu(tag.name)
+                        }
                     }
                 }
                 .padding(.horizontal, 16)
@@ -497,6 +537,56 @@ struct FeedScreen: View {
             }
             .scrollIndicators(.hidden)
         }
+    }
+
+    /// Long press on a trending chip: search, include/exclude, pin, blacklist, or copy it.
+    @ViewBuilder
+    private func trendingTagMenu(_ name: String) -> some View {
+        Button {
+            runSearchAction(name, .replace)
+        } label: {
+            Label("Search Tag", systemImage: "magnifyingglass")
+        }
+        Button {
+            runSearchAction(name, .include)
+        } label: {
+            Label("Add to Search (+\(name))", systemImage: "plus.magnifyingglass")
+        }
+        Button {
+            runSearchAction(name, .exclude)
+        } label: {
+            Label("Exclude from Search (-\(name))", systemImage: "minus.magnifyingglass")
+        }
+        Button {
+            onPinTag?(name)
+        } label: {
+            Label("Pin to Favorite Tags", systemImage: "pin")
+        }
+        Button(role: .destructive) {
+            onBlacklistTag?(name)
+        } label: {
+            Label("Add to Blacklist", systemImage: "eye.slash")
+        }
+        Button {
+            copyTag(name)
+        } label: {
+            Label("Copy Tag", systemImage: "doc.on.doc")
+        }
+    }
+
+    /// `.replace` falls back to the existing tap handler when no Search-tab hook is wired.
+    private func runSearchAction(_ name: String, _ action: FeedTagSearchAction) {
+        if let onSearchAction {
+            onSearchAction(name, action)
+        } else if action == .replace {
+            onSelectTag?(name)
+        }
+    }
+
+    private func copyTag(_ name: String) {
+        #if canImport(UIKit)
+        UIPasteboard.general.string = name
+        #endif
     }
 
     private func tagTap(_ name: String) -> (() -> Void)? {

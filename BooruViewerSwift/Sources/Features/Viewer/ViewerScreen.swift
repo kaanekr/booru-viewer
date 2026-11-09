@@ -9,6 +9,11 @@ struct ViewerScreen: View {
     let onSelectTag: (String) -> Void
     let onClose: () -> Void
 
+    /// Search history used by the info sheet's "Save to History" action.
+    private let searchHistory: (any SearchHistoryStoring)?
+    /// Query modifier used by the info sheet's search actions.
+    private let onModifySearch: (@Sendable (TagSearchModification) -> Void)?
+
     @State private var viewModel: ViewerViewModel
     @State private var showControls = true
     @State private var showInfo = false
@@ -36,11 +41,17 @@ struct ViewerScreen: View {
         favorites: (any FavoritesStoring)? = nil,
         favoriteTags: (any TagListStoring)? = nil,
         blacklistedTags: (any TagListStoring)? = nil,
+        searchHistory: (any SearchHistoryStoring)? = nil,
+        onModifySearch: (@Sendable (TagSearchModification) -> Void)? = nil,
+        hentaiHavenLastEpisodes: [String: Int] = [:],
+        onSaveHentaiHavenEpisode: (@Sendable (String, Int) -> Void)? = nil,
         onSelectTag: @escaping (String) -> Void,
         onClose: @escaping () -> Void = {}
     ) {
         self.onSelectTag = onSelectTag
         self.onClose = onClose
+        self.searchHistory = searchHistory
+        self.onModifySearch = onModifySearch
         _viewModel = State(initialValue: ViewerViewModel(
             posts: posts,
             initialIndex: initialIndex,
@@ -48,7 +59,11 @@ struct ViewerScreen: View {
             recentViews: recentViews,
             favorites: favorites,
             favoriteTags: favoriteTags,
-            blacklistedTags: blacklistedTags
+            blacklistedTags: blacklistedTags,
+            searchHistory: searchHistory,
+            onModifySearch: onModifySearch,
+            hentaiHavenLastEpisodes: hentaiHavenLastEpisodes,
+            onSaveHentaiHavenEpisode: onSaveHentaiHavenEpisode
         ))
     }
 
@@ -74,6 +89,7 @@ struct ViewerScreen: View {
                         isActive: index == viewModel.currentIndex,
                         isMangaMode: viewModel.isMangaMode && index == viewModel.currentIndex,
                         galleryPages: viewModel.galleryPages(for: post),
+                        showsControls: showControls,
                         onSingleTap: { toggleControls() },
                         onZoomChanged: { zoomed in isMediaZoomed = zoomed }
                     )
@@ -116,7 +132,14 @@ struct ViewerScreen: View {
         }
         .sheet(isPresented: $showInfo) {
             if let post = viewModel.currentPost {
-                PostInfoSheetView(post: post, viewModel: viewModel) { tag in
+                PostInfoSheetView(
+                    post: post,
+                    viewModel: viewModel,
+                    searchHistory: searchHistory,
+                    onModifySearch: onModifySearch,
+                    hentaiHavenLastEpisodes: viewModel.hentaiHavenLastEpisodes,
+                    onSaveHentaiHavenEpisode: viewModel.onSaveHentaiHavenEpisode
+                ) { tag in
                     showInfo = false
                     onSelectTag(tag)
                 }
@@ -276,6 +299,8 @@ struct ViewerScreen: View {
                 if showControls {
                     topBar
                         .transition(.move(edge: .top).combined(with: .opacity))
+                    episodeSelectorBar
+                        .transition(.move(edge: .top).combined(with: .opacity))
                 }
                 Spacer()
                 if showControls {
@@ -337,10 +362,6 @@ struct ViewerScreen: View {
             Spacer(minLength: 0)
 
             if let post = viewModel.currentPost {
-                shareButton(for: post)
-            }
-
-            if let post = viewModel.currentPost {
                 let isFavorite = viewModel.isFavorite(post)
                 circleButton(
                     system: isFavorite ? "heart.fill" : "heart",
@@ -349,6 +370,56 @@ struct ViewerScreen: View {
                     Task { await viewModel.toggleFavorite() }
                 }
                 .disabled(viewModel.savingFavorite)
+
+                circleButton(
+                    system: "info.circle",
+                    tint: showInfo ? AppTheme.primary : AppTheme.textPrimary
+                ) {
+                    showInfo = true
+                }
+            }
+        }
+    }
+
+    // MARK: HentaiHaven episode selector
+
+    /// Horizontal episode chips shown under the top bar for HentaiHaven series
+    /// posts; tapping one switches the stream immediately.
+    @ViewBuilder
+    private var episodeSelectorBar: some View {
+        if let post = viewModel.currentPost {
+            let episodes = viewModel.episodes(for: post)
+            if !episodes.isEmpty {
+                let selectedID = viewModel.selectedEpisode(for: post)?.id
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(episodes) { episode in
+                            let isSelected = episode.id == selectedID
+                            Button {
+                                viewModel.selectEpisode(episode, for: post)
+                            } label: {
+                                Text("Ep \(episode.number)")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(isSelected ? AppTheme.textPrimary : AppTheme.textSecondary)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(
+                                        isSelected ? AppTheme.primary : AppTheme.surface.opacity(0.9),
+                                        in: Capsule()
+                                    )
+                                    .overlay(
+                                        Capsule().stroke(
+                                            isSelected ? AppTheme.primary : AppTheme.border,
+                                            lineWidth: 1
+                                        )
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -370,18 +441,6 @@ struct ViewerScreen: View {
 
     // MARK: Controls
 
-    @ViewBuilder
-    private func shareButton(for post: BooruPost) -> some View {
-        if let url = viewModel.shareURL(for: post) {
-            ShareLink(item: url) {
-                circleLabel(system: "square.and.arrow.up")
-            }
-        } else {
-            circleLabel(system: "square.and.arrow.up")
-                .opacity(0.4)
-        }
-    }
-
     private func circleButton(
         system: String,
         tint: Color = AppTheme.textPrimary,
@@ -395,14 +454,6 @@ struct ViewerScreen: View {
                 .background(AppTheme.surface, in: Circle())
         }
         .buttonStyle(.plain)
-    }
-
-    private func circleLabel(system: String) -> some View {
-        Image(systemName: system)
-            .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(AppTheme.textPrimary)
-            .frame(width: 44, height: 44)
-            .background(AppTheme.surface, in: Circle())
     }
 
     private func toggleControls() {
