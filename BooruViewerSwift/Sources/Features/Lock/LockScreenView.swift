@@ -240,41 +240,51 @@ struct PINPadView: View {
         .accessibilityLabel(key.digit)
     }
 
+    /// `[delete][0][biometric]`, the same 72pt three-slot row as the digit rows.
+    ///
+    /// Delete is always mounted (never swapped for a spacer): a mistyped PIN has to be
+    /// correctable, and an empty cropped key used to leave the bottom row blank on both
+    /// sides of the zero. Before the first digit it stays visible but dimmed and inert.
     private var bottomRow: some View {
         HStack(spacing: 24) {
+            deleteButton
+
+            keyButton(KeypadKey(digit: "0", letters: nil))
+
             if showsBiometricButton, let onBiometric {
                 Button(action: onBiometric) {
                     Image(systemName: "faceid")
                         .font(.system(size: 26, weight: .medium))
                         .foregroundStyle(gold)
                         .frame(width: 72, height: 72)
-                        .contentShape(Rectangle())
+                        .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .disabled(isSubmitting || isWorking)
                 .accessibilityLabel("Unlock with biometrics")
             } else {
                 Color.clear.frame(width: 72, height: 72)
             }
-
-            keyButton(KeypadKey(digit: "0", letters: nil))
-
-            if !pin.isEmpty {
-                Button {
-                    deleteLast()
-                } label: {
-                    Image(systemName: "delete.left")
-                        .font(.system(size: 23, weight: .medium))
-                        .foregroundStyle(AppTheme.textPrimary)
-                        .frame(width: 72, height: 72)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Delete")
-                .disabled(isSubmitting)
-            } else {
-                Color.clear.frame(width: 72, height: 72)
-            }
         }
+    }
+
+    private var deleteButton: some View {
+        let canDelete = !pin.isEmpty && !isSubmitting && !isWorking
+
+        return Button {
+            deleteLast()
+        } label: {
+            Image(systemName: "delete.left")
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(canDelete ? AppTheme.textPrimary : AppTheme.color(0x686E7D))
+                .frame(width: 72, height: 72)
+                .background(Color.white.opacity(canDelete ? 0.07 : 0), in: Circle())
+                .overlay(Circle().stroke(Color.white.opacity(canDelete ? 0.08 : 0), lineWidth: 1))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canDelete)
+        .accessibilityLabel("Delete last digit")
     }
 
     private var footer: some View {
@@ -356,7 +366,11 @@ private struct ShakeEffect: GeometryEffect {
 ///   the biometric auto-prompt from being cancelled by the scene-phase change.
 ///
 /// Usage: overlay it above the app content, e.g.
-/// `content.overlay { LockScreenView(controller: lockController).ignoresSafeArea() }`.
+/// `content.overlay { LockScreenView(controller: lockController) }`.
+///
+/// Do **not** add `.ignoresSafeArea()` to the overlay: the pad must stay inside the top
+/// safe area so the padlock badge never lands on the Dynamic Island, the notch, or the
+/// status bar. The opaque layers bleed to the screen edges by themselves.
 struct LockScreenView: View {
     let controller: AppLockController
     var securityService: SecurityService = SecurityService()
@@ -375,6 +389,15 @@ struct LockScreenView: View {
 
     var body: some View {
         ZStack {
+            if controller.isLocked || controller.isPrivacyCurtainVisible {
+                // Full-bleed opaque layer: it paints under the status bar/Dynamic Island and
+                // the home indicator, and swallows taps that land outside the safe area while
+                // the app is hidden.
+                AppTheme.color(0x0D0E12)
+                    .ignoresSafeArea()
+                    .accessibilityHidden(true)
+            }
+
             if controller.isLocked {
                 PINPadView(
                     title: "Enter Passcode",

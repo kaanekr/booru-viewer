@@ -20,10 +20,14 @@ struct SearchScreen: View {
     @State private var isSourceSheetPresented = false
     @FocusState private var isSearchFieldFocused: Bool
 
-    /// RN `POPULAR_TAGS` (SearchScreen.tsx:66-77).
+    /// RN `POPULAR_TAGS` (SearchScreen.tsx:66-77) plus a wider set of community favourites,
+    /// so the popular section fills the viewport instead of leaving the lower half empty.
     private static let popularTags = [
         "original", "1girl", "hatsune_miku", "scenery", "genshin_impact",
-        "arknights", "hololive", "frieren", "blue_archive", "cyberpunk"
+        "arknights", "hololive", "frieren", "blue_archive", "cyberpunk",
+        "solo", "1boy", "long_hair", "landscape", "cityscape", "chibi",
+        "monochrome", "kemonomimi", "cosplay", "cherry_blossoms",
+        "night_sky", "aesthetic", "portrait", "wallpaper"
     ]
 
     private static let gridColumns = [
@@ -449,7 +453,7 @@ struct SearchScreen: View {
                     .textCase(.uppercase)
                     .foregroundStyle(AppTheme.textSecondary)
             }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 118), spacing: 8)], alignment: .leading, spacing: 8) {
+            PopularTagFlowLayout(spacing: 8, lineSpacing: 8) {
                 ForEach(Self.popularTags, id: \.self) { tag in
                     TagChipView(text: tag, onTap: {
                         isSearchFieldFocused = false
@@ -457,6 +461,62 @@ struct SearchScreen: View {
                     })
                 }
             }
+        }
+    }
+}
+
+// MARK: - Popular tag flow
+
+/// Left-aligned wrapping row of chips.
+///
+/// A `LazyVGrid` with `.adaptive` columns stretches every cell to the same width, which left
+/// wide irregular gaps between short tags; this layout lets each chip keep its intrinsic size
+/// and wraps to the next line only when the width is exhausted (same behaviour as
+/// `TagFlowLayout` in `PostInfoSheetView`).
+private struct PopularTagFlowLayout: Layout {
+    var spacing: CGFloat = 8
+    var lineSpacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var lineHeight: CGFloat = 0
+        var contentWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0
+                y += lineHeight + lineSpacing
+                lineHeight = 0
+            }
+            contentWidth = max(contentWidth, x + size.width)
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
+        }
+
+        return CGSize(
+            width: maxWidth.isFinite ? maxWidth : contentWidth,
+            height: y + lineHeight
+        )
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var lineHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += lineHeight + lineSpacing
+                lineHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            lineHeight = max(lineHeight, size.height)
         }
     }
 }

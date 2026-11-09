@@ -23,6 +23,12 @@ struct RootTabView: View {
 
     private let container: AppContainer
 
+    /// Bottom clearance reserved under every tab's content, matching the height of the iOS 26
+    /// floating tab bar capsule (~57pt) plus its spacing. Without it the scroll area runs to the
+    /// window edge, so content scrolled to its end (settings footer, feed's last row) rests
+    /// underneath the bar and peeks into the home-indicator area.
+    private static let tabBarClearance: CGFloat = 68
+
     @State private var selectedTab: Tab = .explore
     @State private var explorePath: [TagSearchTarget] = []
     @State private var viewer: ViewerPresentation?
@@ -99,11 +105,12 @@ struct RootTabView: View {
 
             // The lock/curtain covers the whole window, including the tab bar.
             // `-forceLock` skips the biometric auto-prompt so the PIN pad stays on screen.
+            // No `.ignoresSafeArea()` here: the pad keeps its top inset so the padlock badge
+            // clears the Dynamic Island, and `LockScreenView` bleeds its opaque layers itself.
             LockScreenView(
                 controller: container.lockController,
                 useBiometrics: !container.launchOptions.forceLock
             )
-            .ignoresSafeArea()
             .allowsHitTesting(
                 container.lockController.isLocked
                     || container.lockController.isPrivacyCurtainVisible
@@ -158,6 +165,7 @@ struct RootTabView: View {
                 detailScreen(for: target)
             }
         }
+        .padding(.bottom, Self.tabBarClearance)
     }
 
     private var searchTab: some View {
@@ -181,6 +189,7 @@ struct RootTabView: View {
             .toolbar(.hidden, for: .navigationBar)
             .id(searchToken)
         }
+        .padding(.bottom, Self.tabBarClearance)
     }
 
     private var favoritesTab: some View {
@@ -197,12 +206,14 @@ struct RootTabView: View {
                 onOpenPost: { posts, index in openViewer(posts, index) }
             )
         }
+        .padding(.bottom, Self.tabBarClearance)
     }
 
     private var settingsTab: some View {
         NavigationStack {
             SettingsScreen(viewModel: settingsModel)
         }
+        .padding(.bottom, Self.tabBarClearance)
     }
 
     // MARK: - Navigation
