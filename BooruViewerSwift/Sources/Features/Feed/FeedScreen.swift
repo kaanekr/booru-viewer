@@ -19,11 +19,27 @@ struct FeedScreen: View {
     @State private var headerHeight: CGFloat = 132
     /// Vertical slide of the header; `-headerHeight` means fully scrolled away.
     @State private var headerSlide: CGFloat = 0
+    /// Directional show/hide accumulator for the header (RN `advanceScrollHeader`).
+    @State private var headerState = ScrollAwayHeaderState()
+    /// Memoized masonry split: rebuilt only when the page or the column width changes,
+    /// never on plain body evaluation.
+    @State private var columns: [[BooruPost]] = [[], []]
+    /// Bumped by a header tap; the grid observes it and scrolls back to the top.
+    @State private var scrollToTopSignal = 0
 
     private static let columnSpacing: CGFloat = 12
     private static let horizontalPadding: CGFloat = 12
+    /// Bottom breathing room inside the scroll content; the tab-bar clearance is
+    /// handled by the host, not here.
+    private static let bottomPadding: CGFloat = 12
     /// Named space the scroll-offset reader measures against.
     private static let scrollSpace = "feedScroll"
+    /// Anchor for "tap the header to jump to the top" (FeedScreen.tsx:340).
+    private static let topAnchor = "feedTopAnchor"
+    /// RN slide duration for the header (scrollAwayHeader.ts:66).
+    private static let headerAnimationDuration: Double = 0.18
+    /// Duration of the header-tap scroll back to the top.
+    private static let scrollToTopDuration: Double = 0.25
 
     /// - Parameters:
     ///   - settings: image quality, grid previews, and the starting source/order.
@@ -92,6 +108,12 @@ struct FeedScreen: View {
                 headerHeight = height
             }
         }
+        .onChange(of: headerHeight) { _, _ in
+            resetHeaderSlide()
+        }
+        .onChange(of: isHeaderPinned) { _, _ in
+            resetHeaderSlide()
+        }
         .sheet(isPresented: $isSourceSheetOpen) {
             SourceSheetView(selectedSource: model.sourceID) { id in
                 isSourceSheetOpen = false
@@ -133,76 +155,105 @@ struct FeedScreen: View {
     // MARK: Grid
 
     private var grid: some View {
-        ScrollView {
-            VStack(spacing: Self.columnSpacing) {
-                // Space for the overlaid header so the first row starts below it.
-                Color.clear.frame(height: headerHeight)
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let columnWidth = Self.columnWidth(for: width)
 
-                HStack(alignment: .top, spacing: Self.columnSpacing) {
-                    column(leftColumn)
-                    column(rightColumn)
-                }
+            ScrollViewReader { scrollProxy in
+                ScrollView {
+                    VStack(spacing: Self.columnSpacing) {
+                        // Space for the overlaid header so the first row starts below it.
+                        // Also the anchor the header tap scrolls back to.
+                        Color.clear
+                            .frame(height: headerHeight)
+                            .id(Self.topAnchor)
 
-                footer
-            }
-            .padding(.horizontal, Self.horizontalPadding)
-            .padding(.bottom, 24)
-            .background {
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: FeedScrollOffsetKey.self,
-                        value: -proxy.frame(in: .named(Self.scrollSpace)).minY
-                    )
+                        HStack(alignment: .top, spacing: Self.columnSpacing) {
+                            ForEach(columns.indices, id: \.self) { index in
+                                column(columns[index], width: columnWidth)
+                            }
+                        }
+
+                        footer
+                    }
+                    .padding(.horizontal, Self.horizontalPadding)
+                    .padding(.bottom, Self.bottomPadding)
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(
+                                key: FeedScrollOffsetKey.self,
+                                value: -proxy.frame(in: .named(Self.scrollSpace)).minY
+                            )
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+                .coordinateSpace(name: Self.scrollSpace)
+                .onAppear {
+                    rebuildColumns(width: width)
+                }
+                .onChange(of: width) { _, newWidth in
+                    rebuildColumns(width: newWidth)
+                }
+                .onChange(of: model.posts) { _, _ in
+                    rebuildColumns(width: width)
+                }
+                .onChange(of: scrollToTopSignal) { _, _ in
+                    withAnimation(.easeOut(duration: Self.scrollToTopDuration)) {
+                        scrollProxy.scrollTo(Self.topAnchor, anchor: .top)
+                    }
+                }
+                .onPreferenceChange(FeedScrollOffsetKey.self) { offset in
+                    updateHeader(for: offset)
+                }
+                .refreshable {
+                    await model.refresh()
                 }
             }
-        }
-        .scrollIndicators(.hidden)
-        .coordinateSpace(name: Self.scrollSpace)
-        .onPreferenceChange(FeedScrollOffsetKey.self) { offset in
-            let limit = max(headerHeight, 0)
-            let slide = -min(max(offset, 0), limit)
-            if abs(slide - headerSlide) > 0.5 {
-                headerSlide = slide
-            }
-        }
-        .refreshable {
-            await model.refresh()
         }
     }
 
-    /// Height-balanced masonry: each card goes to the currently shorter column.
-    /// The weight is `1 / clampedAspectRatio` plus the uniform gap, which is the same
-    /// greedy assignment RN runs in points (FeedScreen.tsx:270-294).
-    private var columnSplit: (left: [BooruPost], right: [BooruPost]) {
-        var left: [BooruPost] = []
-        var right: [BooruPost] = []
-        var leftWeight = 0.0
-        var rightWeight = 0.0
-
-        for post in model.posts {
-            let weight = 1 / Self.clampedAspectRatio(post) + 0.07
-            if leftWeight <= rightWeight {
-                left.append(post)
-                leftWeight += weight
-            } else {
-                right.append(post)
-                rightWeight += weight
+    /// Memoized masonry split. Recomputed only when a page lands, the column width
+    /// changes, or the grid first appears — never on plain body evaluation.
+    private func rebuildColumns(width: CGFloat) {
+        let posts = model.posts
+        guard !posts.isEmpty else {
+            if !columns.allSatisfy(\.isEmpty) {
+                columns = [[], []]
             }
+            return
         }
-        return (left, right)
+
+        let columnWidth = Self.columnWidth(for: width)
+        var masonry = MasonryColumns()
+        let next = masonry.layout(posts) { post in
+            MasonryColumns.estimatedHeight(for: post, columnWidth: columnWidth)
+        }
+        if next != columns {
+            columns = next
+        }
     }
 
-    private var leftColumn: [BooruPost] { columnSplit.left }
-    private var rightColumn: [BooruPost] { columnSplit.right }
+    /// Equal column width that fits the measured grid exactly; the sub-point
+    /// remainder is dropped rather than letterboxing the cards.
+    private static func columnWidth(for totalWidth: CGFloat) -> CGFloat {
+        let usable = totalWidth - Self.horizontalPadding * 2 - Self.columnSpacing
+        guard usable > 0 else { return 0 }
+        return (usable / CGFloat(MasonryColumns.defaultColumnCount)).rounded(.down)
+    }
 
-    private func column(_ posts: [BooruPost]) -> some View {
+    private func column(_ posts: [BooruPost], width: CGFloat) -> some View {
         LazyVStack(spacing: Self.columnSpacing) {
             ForEach(posts) { post in
                 card(for: post)
             }
-            paginationSentinel
+            // Skip the sentinel while the memoized split is still empty, so an
+            // unbuilt column cannot request page 2 before the cards exist.
+            if !posts.isEmpty {
+                paginationSentinel
+            }
         }
-        .frame(maxWidth: .infinity, alignment: .top)
+        .frame(width: width > 0 ? width : nil, alignment: .top)
     }
 
     private func card(for post: BooruPost) -> some View {
@@ -252,17 +303,53 @@ struct FeedScreen: View {
 
     // MARK: Header
 
+    /// Directional header reveal/hide. RN hides it once the grid has moved down
+    /// 12pt and reveals it again after 12pt back up, no matter the absolute offset
+    /// (src/utils/scrollAwayHeader.ts:14-27).
+    private func updateHeader(for offset: CGFloat) {
+        guard !isHeaderPinned else {
+            resetHeaderSlide()
+            return
+        }
+        let hidden = headerState.advance(to: offset, height: headerHeight)
+        setHeaderSlide(hidden ? -max(headerHeight, 0) : 0)
+    }
+
+    private func setHeaderSlide(_ slide: CGFloat) {
+        guard abs(slide - headerSlide) > 0.5 else { return }
+        withAnimation(.easeOut(duration: Self.headerAnimationDuration)) {
+            headerSlide = slide
+        }
+    }
+
+    /// Pinned refreshes, header remeasurement, and the source sheet put it back.
+    private func resetHeaderSlide() {
+        headerState.reset()
+        setHeaderSlide(0)
+    }
+
+    /// RN scrolls the grid to y: 0 when the "Explore" title is tapped
+    /// (src/screens/FeedScreen.tsx:338-346).
+    private func scrollGridToTop() {
+        scrollToTopSignal &+= 1
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .center, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Explore")
-                        .font(.system(size: 26, weight: .heavy))
-                        .foregroundStyle(AppTheme.textPrimary)
-                    Text(subtitle)
-                        .font(.system(size: 12))
-                        .foregroundStyle(AppTheme.textMuted)
+                Button(action: scrollGridToTop) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Explore")
+                            .font(.system(size: 26, weight: .heavy))
+                            .foregroundStyle(AppTheme.textPrimary)
+                        Text(subtitle)
+                            .font(.system(size: 12))
+                            .foregroundStyle(AppTheme.textMuted)
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Explore. Scroll to top")
 
                 Spacer(minLength: 8)
 
@@ -499,12 +586,6 @@ struct FeedScreen: View {
         }
         return raw
     }
-
-    /// RN clamp (PostCard.tsx:84), reused for the column balance.
-    private static func clampedAspectRatio(_ post: BooruPost) -> Double {
-        let raw = post.aspectRatio > 0 ? post.aspectRatio : 0.75
-        return min(1.4, max(0.6, raw))
-    }
 }
 
 /// Scroll offset of the feed grid, measured from the top of the scroll content.
@@ -513,5 +594,51 @@ private struct FeedScrollOffsetKey: PreferenceKey {
 
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
+    }
+}
+
+/// Directional show/hide accumulator for the Explore header, mirroring RN
+/// `advanceScrollHeader` (src/utils/scrollAwayHeader.ts:14-27).
+///
+/// Rubber-band movement is ignored, the header cannot hide until the grid has
+/// scrolled past it, and a deliberate 12pt move in one direction flips the state.
+/// The per-event travel is clamped so a fast fling still needs a real reversal.
+private struct ScrollAwayHeaderState {
+    /// Previous clamped offset; nil until the first scroll event.
+    private var offset: CGFloat?
+    /// Accumulated movement in the current direction, clamped to ±12.
+    private var travel: CGFloat = 0
+    private(set) var hidden = false
+
+    mutating func advance(to rawOffset: CGFloat, height: CGFloat) -> Bool {
+        guard height > 0 else { return hidden }
+        let offset = max(rawOffset, 0)
+        if offset <= 0 {
+            reset()
+            return hidden
+        }
+        guard let previous = self.offset else {
+            self.offset = offset
+            return hidden
+        }
+
+        let delta = offset - previous
+        if delta != 0 {
+            travel = delta.sign == travel.sign ? travel + delta : delta
+        }
+        if offset < height || travel <= -12 {
+            hidden = false
+        } else if travel >= 12 {
+            hidden = true
+        }
+        travel = min(12, max(-12, travel))
+        self.offset = offset
+        return hidden
+    }
+
+    mutating func reset() {
+        offset = nil
+        travel = 0
+        hidden = false
     }
 }
