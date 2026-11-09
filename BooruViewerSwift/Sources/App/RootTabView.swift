@@ -350,8 +350,8 @@ struct RootTabView: View {
         if let presented = controller.presentedViewController {
             theme(controller: presented, color: color, visited: &visited)
         }
-        #endif
     }
+    #endif
 
     // MARK: - Navigation
 
