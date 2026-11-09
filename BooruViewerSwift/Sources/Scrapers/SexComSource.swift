@@ -160,7 +160,15 @@ struct SexComSource: BooruSource {
             return nil
         }
         guard let playable = playableURL(from: parseDetailFiles(html: html)) else { return nil }
-        return HTMLScanner.absoluteURL(playable, base: baseURL)
+        return normalizedURL(playable)
+    }
+
+    /// Scraped cover or preview-clip value as a usable URL: made absolute against the site
+    /// base, then normalized (`MediaURLNormalizer`) so an `http://` cover becomes `https://`
+    /// (media.ts:175-204).
+    private static func normalizedURL(_ raw: String?) -> URL? {
+        guard let raw, !raw.isEmpty else { return nil }
+        return MediaURLNormalizer.normalize(HTMLScanner.absoluteURL(raw, base: baseURL), sourceID: .sexcom)
     }
 
     /// `premium-` CDN hosts serve streams that need an account (sexcom.ts:180-181).
@@ -207,10 +215,9 @@ struct SexComSource: BooruSource {
                   let href = HTMLScanner.firstCapture(Pattern.videoHref, in: card)
             else { continue }
 
-            let thumbURL = HTMLScanner.firstCapture(Pattern.thumbnail, in: card)
-                .flatMap { HTMLScanner.absoluteURL($0, base: baseURL) }
+            let thumbURL = normalizedURL(HTMLScanner.firstCapture(Pattern.thumbnail, in: card))
             let previewVideo = decodedCapture(Pattern.videoSource, in: card, caseInsensitive: true)
-            let videoURL = previewVideo.isEmpty ? nil : HTMLScanner.absoluteURL(previewVideo, base: baseURL)
+            let videoURL = normalizedURL(previewVideo)
             guard let previewURL = thumbURL ?? videoURL else { continue }
 
             let rawTitle = HTMLScanner.firstCapture(Pattern.dataTitle, in: card)
@@ -254,7 +261,7 @@ struct SexComSource: BooruSource {
                 favCount: score,
                 tags: BooruTagGroups(artist: artist, character: [], copyright: [], general: general, meta: ["video"]),
                 allTags: artist,
-                sourceLink: HTMLScanner.absoluteURL(HTMLScanner.decodeEntities(href), base: baseURL),
+                sourceLink: normalizedURL(HTMLScanner.decodeEntities(href)),
                 fileExt: "mp4",
                 fileSize: nil,
                 createdAt: createdAt,

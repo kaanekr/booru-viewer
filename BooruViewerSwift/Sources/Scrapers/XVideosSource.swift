@@ -165,7 +165,9 @@ struct XVideosSource: BooruSource {
         // The card only carries a hover preview; the playable mp4 is token-limited and resolved fresh at viewer open (xvideos.ts:202-204).
         let candidate = VideoCandidateSelector.videoCandidates(for: post).first
         let detail = try await Self.detailVideoURL(for: post, context: context)
-        let video = detail ?? candidate
+        // The hover clip keeps the post playable when the watch page cannot be read.
+        let fallback = MediaURLNormalizer.normalize(post.previewVideoURL, sourceID: .xvideos)
+        let video = detail ?? candidate ?? fallback
         return ResolvedMedia(
             imageURL: ImageQualityResolver.imageURL(for: post, quality: context.imageQuality),
             videoURL: video,
@@ -229,7 +231,7 @@ struct XVideosSource: BooruSource {
         let files = parseDetailFiles(html: html)
         for value in [files.high, files.low, files.hls] where !value.isEmpty {
             if let url = HTMLScanner.absoluteURL(value, base: baseURL) {
-                return url
+                return MediaURLNormalizer.normalize(url, sourceID: .xvideos)
             }
         }
         return nil
@@ -393,7 +395,7 @@ struct XVideosSource: BooruSource {
         href: String,
         createdAt: String
     ) -> BooruPost? {
-        guard let preview = URL(string: template.replacingOccurrences(of: "THUMBNUM", with: "1")) else {
+        guard let preview = mediaURL(template.replacingOccurrences(of: "THUMBNUM", with: "1")) else {
             return nil
         }
         let title = HTMLScanner.trim(HTMLScanner.decodeEntities(firstMatch(in: card, patterns: [
@@ -412,7 +414,7 @@ struct XVideosSource: BooruSource {
             title: title.isEmpty ? nil : title,
             previewURL: preview,
             previewFallbackURL: nil,
-            previewVideoURL: previewVideo.flatMap { URL(string: $0) },
+            previewVideoURL: mediaURL(previewVideo),
             previewThumbURL: nil,
             previewThumbs: thumbnailFrames(template),
             sampleURL: preview,
@@ -461,6 +463,16 @@ struct XVideosSource: BooruSource {
         return HTMLScanner.absoluteURL(value, base: baseURL)?.absoluteString
     }
 
+    /// Scraped thumbnail, frame, or preview-clip value as a usable URL: made absolute against
+    /// the site base, then normalized so a protocol-relative `//host/...` attribute and a
+    /// `&amp;` entity can never produce an invalid cover or clip URL
+    /// (RN `mediaUrl` + `normalizeBooruMediaUrl`, media.ts:175-204).
+    private static func mediaURL(_ raw: String?) -> URL? {
+        guard let raw else { return nil }
+        let absolute = HTMLScanner.absoluteURL(HTMLScanner.decodeEntities(raw), base: baseURL)
+        return MediaURLNormalizer.normalize(absolute, sourceID: .xvideos)
+    }
+
     /// Frames for hover scrubbing (xvideos.ts:140-147). Returns nil when the template has no frame pattern.
     private static func thumbnailFrames(_ template: String) -> [URL]? {
         let frames: [String]
@@ -475,7 +487,7 @@ struct XVideosSource: BooruSource {
         } else {
             return nil
         }
-        let urls = frames.compactMap { URL(string: $0) }
+        let urls = frames.compactMap { mediaURL($0) }
         return urls.isEmpty ? nil : urls
     }
 

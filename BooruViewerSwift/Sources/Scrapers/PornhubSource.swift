@@ -105,7 +105,9 @@ struct PornhubSource: BooruSource {
         // The card carries only the hover clip; the stream is token-limited and resolved at viewer open.
         let candidate = VideoCandidateSelector.videoCandidates(for: post).first
         let stream = try await streamURL(for: post, context: context)
-        let video = stream ?? candidate
+        // Both the plain page and the challenge solver can miss the stream, so the card's own
+        // hover clip stays playable instead of leaving the post with only a cover.
+        let video = stream ?? candidate ?? Self.iosPlayable(MediaURLNormalizer.normalize(post.previewVideoURL, sourceID: .pornhub))
         return ResolvedMedia(
             imageURL: ImageQualityResolver.imageURL(for: post, quality: context.imageQuality),
             videoURL: video,
@@ -417,12 +419,12 @@ struct PornhubSource: BooruSource {
             sourceID: .pornhub,
             sourceName: "Pornhub",
             title: title.isEmpty ? nil : title,
-            previewURL: URL(string: thumb),
+            previewURL: mediaURL(thumb),
             previewFallbackURL: nil,
             previewVideoURL: nil,
-            previewThumbURL: previewThumbs.last.flatMap { URL(string: $0) },
-            previewThumbs: previewThumbs.count > 1 ? previewThumbs.compactMap { URL(string: $0) } : nil,
-            sampleURL: URL(string: thumb),
+            previewThumbURL: mediaURL(previewThumbs.last),
+            previewThumbs: previewThumbs.count > 1 ? previewThumbs.compactMap { mediaURL($0) } : nil,
+            sampleURL: mediaURL(thumb),
             // The playable stream is token-limited and resolved at viewer open.
             originalURL: nil,
             width: width,
@@ -439,7 +441,10 @@ struct PornhubSource: BooruSource {
                 meta: ["video", "duration:\(durationSeconds(video["duration"]))s"]
             ),
             allTags: artists + categories + tagNames,
-            sourceLink: URL(string: sourceLink),
+            sourceLink: MediaURLNormalizer.normalize(
+                HTMLScanner.absoluteURL(sourceLink, base: baseURL),
+                sourceID: .pornhub
+            ),
             fileExt: "mp4",
             fileSize: nil,
             createdAt: createdAt,
@@ -497,18 +502,21 @@ struct PornhubSource: BooruSource {
                 ?? []
 
             seen.insert(vkey)
-            let previewVideoURL = previewVideo.isEmpty ? nil : HTMLScanner.absoluteURL(previewVideo, base: baseURL)
+            let previewVideoURL = mediaURL(previewVideo)
+            // The `.webm` flipbook (`data-mediabook`) is a hover clip, not a cover: an image
+            // view cannot render it and iOS drops WebM, so `sampleURL` keeps the high-res thumb.
+            let thumbURL = mediaURL(thumb)
             posts.append(BooruPost(
                 id: "ph_" + vkey,
                 sourceID: .pornhub,
                 sourceName: "Pornhub",
                 title: title.isEmpty ? nil : title,
-                previewURL: HTMLScanner.absoluteURL(thumb, base: baseURL),
+                previewURL: thumbURL,
                 previewFallbackURL: nil,
                 previewVideoURL: previewVideoURL,
-                previewThumbURL: previewThumbs.last.flatMap { URL(string: $0) } ?? HTMLScanner.absoluteURL(poster, base: baseURL),
-                previewThumbs: previewThumbs.count > 1 ? previewThumbs.compactMap { URL(string: $0) } : nil,
-                sampleURL: previewVideoURL ?? HTMLScanner.absoluteURL(thumb, base: baseURL),
+                previewThumbURL: mediaURL(previewThumbs.last) ?? mediaURL(poster),
+                previewThumbs: previewThumbs.count > 1 ? previewThumbs.compactMap { mediaURL($0) } : nil,
+                sampleURL: thumbURL,
                 originalURL: nil,
                 width: 640,
                 height: 360,
@@ -580,6 +588,24 @@ struct PornhubSource: BooruSource {
     }
 
     // MARK: - Private helpers
+
+    /// Scraped cover or clip value as a usable URL: made absolute against the site base, then
+    /// normalized (`MediaURLNormalizer`) so protocol-relative values and `&amp;` entities never
+    /// become an invalid cover (media.ts:175-204).
+    private static func mediaURL(_ raw: String?) -> URL? {
+        guard let raw else { return nil }
+        return MediaURLNormalizer.normalize(HTMLScanner.absoluteURL(raw, base: baseURL), sourceID: .pornhub)
+    }
+
+    /// The hover clip when AVPlayer can decode it: WebM containers and AV1 renditions cannot
+    /// (media.ts:364-374), so they never become the viewer's stream.
+    private static func iosPlayable(_ url: URL?) -> URL? {
+        guard let url else { return nil }
+        let raw = url.absoluteString.lowercased()
+        let path = raw.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? raw
+        if path.contains(".webm") || path.hasSuffix(".av1") || path.contains(".av1.") { return nil }
+        return url
+    }
 
     /// First capture group of the first pattern that matches.
     private static func firstCapture(in text: String, patterns: [String]) -> String? {

@@ -12,6 +12,12 @@ struct FeedScreen: View {
     private let favoriteKeys: Set<String>
     private let onSelectTag: ((String) -> Void)?
     private let onOpenPost: ([BooruPost], Int) -> Void
+    /// Request context handed to the model at build time and re-pushed on `contextVersion` changes.
+    private let context: SourceContext
+    /// Bumped by the app layer whenever the request context (Worker, keys, quality) changes.
+    private let contextVersion: Int
+    /// Persists a source picked in the sheet so every tab follows the switch.
+    private let onSelectSource: ((SourceID) -> Void)?
 
     @State private var model: FeedViewModel
     @State private var isSourceSheetOpen = false
@@ -50,19 +56,27 @@ struct FeedScreen: View {
     ///   - onSelectTag: trending-tag tap; the app layer pushes a search for the tag.
     ///   - onOpenPost: opens the viewer at `index` inside the loaded list
     ///     (RN `pushViewer(posts, idx)`, FeedScreen.tsx:325-330).
+    ///   - contextVersion: app-level change counter for the request context; a new value pushes
+    ///     the fresh `context` into the view model without rebuilding the screen.
+    ///   - onSelectSource: persists a source switch made in the sheet (FeedScreen.tsx:215-226).
     init(
         settings: AppSettings,
         context: SourceContext,
         blacklistedTags: [String] = [],
         favoriteKeys: Set<String> = [],
+        contextVersion: Int = 0,
         sourceProvider: @escaping FeedViewModel.SourceProvider = { SourceRegistry.source(for: $0) },
         onSelectTag: ((String) -> Void)? = nil,
+        onSelectSource: ((SourceID) -> Void)? = nil,
         onOpenPost: @escaping ([BooruPost], Int) -> Void
     ) {
         self.settings = settings
         self.favoriteKeys = favoriteKeys
         self.onSelectTag = onSelectTag
         self.onOpenPost = onOpenPost
+        self.context = context
+        self.contextVersion = contextVersion
+        self.onSelectSource = onSelectSource
         _model = State(initialValue: FeedViewModel(
             sourceID: settings.activeSourceID,
             context: context,
@@ -78,13 +92,18 @@ struct FeedScreen: View {
         viewModel: FeedViewModel,
         settings: AppSettings,
         favoriteKeys: Set<String> = [],
+        contextVersion: Int = 0,
         onSelectTag: ((String) -> Void)? = nil,
+        onSelectSource: ((SourceID) -> Void)? = nil,
         onOpenPost: @escaping ([BooruPost], Int) -> Void
     ) {
         self.settings = settings
         self.favoriteKeys = favoriteKeys
         self.onSelectTag = onSelectTag
         self.onOpenPost = onOpenPost
+        self.context = viewModel.context
+        self.contextVersion = contextVersion
+        self.onSelectSource = onSelectSource
         _model = State(initialValue: viewModel)
     }
 
@@ -117,6 +136,8 @@ struct FeedScreen: View {
         .sheet(isPresented: $isSourceSheetOpen) {
             SourceSheetView(selectedSource: model.sourceID) { id in
                 isSourceSheetOpen = false
+                // Persist the pick so Explore, Search, and Settings stay in sync.
+                onSelectSource?(id)
                 Task { await model.selectSource(id) }
             }
             .presentationDetents([.medium, .large])
@@ -124,6 +145,13 @@ struct FeedScreen: View {
         }
         .task {
             await model.loadInitialIfNeeded()
+        }
+        .onAppear {
+            model.updateContext(context)
+        }
+        .onChange(of: contextVersion) { _, _ in
+            // A Worker URL, API key, or quality edit pushes a fresh context into the model.
+            model.updateContext(context)
         }
         .onChange(of: settings.activeSourceID) { _, newValue in
             guard newValue != model.sourceID else { return }

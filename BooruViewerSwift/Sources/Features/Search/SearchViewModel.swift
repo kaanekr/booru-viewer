@@ -28,7 +28,7 @@ final class SearchViewModel {
 
     // MARK: Dependencies
 
-    private let context: SourceContext
+    private(set) var context: SourceContext
     private let historyStore: any SearchHistoryStoring
     private let sourceProvider: SourceProvider
     private var blacklist: BlacklistMatcher
@@ -133,6 +133,24 @@ final class SearchViewModel {
     /// Reloads the persisted search history.
     func loadHistory() async {
         history = (try? await historyStore.list()) ?? []
+    }
+
+    /// Swaps the transport/credentials after a Settings edit.
+    ///
+    /// A Worker or API-key change only matters once a search is active; when the current
+    /// search has no results (empty or failed) it is retried immediately, so the new proxy
+    /// takes effect without restarting the app. An unchanged context is a no-op.
+    func updateContext(_ newContext: SourceContext) {
+        let previous = context
+        context = newContext
+
+        let proxyChanged = newContext.proxy.enabled != previous.proxy.enabled
+            || newContext.proxy.workerURL != previous.proxy.workerURL
+        let authChanged = !Self.sameCredentials(newContext.gelbooruAuth, previous.gelbooruAuth)
+            || !Self.sameCredentials(newContext.rule34Auth, previous.rule34Auth)
+        guard proxyChanged || authChanged else { return }
+        guard isSearchActive, results.isEmpty, !isLoading, !isLoadingMore else { return }
+        executeSearch(filter)
     }
 
     /// Applies a new blacklist and re-filters the posts already on screen.
@@ -545,5 +563,10 @@ final class SearchViewModel {
         }
         let message = error.localizedDescription
         return message.isEmpty ? "An error occurred while searching." : message
+    }
+
+    /// `ApiAuth` is not `Equatable`; compare the two stored fields instead.
+    private static func sameCredentials(_ lhs: ApiAuth?, _ rhs: ApiAuth?) -> Bool {
+        (lhs?.userID ?? "") == (rhs?.userID ?? "") && (lhs?.apiKey ?? "") == (rhs?.apiKey ?? "")
     }
 }

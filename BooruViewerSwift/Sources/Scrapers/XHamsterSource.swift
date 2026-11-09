@@ -246,7 +246,7 @@ struct XHamsterSource: BooruSource {
         let files = parseDetailFiles(html: html)
         for value in [files.high, files.low, files.hls] where !value.isEmpty {
             if let url = HTMLScanner.absoluteURL(value, base: baseURL) {
-                return url
+                return MediaURLNormalizer.normalize(url, sourceID: .xhamster)
             }
         }
         return nil
@@ -281,6 +281,15 @@ struct XHamsterSource: BooruSource {
     private static func h264(_ value: String) -> String {
         let first = HTMLScanner.replace(Pattern.av1Token, in: value, with: "$1h264$2", caseInsensitive: true)
         return HTMLScanner.replace(Pattern.av1Extension, in: first, with: ".h264.", caseInsensitive: true)
+    }
+
+    /// Scraped cover or trailer value as a usable URL: made absolute against the site base,
+    /// then normalized (`MediaURLNormalizer`) so `http://` becomes `https://` and an
+    /// `xhcdn` `.av1.` rendition becomes the `.h264.` one AVPlayer can decode
+    /// (media.ts:175-204).
+    private static func normalizedURL(_ raw: String?) -> URL? {
+        guard let raw, !raw.isEmpty else { return nil }
+        return MediaURLNormalizer.normalize(HTMLScanner.absoluteURL(raw, base: baseURL), sourceID: .xhamster)
     }
 
     // MARK: - Order and URLs
@@ -390,8 +399,8 @@ struct XHamsterSource: BooruSource {
             let initData = initials[videoID]
             let videoString = previewVideoValue(card: card, initData: initData)
             let thumbString = thumbnailValue(card: card, initData: initData)
-            let thumbURL = HTMLScanner.absoluteURL(thumbString, base: baseURL)
-            let videoURL = videoString.flatMap { HTMLScanner.absoluteURL($0, base: baseURL) }
+            let thumbURL = normalizedURL(thumbString)
+            let videoURL = videoString.flatMap { normalizedURL($0) }
             guard let previewURL = thumbURL ?? videoURL else { continue }
 
             let title = titleValue(card: card, initData: initData)
@@ -402,7 +411,7 @@ struct XHamsterSource: BooruSource {
             let viewsText = HTMLScanner.firstCapture(Pattern.views, in: card, caseInsensitive: true)
                 .map { HTMLScanner.stripTags($0) } ?? ""
             let score = HTMLScanner.parseCount(viewsText)
-            let sourceLink = hrefValue(card: card).flatMap { HTMLScanner.absoluteURL($0, base: baseURL) }
+            let sourceLink = hrefValue(card: card).flatMap { normalizedURL($0) }
 
             let artist: [String] = uploader.isEmpty ? [] : [uploader]
             let durationTags: [String] = duration.isEmpty ? [] : ["duration:\(duration)"]
