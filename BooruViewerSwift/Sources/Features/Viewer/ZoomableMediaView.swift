@@ -1,5 +1,5 @@
 import SwiftUI
-import AVKit
+import AVFoundation
 import Foundation
 
 /// One page of the full-screen viewer: an image with pinch / double-tap zoom, a
@@ -225,6 +225,12 @@ private func clampZoomOffset(
 
 /// `AVPlayer`-backed video page with play/pause, a scrubber and a mute toggle
 /// (RN video controls, ImageViewerModal.tsx:1993-2500).
+///
+/// The surface is a bare `AVPlayerLayer` (`AVPlayerSurfaceView`), so the native
+/// `AVPlayerViewController` transport bar never appears alongside these controls.
+/// Items are built through `MediaRequestConfiguration`, which means the request
+/// carries the per-host `Referer`/`User-Agent` and routes TLS-fragile CDNs through
+/// the worker; a failed playback retries once on the alternate leg.
 private struct PrivateVideoPlaybackView: View {
     let url: URL
     var isActive: Bool
@@ -237,13 +243,15 @@ private struct PrivateVideoPlaybackView: View {
     @State private var duration: Double = 0
     @State private var isScrubbing = false
     @State private var timeObserver: Any?
+    /// Set once the alternate route leg has been tried, so a dead URL cannot loop.
+    @State private var didRetryAlternate = false
 
     var body: some View {
         ZStack {
             Color.black
 
             if let player {
-                VideoPlayer(player: player)
+                AVPlayerSurfaceView(player: player, videoGravity: .resizeAspect)
                     .ignoresSafeArea()
                     .onTapGesture { onSingleTap?() }
                     .overlay(alignment: .bottom) {
@@ -323,7 +331,8 @@ private struct PrivateVideoPlaybackView: View {
 
     private func setUp() {
         guard player == nil else { return }
-        let newPlayer = AVPlayer(playerItem: AVPlayerItem(url: url))
+        didRetryAlternate = false
+        let newPlayer = AVPlayer(playerItem: MediaRequestConfiguration.makePlayerItem(for: url))
         newPlayer.isMuted = isMuted
         player = newPlayer
         currentTime = 0
@@ -332,6 +341,11 @@ private struct PrivateVideoPlaybackView: View {
             forInterval: CMTime(seconds: 0.5, preferredTimescale: 600),
             queue: .main
         ) { time in
+            // A relayed leg can fail mid-load; the alternate leg is tried once.
+            if newPlayer.currentItem?.status == .failed {
+                retryAlternateLeg()
+                return
+            }
             guard !isScrubbing else { return }
             let seconds = time.seconds
             if seconds.isFinite {
@@ -343,6 +357,23 @@ private struct PrivateVideoPlaybackView: View {
         }
         if isActive {
             newPlayer.play()
+            isPlaying = true
+        }
+    }
+
+    /// Swaps in the other route leg (direct ⇄ relay) after a playback failure so
+    /// a TLS-fragile or relay-blocked source still plays. Runs at most once.
+    private func retryAlternateLeg() {
+        guard !didRetryAlternate, let player else { return }
+        didRetryAlternate = true
+        let attempts = MediaRequestConfiguration.routeAttempts(for: url)
+        guard attempts.count > 1 else { return }
+        let alternate = attempts[1]
+        player.replaceCurrentItem(with: MediaRequestConfiguration.makePlayerItem(for: alternate))
+        currentTime = 0
+        duration = 0
+        if isActive {
+            player.play()
             isPlaying = true
         }
     }

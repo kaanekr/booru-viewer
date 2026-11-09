@@ -103,6 +103,7 @@ final class AppContainer {
     /// `-forceLock` additionally locks the app so the PIN pad can be screenshotted.
     func bootstrap() async {
         await reloadSharedState()
+        MediaRequestConfiguration.updateCurrentProxy(settings.proxy)
         await lockController.prepareForLaunch()
         if launchOptions.forceLock {
             lockController.lockNow()
@@ -119,9 +120,44 @@ final class AppContainer {
         if let loaded = try? await settingsStore.load() {
             settings = loaded
         }
+        MediaRequestConfiguration.updateCurrentProxy(settings.proxy)
         blacklistedTags = (try? await blacklistedTagsStore.list()) ?? []
         await reloadFavorites()
         await loadCredentials()
+    }
+
+    /// Bumped whenever `makeSourceContext()` would produce a different request context.
+    ///
+    /// Screens watch this to swap their `SourceContext` after a Settings edit (Worker URL,
+    /// proxy toggle, API key, image quality) instead of keeping the value they were built with.
+    var contextVersion: Int {
+        var hasher = Hasher()
+        hasher.combine(settings.proxy.enabled)
+        hasher.combine(settings.proxy.workerURL)
+        hasher.combine(settings.imageQuality.rawValue)
+        hasher.combine(gelbooruAuth?.userID)
+        hasher.combine(gelbooruAuth?.apiKey)
+        hasher.combine(rule34Auth?.userID)
+        hasher.combine(rule34Auth?.apiKey)
+        return hasher.finalize()
+    }
+
+    /// Persists a source picked from a screen's source sheet.
+    ///
+    /// Explore, Search, and Settings all read `activeSourceID` from these settings, so the
+    /// switch has to be stored here rather than only in the view model.
+    func persistActiveSource(_ id: SourceID) async {
+        guard settings.activeSourceID != id else { return }
+        var updated = settings
+        updated.activeSourceID = id
+        do {
+            try await settingsStore.save(updated)
+        } catch {
+            return
+        }
+        settings = updated
+        // Unchanged, but the media pipeline reads the stored Worker from this path too.
+        MediaRequestConfiguration.updateCurrentProxy(settings.proxy)
     }
 
     /// Refreshes only the favorite key set, e.g. after the viewer toggled a favorite.

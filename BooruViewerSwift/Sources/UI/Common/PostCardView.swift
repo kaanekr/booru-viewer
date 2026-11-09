@@ -1,4 +1,4 @@
-import AVKit
+import AVFoundation
 import Foundation
 import SwiftUI
 
@@ -205,35 +205,54 @@ struct PostCardView: View {
     private var cardContent: some View {
         Color.clear
             .aspectRatio(CGFloat(aspectRatio), contentMode: .fit)
-            .overlay {
-                ZStack {
-                    AsyncMediaImage(url: coverURL, fallbackURLs: coverFallbacks, contentMode: .fill)
-
-                    if let videoURL {
-                        MutedLoopingVideo(url: videoURL)
-                            .id(videoURL)
-                    } else if let currentFrame {
-                        AsyncMediaImage(url: currentFrame, contentMode: .fill)
-                            .id(currentFrame)
-                    }
-
-                    LinearGradient(
-                        colors: [Color.black.opacity(0.02), Color.black.opacity(0.38)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .allowsHitTesting(false)
-
-                    topBadges
-                    bottomBadges
-                }
-            }
+            .overlay { mediaFrame }
+            .overlay { badgeStack }
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .stroke(AppTheme.border, lineWidth: 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    /// Cover plus motion, hard-clamped to the card's aspect-ratio frame. The
+    /// inline clip lives here (not in an outer overlay) so a live preview can
+    /// never negotiate the layout: the card keeps the geometry the grid measured.
+    private var mediaFrame: some View {
+        ZStack {
+            AsyncMediaImage(url: coverURL, fallbackURLs: coverFallbacks, contentMode: .fill)
+
+            if let videoURL {
+                MutedLoopingVideo(url: videoURL)
+                    .id(videoURL)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
+                    .allowsHitTesting(false)
+            } else if let currentFrame {
+                AsyncMediaImage(url: currentFrame, contentMode: .fill)
+                    .id(currentFrame)
+            }
+
+            LinearGradient(
+                colors: [Color.black.opacity(0.02), Color.black.opacity(0.38)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .allowsHitTesting(false)
+        }
+        .clipped()
+    }
+
+    /// Badges pinned to the card geometry: the explicit `maxWidth`/`maxHeight`
+    /// frame keeps each stack anchored to its corner of the image instead of
+    /// stretching with whatever the video layer reports.
+    private var badgeStack: some View {
+        ZStack {
+            topBadges
+            bottomBadges
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(false)
     }
 
     // MARK: Press / long press
@@ -418,7 +437,9 @@ private struct PressableCardStyle: ButtonStyle {
 ///
 /// `AVPlayerLooper` owns the loop so no end-of-item notification has to be wired up,
 /// and the player is paused as soon as the card leaves the grid (RN releases the
-/// native player for the same reason, PostCard.tsx:397-408).
+/// native player for the same reason, PostCard.tsx:397-408). Rendering goes through
+/// `AVPlayerSurfaceView` so the clip carries no native `AVKit` controls and no
+/// `AVPlayerViewController` layout of its own.
 private struct MutedLoopingVideo: View {
     let url: URL
 
@@ -426,7 +447,7 @@ private struct MutedLoopingVideo: View {
     @State private var looper: AVPlayerLooper?
 
     var body: some View {
-        VideoPlayer(player: player)
+        AVPlayerSurfaceView(player: player, videoGravity: .resizeAspectFill)
             .allowsHitTesting(false)
             .disabled(true)
             .onAppear(perform: start)
@@ -438,7 +459,9 @@ private struct MutedLoopingVideo: View {
             player.play()
             return
         }
-        let item = AVPlayerItem(url: url)
+        // Same routed, header-carrying item the viewer uses: relays TLS-fragile
+        // CDNs and sends the Referer/User-Agent AVPlayer omits by default.
+        let item = MediaRequestConfiguration.makePlayerItem(for: url)
         let queuePlayer = AVQueuePlayer()
         queuePlayer.isMuted = true
         looper = AVPlayerLooper(player: queuePlayer, templateItem: item)

@@ -31,6 +31,10 @@ struct RealbooruSource: BooruSource {
         static let dataExtAttribute = #"data-ext=["']([a-z0-9]+)["']"#
         /// Count in an autocomplete label, such as `(12)` (booruApi.ts:2426).
         static let countInLabel = #"\((\d+)\)"#
+        /// Detail page `<video><source src="...">`, the real playable file (media.ts:553).
+        static let detailSource = #"<source\s+[^>]*src="([^"]+)"[^>]*>"#
+        /// Detail page `<img src=".../images/...">`, the still a GIF post resolves to (media.ts:564).
+        static let detailImage = #"<img[^>]+src="([^"]*/images/[^"]+)"[^>]*>"#
     }
 
     func fetchPosts(query: SearchQuery, page: Int, context: SourceContext) async throws -> PostPage {
@@ -74,14 +78,118 @@ struct RealbooruSource: BooruSource {
     }
 
     func resolveMedia(for post: BooruPost, context: SourceContext) async throws -> ResolvedMedia {
-        let video = VideoCandidateSelector.videoCandidates(for: post).first
+        // The listing carries no file extension (video-ness comes from tags), so a card can
+        // only guess `.mp4` from its thumbnail hash. The detail page is the one place naming
+        // the real file: mp4, webm (some posts are webm-only), or the full GIF still
+        // (RN `resolveRealbooruVideoUrls`, ImageViewerModal.tsx:967-977).
+        let files = try await detailFiles(for: post, context: context)
+        let detailImage = Self.detailImageURL(files)
+        let detailVideo = Self.detailVideoURL(files)
+        // A detail page without `<video>` sources but with an `<img>` file means the card's
+        // "video" guess was wrong (a mistagged GIF): the image wins over the `.mp4` guess
+        // (ImageViewerModal.tsx:1174-1182).
+        let video = detailVideo ?? (detailImage == nil ? VideoCandidateSelector.videoCandidates(for: post).first : nil)
         return ResolvedMedia(
-            imageURL: ImageQualityResolver.imageURL(for: post, quality: context.imageQuality),
+            imageURL: detailImage ?? ImageQualityResolver.imageURL(for: post, quality: context.imageQuality),
             videoURL: video,
             isVideo: video != nil,
             placeholderURL: ImageQualityResolver.placeholderURL(for: post)
         )
     }
+
+    // MARK: - Detail page
+
+    /// Files of one detail page (RN `parseRealbooruDetail`, media.ts:550-576).
+    struct DetailFiles: Sendable {
+        /// `.mp4` full file, the preferred playable.
+        var mp4: String = ""
+        /// WebM full file: iOS cannot decode it, so its `.mp4` sibling is probed instead.
+        var webm: String = ""
+        /// Full still of a GIF post, which has no `<video>` tag.
+        var image: String = ""
+    }
+
+    /// Detail files of `post`, or nil when there is no page to read so the card URLs stay.
+    /// Cancellation propagates; any other failure is tolerated, like RN's `.catch(() => {})`.
+    private func detailFiles(for post: BooruPost, context: SourceContext) async throws -> DetailFiles? {
+        guard let pageURL = Self.detailPageURL(for: post) else { return nil }
+        let request = HTMLScanner.htmlRequest(pageURL, userAgent: Self.userAgent, referer: Self.baseURL + "/")
+        do {
+            return Self.parseDetailFiles(html: try await HTMLScanner.fetchHTML(request, client: context.http))
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            return nil
+        }
+    }
+
+    /// The post page itself, then the canonical `index.php?page=post&s=view&id=<raw id>`
+    /// (booruApi.ts:1174-1176).
+    static func detailPageURL(for post: BooruPost) -> URL? {
+        if let link = post.sourceLink, link.host != nil { return link }
+        let rawID = post.id.hasPrefix("realbooru_") ? String(post.id.dropFirst("realbooru_".count)) : post.id
+        guard !rawID.isEmpty else { return nil }
+        return URL(string: baseURL + "/index.php?page=post&s=view&id=" + HTMLScanner.componentEncode(rawID))
+    }
+
+    /// mp4 first, then webm (media.ts:579-582). The webm URL is handed on: the viewer's
+    /// `MP4Upgrade` probes its `.mp4` sibling, since AVPlayer cannot decode WebM.
+    static func detailVideoURL(_ files: DetailFiles?) -> URL? {
+        guard let files else { return nil }
+        for value in [files.mp4, files.webm] where !value.isEmpty {
+            if let url = HTMLScanner.absoluteURL(value, base: baseURL) {
+                return MediaURLNormalizer.normalize(url, sourceID: .realbooru)
+            }
+        }
+        return nil
+    }
+
+    /// Full still of a GIF post (media.ts:563-574).
+    static func detailImageURL(_ files: DetailFiles?) -> URL? {
+        guard let files, !files.image.isEmpty,
+              let url = HTMLScanner.absoluteURL(files.image, base: baseURL)
+        else { return nil }
+        return MediaURLNormalizer.normalize(url, sourceID: .realbooru)
+    }
+
+    /// Reads the detail page's `<video><source>` files, else the full `/images/` still
+    /// (RN `parseRealbooruDetail`, media.ts:550-576).
+    static func parseDetailFiles(html: String) -> DetailFiles {
+        var files = DetailFiles()
+        guard !html.isEmpty else { return files }
+        for groups in HTMLScanner.allCaptures(Pattern.detailSource, in: html, caseInsensitive: true) where groups.count > 1 {
+            let raw = normalizeFileURL(groups[1])
+            guard !raw.isEmpty else { continue }
+            let clean = raw.components(separatedBy: "?")[0].lowercased()
+            if clean.hasSuffix(".mp4") {
+                if files.mp4.isEmpty { files.mp4 = raw }
+            } else if clean.hasSuffix(".webm"), files.webm.isEmpty {
+                files.webm = raw
+            }
+            if !files.mp4.isEmpty, !files.webm.isEmpty { break }
+        }
+        guard files.mp4.isEmpty, files.webm.isEmpty else { return files }
+        for groups in HTMLScanner.allCaptures(Pattern.detailImage, in: html, caseInsensitive: true) where groups.count > 1 {
+            let raw = normalizeFileURL(groups[1])
+            guard !raw.isEmpty else { continue }
+            let clean = raw.components(separatedBy: "?")[0].lowercased()
+            if imageExtensions.contains(where: { clean.hasSuffix("." + $0) }) {
+                files.image = raw
+                break
+            }
+        }
+        return files
+    }
+
+    /// RN `normalizeRealbooruFileUrl` (media.ts:533-540): entity-decoded, protocol-relative
+    /// repaired, and the detail page's doubled `//images/` collapsed to `/images/`.
+    static func normalizeFileURL(_ raw: String) -> String {
+        var value = HTMLScanner.trim(HTMLScanner.decodeEntities(raw))
+        if value.hasPrefix("//") { value = "https:" + value }
+        return HTMLScanner.replace(#"^(https?://[^/]+)/{2,}"#, in: value, with: "$1/", caseInsensitive: true)
+    }
+
+    private static let imageExtensions = ["gif", "jpg", "jpeg", "png", "webp"]
 
     // MARK: - URLs and tags
 
@@ -149,7 +257,10 @@ struct RealbooruSource: BooruSource {
               let href = HTMLScanner.attribute("href", in: anchor),
               let image = HTMLScanner.firstTag("img", in: body),
               let rawThumb = HTMLScanner.attribute("src", in: image),
-              let previewURL = HTMLScanner.absoluteURL(rawThumb, base: baseURL)
+              let previewURL = MediaURLNormalizer.normalize(
+                  HTMLScanner.absoluteURL(rawThumb, base: baseURL),
+                  sourceID: .realbooru
+              )
         else { return nil }
 
         let alt = HTMLScanner.attribute("alt", in: image) ?? ""
@@ -173,12 +284,14 @@ struct RealbooruSource: BooruSource {
         if let ext = HTMLScanner.mediaExtension(in: href) {
             verifiedExt = ext
             verifiedOriginal = HTMLScanner.absoluteURL(href, base: baseURL)
+                .flatMap { MediaURLNormalizer.normalize($0, sourceID: .realbooru) }
         }
         if verifiedExt == nil,
            let dataURL = HTMLScanner.firstCapture(Pattern.dataURLAttribute, in: body, caseInsensitive: true),
            let ext = HTMLScanner.mediaExtension(in: HTMLScanner.trim(HTMLScanner.decodeEntities(dataURL))) {
             verifiedExt = ext
             verifiedOriginal = HTMLScanner.absoluteURL(HTMLScanner.decodeEntities(dataURL), base: baseURL)
+                .flatMap { MediaURLNormalizer.normalize($0, sourceID: .realbooru) }
         }
         if verifiedExt == nil,
            let dataExt = HTMLScanner.firstCapture(Pattern.dataExtAttribute, in: body, caseInsensitive: true) {
@@ -197,13 +310,16 @@ struct RealbooruSource: BooruSource {
                   let parts = HTMLScanner.captures(Pattern.thumbnailPath, in: thumbString, caseInsensitive: true),
                   parts.count > 3 {
             let file = "\(baseURL)/images/\(parts[1])/\(parts[2])/\(parts[3]).\(isGif ? "gif" : "mp4")"
-            originalURL = URL(string: file)
+            originalURL = MediaURLNormalizer.normalize(URL(string: file), sourceID: .realbooru)
             sampleURL = isGif ? previewURL : originalURL
         }
 
         let sourceLink: URL?
         if href.contains("page=post") {
-            sourceLink = HTMLScanner.absoluteURL(href, base: baseURL)
+            sourceLink = MediaURLNormalizer.normalize(
+                HTMLScanner.absoluteURL(href, base: baseURL),
+                sourceID: .realbooru
+            )
         } else {
             sourceLink = URL(string: "\(baseURL)/index.php?page=post&s=view&id=\(id)")
         }

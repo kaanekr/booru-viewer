@@ -37,7 +37,7 @@ final class FeedViewModel {
     /// a provider so the feed can be exercised without the network.
     typealias SourceProvider = (SourceID) -> (any BooruSource)?
 
-    private let context: SourceContext
+    private(set) var context: SourceContext
     private let sourceProvider: SourceProvider
     private let blacklist: BlacklistMatcher
 
@@ -108,6 +108,35 @@ final class FeedViewModel {
     }
 
     // MARK: Loading
+
+    /// Swaps the transport/credentials after a Settings edit.
+    ///
+    /// When the Worker settings or API keys actually changed and the feed has nothing usable
+    /// on screen (empty or failed), the current source is fetched again, so a new proxy or key
+    /// takes effect without restarting the app. An unchanged context is a no-op.
+    func updateContext(_ newContext: SourceContext) {
+        let previous = context
+        context = newContext
+
+        let proxyChanged = newContext.proxy.enabled != previous.proxy.enabled
+            || newContext.proxy.workerURL != previous.proxy.workerURL
+        let authChanged = !Self.sameCredentials(newContext.gelbooruAuth, previous.gelbooruAuth)
+            || !Self.sameCredentials(newContext.rule34Auth, previous.rule34Auth)
+        guard proxyChanged || authChanged else { return }
+        guard phase != .loading, !isRefreshing else { return }
+
+        let needsReload: Bool
+        switch phase {
+        case .idle, .failed:
+            needsReload = true
+        case .ready:
+            needsReload = posts.isEmpty
+        case .loading:
+            needsReload = false
+        }
+        guard needsReload else { return }
+        Task { await reload(showLoading: posts.isEmpty) }
+    }
 
     /// First load only; later appearances keep the loaded pages.
     func loadInitialIfNeeded() async {
@@ -310,5 +339,10 @@ final class FeedViewModel {
         }
         let message = error.localizedDescription
         return message.isEmpty ? "An error occurred while loading images." : message
+    }
+
+    /// `ApiAuth` is not `Equatable`; compare the two stored fields instead.
+    private static func sameCredentials(_ lhs: ApiAuth?, _ rhs: ApiAuth?) -> Bool {
+        (lhs?.userID ?? "") == (rhs?.userID ?? "") && (lhs?.apiKey ?? "") == (rhs?.apiKey ?? "")
     }
 }

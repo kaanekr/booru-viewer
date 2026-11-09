@@ -188,8 +188,14 @@ final class ViewerViewModel {
     }
 
     /// Pure image/video choice for one post, used when a source is unavailable.
+    ///
+    /// `VideoCandidateSelector` drops WebM on iOS (-11828), which would leave a
+    /// Gelbooru / Rule34 / Danbooru / Yande.re / Realbooru `.webm` post with no video at
+    /// all. The pure MP4-sibling rule still names the playable file, and
+    /// `playable(_:for:)` confirms it with a HEAD probe.
     nonisolated static func fallbackMedia(for post: BooruPost, quality: ImageQuality) -> ResolvedMedia {
         let video = VideoCandidateSelector.videoCandidates(for: post).first
+            ?? webmMediaURL(for: post).flatMap { MP4Upgrade.mp4CandidateURL(for: $0) }
         return ResolvedMedia(
             imageURL: ImageQualityResolver.imageURL(for: post, quality: quality),
             videoURL: video,
@@ -198,18 +204,55 @@ final class ViewerViewModel {
         )
     }
 
+    /// The WebM file URL of the post itself. `VideoCandidateSelector` drops these on iOS,
+    /// so the upgrade in `playable(_:for:)` reads the raw post fields instead: an explicit
+    /// `.webm` on `originalURL` / `sampleURL` (or, except on Pornhub, `previewVideoURL`),
+    /// or — for Realbooru-style records whose `fileExt` is `webm` — the WebM sibling of
+    /// the `.mp4` hash guess.
+    nonisolated static func webmMediaURL(for post: BooruPost) -> URL? {
+        // A Pornhub `previewVideoURL` is the hover flipbook, not the main video: reading it
+        // here would turn an unverified `.mp4` guess of that clip into the post's video.
+        var raw = [post.originalURL, post.sampleURL]
+        if post.sourceID != .pornhub {
+            raw.append(post.previewVideoURL)
+        }
+        let fields = raw.map { MediaURLNormalizer.normalize($0, sourceID: post.sourceID) }
+        if let explicit = fields.first(where: { $0.map(Self.isWebMPath) ?? false }) {
+            return explicit
+        }
+        guard post.fileExt?.lowercased() == "webm" else { return nil }
+        return fields.compactMap { $0 }.first.flatMap(Self.webmSibling)
+    }
+
+    /// `…/hash.mp4` → `…/hash.webm`: the file behind Realbooru's thumbnail-hash guess.
+    private nonisolated static func webmSibling(of url: URL) -> URL? {
+        let raw = url.absoluteString
+        let pathEnd = raw.firstIndex { $0 == "?" || $0 == "#" } ?? raw.endIndex
+        let path = raw[..<pathEnd]
+        let suffix = raw[pathEnd...]
+        guard path.lowercased().hasSuffix(".mp4") else { return nil }
+        return URL(string: String(path.dropLast(".mp4".count)) + ".webm" + String(suffix))
+    }
+
     /// WebM → MP4 upgrade (RN `checkMp4UpgradeAvailable`, ImageViewerModal.tsx) and
     /// `isVideo` kept consistent with the URL that actually survived. Returns `nil`
     /// when the surrounding task was cancelled, so the caller caches nothing.
     private func playable(_ resolved: ResolvedMedia, post: BooruPost) async -> ResolvedMedia? {
         var out = resolved
-        if let video = out.videoURL, Self.isWebMPath(video) {
-            if let upgraded = await MP4Upgrade.upgradedURL(for: video, http: context.http) {
-                out.videoURL = upgraded
-            } else {
-                // AVPlayer cannot decode WebM (-11828): fall through to the still image.
-                out.videoURL = nil
-            }
+        // A WebM URL reaches the viewer two ways: a source may hand one back directly, or
+        // the post's own fields carry it after `VideoCandidateSelector` dropped it on iOS.
+        // Both run the MP4 upgrade; a failed probe keeps the plain `.mp4` sibling rule
+        // (Gelbooru / Rule34 CDNs reject HEAD).
+        let webmFromMedia = out.videoURL.flatMap { video in Self.isWebMPath(video) ? video : nil }
+        let webmFromPost = Self.webmMediaURL(for: post)
+        let isUnverifiedGuess = webmFromPost
+            .flatMap { MP4Upgrade.mp4CandidateURL(for: $0) }
+            .map { $0 == out.videoURL } ?? false
+        let needsUpgrade = webmFromMedia != nil
+            || (out.videoURL == nil && webmFromPost != nil)
+            || isUnverifiedGuess
+        if needsUpgrade, let webm = webmFromMedia ?? webmFromPost {
+            out.videoURL = await Self.mp4URL(for: webm, http: context.http)
             // `MP4Upgrade` performs a network probe: a cancelled viewer must not cache it.
             if Task.isCancelled { return nil }
         }
@@ -223,10 +266,21 @@ final class ViewerViewModel {
         return out
     }
 
-    private static func isWebMPath(_ url: URL) -> Bool {
+    private nonisolated static func isWebMPath(_ url: URL) -> Bool {
         let raw = url.absoluteString.lowercased()
         let path = raw.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? raw
         return path.hasSuffix(".webm")
+    }
+
+    /// `.mp4` sibling of `webm`. A 200-299 HEAD answer confirms the file; a host that
+    /// rejects HEAD (the Gelbooru / Rule34 CDNs) still gets the plain URL rule, because
+    /// the upgrade is the only way an iOS player can show a WebM-only post
+    /// (media.ts:721-793).
+    nonisolated static func mp4URL(for webm: URL, http: any HTTPClientProtocol) async -> URL? {
+        if let confirmed = await MP4Upgrade.upgradedURL(for: webm, http: http) {
+            return confirmed
+        }
+        return MP4Upgrade.mp4CandidateURL(for: webm)
     }
 
     /// Everything the viewer needs when the visible page changes: record the view,

@@ -1,17 +1,21 @@
 import SwiftUI
+import UIKit
 
-/// Async image with a static-cover fallback chain.
+/// Async image with a static-cover fallback chain, loading through
+/// `MediaImageLoader` so the request carries the media headers and the proxy
+/// routing that `AsyncImage` cannot express.
 ///
 /// RN keeps up to four cover attempts per card (PostCard.tsx:202-236): the primary
-/// cover, the poster/thumbnail fallbacks, then a proxy leg. The proxy is a native
-/// transport concern, so this view only walks the URL chain the caller passes and
-/// shows the card fill while a frame is missing or every URL failed.
+/// cover, the poster/thumbnail fallbacks, then a proxy leg. The proxy leg is now a
+/// transport concern (`MediaImageLoader`), so this view walks the URL chain and
+/// advances only when a load really fails, keeping the card fill underneath so a
+/// loading card never flashes black.
 struct AsyncMediaImage: View {
     private let urls: [URL]
     private let contentMode: ContentMode
 
-    /// Index of the URL currently being attempted.
-    @State private var index = 0
+    /// Decoded image for the current chain; `nil` while loading or failed.
+    @State private var image: UIImage?
 
     /// - Parameters:
     ///   - url: primary URL.
@@ -28,32 +32,16 @@ struct AsyncMediaImage: View {
 
     var body: some View {
         ZStack {
-            if let current = currentURL {
-                AsyncImage(url: current, transaction: Transaction(animation: .easeIn(duration: 0.15))) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: contentMode)
-                    case .failure:
-                        // Advance only after the failure branch is on screen; mutating
-                        // state while `body` runs is not allowed.
-                        placeholder.onAppear(perform: advance)
-                    case .empty:
-                        placeholder
-                    @unknown default:
-                        placeholder
-                    }
-                }
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+                    .transition(.opacity)
             } else {
                 placeholder
             }
         }
-        .onChange(of: urls) { _, _ in index = 0 }
-    }
-
-    private var currentURL: URL? {
-        index >= 0 && index < urls.count ? urls[index] : nil
+        .task(id: urls) { await load() }
     }
 
     /// Same fill as the card body, so a loading card never flashes a light panel.
@@ -61,9 +49,34 @@ struct AsyncMediaImage: View {
         AppTheme.card
     }
 
-    /// Moves to the next fallback; stays on the last URL so the placeholder remains.
-    private func advance() {
-        guard index + 1 < urls.count else { return }
-        index += 1
+    /// Walks the chain until one URL decodes; a cached image is applied without
+    /// a visible placeholder frame.
+    private func load() async {
+        guard !urls.isEmpty else {
+            image = nil
+            return
+        }
+        image = nil
+        for url in urls {
+            if Task.isCancelled { return }
+            if let cached = await MediaImageLoader.shared.cachedImage(for: url) {
+                if Task.isCancelled { return }
+                image = cached
+                return
+            }
+            do {
+                let loaded = try await MediaImageLoader.shared.image(for: url)
+                if Task.isCancelled { return }
+                withAnimation(.easeIn(duration: 0.15)) {
+                    image = loaded
+                }
+                return
+            } catch {
+                // Real failure only: the loader already retried the other route leg.
+                continue
+            }
+        }
+        // Every candidate failed; the placeholder stays as the card fill.
+        image = nil
     }
 }

@@ -89,7 +89,8 @@ final class PornhubTests: XCTestCase {
         XCTAssertEqual(post.score, 0)
         XCTAssertEqual(post.previewURL?.absoluteString, "https://cdn.example/poster1.jpg")
         XCTAssertEqual(post.previewVideoURL?.absoluteString, "https://cdn.example/ph5f1a2b3c4d_fb.mp4")
-        XCTAssertEqual(post.sampleURL?.absoluteString, "https://cdn.example/ph5f1a2b3c4d_fb.mp4")
+        // The flipbook stays on `previewVideoURL`; `sampleURL` keeps the image thumbnail.
+        XCTAssertEqual(post.sampleURL?.absoluteString, "https://cdn.example/poster1.jpg")
         XCTAssertNil(post.originalURL)
         XCTAssertEqual(post.previewThumbs?.count, 8)
         XCTAssertEqual(post.previewThumbURL?.absoluteString, "https://cdn.example/poster15.jpg")
@@ -358,6 +359,25 @@ final class PornhubTests: XCTestCase {
         // Without an injected solver a challenged page yields no stream, so the card keeps its thumbnail.
         let client = FakeHTTPClient { _ in (Self.challengeHTML, 200) }
         let media = try await PornhubSource().resolveMedia(for: post, context: makeContext(client: client))
+        XCTAssertNil(media.videoURL)
+        XCTAssertFalse(media.isVideo)
+        XCTAssertEqual(media.imageURL?.absoluteString, "https://cdn.example/poster1.jpg")
+    }
+
+    // MARK: - Viewer hand-off
+
+    /// A `.webm` flipbook lives on `previewVideoURL`; the viewer must not read it as the
+    /// post's own WebM and guess an unverified `.mp4` for the main video.
+    func testPornhubFlipbookIsNotUpgradedIntoTheMainVideo() throws {
+        let html = #"""
+        <li class="pcVideoListItem videoBox" data-video-vkey="ph5f1a2b3c4d" data-webm="https://cdn.example/ph5f1a2b3c4d_fb.webm" data-poster="https://cdn.example/poster1.jpg"><a href="/view_video.php?viewkey=ph5f1a2b3c4d" title="Sample Clip"><img class="videoThumb" src="https://cdn.example/thumb1.jpg" alt="Sample Clip"></a><div class="videoViews">12.5K</div><span class="bgEffect time">08:15</span></li>
+        """#
+        let post = try XCTUnwrap(PornhubSource.parseListing(html: html).first)
+        XCTAssertEqual(post.previewVideoURL?.absoluteString, "https://cdn.example/ph5f1a2b3c4d_fb.webm")
+        XCTAssertEqual(post.sampleURL?.absoluteString, "https://cdn.example/poster1.jpg")
+
+        XCTAssertNil(ViewerViewModel.webmMediaURL(for: post))
+        let media = ViewerViewModel.fallbackMedia(for: post, quality: .auto)
         XCTAssertNil(media.videoURL)
         XCTAssertFalse(media.isVideo)
         XCTAssertEqual(media.imageURL?.absoluteString, "https://cdn.example/poster1.jpg")

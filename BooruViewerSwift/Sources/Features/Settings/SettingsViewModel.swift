@@ -203,6 +203,8 @@ final class SettingsViewModel {
         workerURLDraft = settings.proxy.workerURL
         savedWorkerURL = settings.proxy.workerURL
         loadAuth()
+        // Keep the media pipeline on the Worker settings the screen just read.
+        MediaRequestConfiguration.updateCurrentProxy(settings.proxy)
         refreshSecurity()
     }
 
@@ -236,7 +238,9 @@ final class SettingsViewModel {
         settings.imageQuality = quality
         busy = .quality
         defer { busy = nil }
-        if !(await persist()) {
+        if await persist() {
+            notifySettingsChanged()
+        } else {
             settings.imageQuality = previous
         }
     }
@@ -247,7 +251,9 @@ final class SettingsViewModel {
         settings.gridPreviews = enabled
         busy = .previews
         defer { busy = nil }
-        if !(await persist()) {
+        if await persist() {
+            notifySettingsChanged()
+        } else {
             settings.gridPreviews = previous
         }
     }
@@ -263,7 +269,7 @@ final class SettingsViewModel {
         busy = .source
         defer { busy = nil }
         if await persist() {
-            onSourceChanged(id)
+            notifySettingsChanged()
         } else {
             settings.activeSourceID = previous
         }
@@ -323,6 +329,7 @@ final class SettingsViewModel {
             } else {
                 savedGelbooruAuth = draft
             }
+            notifySettingsChanged()
         } catch {
             alert = AlertState(
                 title: "Could not save key",
@@ -344,6 +351,7 @@ final class SettingsViewModel {
             } else {
                 savedGelbooruAuth = empty
             }
+            notifySettingsChanged()
         } catch {
             alert = AlertState(title: "Could not delete key", message: "Please try again.")
         }
@@ -363,6 +371,7 @@ final class SettingsViewModel {
             try await blacklistedStore.add(normalized)
             blacklistedTags = (try? await blacklistedStore.list()) ?? blacklistedTags
             newBlacklistTag = ""
+            notifySettingsChanged()
         } catch {
             alert = AlertState(title: "Could not block tag", message: "Please try again.")
         }
@@ -374,6 +383,7 @@ final class SettingsViewModel {
         do {
             try await blacklistedStore.remove(tag)
             blacklistedTags.removeAll { $0 == tag }
+            notifySettingsChanged()
         } catch {
             alert = AlertState(title: "Could not unblock tag", message: "Please try again.")
         }
@@ -519,6 +529,7 @@ final class SettingsViewModel {
             let data = try Data(contentsOf: url)
             let summary = try await backupService.importBackup(data: data)
             await refreshBlacklist()
+            notifySettingsChanged()
             alert = AlertState(
                 title: "Backup imported",
                 message: "\(summary.addedFavorites.formatted()) new favorites • \(summary.addedTags) tags • \(summary.addedHistory) searches\n\(summary.totalFavorites.formatted()) total favorites"
@@ -552,18 +563,19 @@ final class SettingsViewModel {
         settings.proxy.enabled = enabled
         busy = .proxy
         defer { busy = nil }
-        if !(await persist()) {
+        if await persist() {
+            notifySettingsChanged()
+        } else {
             settings.proxy.enabled = !enabled
         }
     }
 
     /// Validates the draft and saves it as the stored Worker URL.
+    ///
+    /// A pasted bare host (`my-worker.workers.dev`) gets `https://` automatically, and
+    /// surrounding whitespace plus any trailing slashes are trimmed before validation.
     func saveWorkerURL() async {
-        let trimmed = workerURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        var value = trimmed
-        if value.hasSuffix("/") {
-            value.removeLast()
-        }
+        let value = Self.normalizedWorkerURL(workerURLDraft)
         guard let components = URLComponents(string: value),
               components.scheme?.lowercased() == "https",
               let host = components.host, !host.isEmpty,
@@ -586,6 +598,7 @@ final class SettingsViewModel {
             workerURLDraft = value
             savedWorkerURL = value
             connectionResults = []
+            notifySettingsChanged()
         } else {
             settings.proxy = previousProxy
             workerURLDraft = previousProxy.workerURL
@@ -601,6 +614,7 @@ final class SettingsViewModel {
             workerURLDraft = ""
             savedWorkerURL = ""
             connectionResults = []
+            notifySettingsChanged()
         } else {
             settings.proxy = previousProxy
             workerURLDraft = previousProxy.workerURL
@@ -616,10 +630,7 @@ final class SettingsViewModel {
             )
             return
         }
-        var draft = workerURLDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        if draft.hasSuffix("/") {
-            draft.removeLast()
-        }
+        let draft = Self.normalizedWorkerURL(workerURLDraft)
         guard draft == savedWorkerURL else {
             alert = AlertState(
                 title: "Save the Worker URL",
@@ -706,6 +717,30 @@ final class SettingsViewModel {
     }
 
     // MARK: - Persistence
+
+    /// Trims whitespace, prepends `https://` for a bare host, then drops trailing slashes.
+    ///
+    /// A pasted `my-worker.workers.dev` is the common case; anything that already carries a
+    /// scheme is left for `saveWorkerURL()` to validate.
+    nonisolated static func normalizedWorkerURL(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !value.isEmpty, !value.contains("://") {
+            value = "https://" + value
+        }
+        while value.hasSuffix("/") {
+            value.removeLast()
+        }
+        return value
+    }
+
+    /// Pushes a persisted settings edit to the app layer and the media pipeline.
+    ///
+    /// The tabs reload through `onSourceChanged`, and `MediaRequestConfiguration` keeps the
+    /// media headers/API transport on the Worker the user just saved, so no edit needs a restart.
+    private func notifySettingsChanged() {
+        MediaRequestConfiguration.updateCurrentProxy(settings.proxy)
+        onSourceChanged(settings.activeSourceID)
+    }
 
     @discardableResult
     private func persist() async -> Bool {

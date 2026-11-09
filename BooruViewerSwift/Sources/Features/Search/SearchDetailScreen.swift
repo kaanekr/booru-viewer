@@ -14,6 +14,9 @@ struct SearchDetailScreen: View {
     private let baseFilter: SearchFilterConfig
     private let imageQuality: ImageQuality
     private let gridPreviewsEnabled: Bool
+    /// App-level change counter for the request context; forwarded to the inner `SearchScreen`,
+    /// which re-pushes its `SourceContext` when a Worker URL, API key, or quality edit lands.
+    private let contextVersion: Int
     private let sourceProvider: SearchViewModel.SourceProvider
     private let onOpenPost: ([BooruPost], Int) -> Void
 
@@ -34,6 +37,7 @@ struct SearchDetailScreen: View {
         baseFilter: SearchFilterConfig? = nil,
         imageQuality: ImageQuality = .auto,
         gridPreviewsEnabled: Bool = true,
+        contextVersion: Int = 0,
         sourceProvider: @escaping SearchViewModel.SourceProvider = { SourceRegistry.source(for: $0) },
         onOpenPost: @escaping ([BooruPost], Int) -> Void = { _, _ in }
     ) {
@@ -44,6 +48,7 @@ struct SearchDetailScreen: View {
         self.blacklistedTags = blacklistedTags
         self.imageQuality = imageQuality
         self.gridPreviewsEnabled = gridPreviewsEnabled
+        self.contextVersion = contextVersion
         self.sourceProvider = sourceProvider
         self.onOpenPost = onOpenPost
 
@@ -70,6 +75,7 @@ struct SearchDetailScreen: View {
             blacklistedTags: blacklistedTags,
             imageQuality: imageQuality,
             gridPreviewsEnabled: gridPreviewsEnabled,
+            contextVersion: contextVersion,
             sourceProvider: sourceProvider,
             initialFilter: baseFilter,
             onOpenTag: { tag in
@@ -89,6 +95,7 @@ struct SearchDetailScreen: View {
                 baseFilter: baseFilter,
                 imageQuality: imageQuality,
                 gridPreviewsEnabled: gridPreviewsEnabled,
+                contextVersion: contextVersion,
                 sourceProvider: sourceProvider,
                 onOpenPost: onOpenPost
             )

@@ -11,6 +11,10 @@ struct SearchScreen: View {
     private let favoriteKeys: Set<String>
     private let imageQuality: ImageQuality
     private let gridPreviewsEnabled: Bool
+    /// Request context handed to the model at build time and re-pushed on `contextVersion` changes.
+    private let context: SourceContext
+    /// Bumped by the app layer whenever the request context (Worker, keys, quality) changes.
+    private let contextVersion: Int
     private let onOpenTag: ((String) -> Void)?
     private let onToggleFavorite: ((BooruPost) -> Void)?
     private let onOpenPost: ([BooruPost], Int) -> Void
@@ -54,6 +58,7 @@ struct SearchScreen: View {
         favoriteKeys: Set<String> = [],
         imageQuality: ImageQuality = .auto,
         gridPreviewsEnabled: Bool = true,
+        contextVersion: Int = 0,
         sourceProvider: @escaping SearchViewModel.SourceProvider = { SourceRegistry.source(for: $0) },
         initialQuery: String? = nil,
         initialFilter: SearchFilterConfig? = nil,
@@ -65,6 +70,8 @@ struct SearchScreen: View {
         self.favoriteKeys = favoriteKeys
         self.imageQuality = imageQuality
         self.gridPreviewsEnabled = gridPreviewsEnabled
+        self.context = context
+        self.contextVersion = contextVersion
         self.onOpenTag = onOpenTag
         self.onToggleFavorite = onToggleFavorite
         self.onOpenPost = onOpenPost
@@ -93,6 +100,11 @@ struct SearchScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(AppTheme.background.ignoresSafeArea())
         .task { await model.start() }
+        .onAppear { model.updateContext(context) }
+        .onChange(of: contextVersion) { _, _ in
+            // A Worker URL, API key, or quality edit pushes a fresh context into the model.
+            model.updateContext(context)
+        }
         .onChange(of: isSearchFieldFocused) { _, focused in
             model.inputFocusChanged(focused)
         }

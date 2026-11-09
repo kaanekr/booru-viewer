@@ -174,11 +174,16 @@ struct RootTabView: View {
                 context: container.makeSourceContext(),
                 blacklistedTags: container.blacklistedTags,
                 favoriteKeys: container.favoriteKeys,
+                contextVersion: container.contextVersion,
                 sourceProvider: container.sourceProvider,
                 onSelectTag: { tag in
                     explorePath.append(
                         TagSearchTarget(sourceID: container.settings.activeSourceID, tags: tag)
                     )
+                },
+                onSelectSource: { id in
+                    // Keep Explore, Search, and Settings on the same source.
+                    Task { @MainActor in await container.persistActiveSource(id) }
                 },
                 onOpenPost: { posts, index in openViewer(posts, index) }
             )
@@ -200,6 +205,7 @@ struct RootTabView: View {
                 favoriteKeys: container.favoriteKeys,
                 imageQuality: container.settings.imageQuality,
                 gridPreviewsEnabled: container.settings.gridPreviews,
+                contextVersion: container.contextVersion,
                 sourceProvider: container.sourceProvider,
                 initialQuery: pendingSearch,
                 onOpenTag: { tag in openTag(tag) },
@@ -260,6 +266,7 @@ struct RootTabView: View {
             blacklistedTags: container.blacklistedTags,
             imageQuality: container.settings.imageQuality,
             gridPreviewsEnabled: container.settings.gridPreviews,
+            contextVersion: container.contextVersion,
             sourceProvider: container.sourceProvider,
             onOpenPost: { posts, index in openViewer(posts, index) }
         )
