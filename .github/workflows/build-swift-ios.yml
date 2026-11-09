@@ -160,9 +160,6 @@ jobs:
           ls -d *.xcodeproj
 
       - name: 🧪 Run unit tests on simulator
-        # continue-on-error: true is intentional for the first validation run.
-        # Remove it once the simulator test lane is confirmed green.
-        continue-on-error: true
         run: |
           set -e
           set -o pipefail
