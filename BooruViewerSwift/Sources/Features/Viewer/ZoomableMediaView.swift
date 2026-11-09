@@ -18,11 +18,18 @@ struct ZoomableMediaView: View {
     var galleryPages: [URL] = []
     /// Single tap on the media toggles the viewer controls (RN `handleToggleControls`).
     var onSingleTap: (() -> Void)?
+    /// Reports pinch / double-tap zoom so the viewer can stand down its own
+    /// dismissal drags while the media pan owns the touch.
+    var onZoomChanged: ((Bool) -> Void)?
 
     var body: some View {
         Group {
             if isMangaMode, galleryPages.count > 1 {
-                PrivateMangaReaderView(pages: galleryPages, onSingleTap: onSingleTap)
+                PrivateMangaReaderView(
+                    pages: galleryPages,
+                    onSingleTap: onSingleTap,
+                    onZoomChanged: onZoomChanged
+                )
             } else if let videoURL = media?.videoURL {
                 PrivateVideoPlaybackView(url: videoURL, isActive: isActive, onSingleTap: onSingleTap)
             } else {
@@ -30,12 +37,22 @@ struct ZoomableMediaView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: zoomScale) { _, scale in
+            onZoomChanged?(scale > Self.zoomEpsilon)
+        }
+        // RN resets the previous page's zoom once it stops being the visible one
+        // (ImageViewerModal.tsx:1300-1328).
+        .onChange(of: isActive) { _, active in
+            if !active { resetZoom() }
+        }
     }
 
     // MARK: Image page (pinch + double-tap zoom)
 
     private var imagePage: some View {
         GeometryReader { proxy in
+            let size = proxy.size
+
             ZStack {
                 Color.black
 
@@ -49,7 +66,7 @@ struct ZoomableMediaView: View {
                             image
                                 .resizable()
                                 .scaledToFit()
-                                .frame(width: proxy.size.width, height: proxy.size.height)
+                                .frame(width: size.width, height: size.height)
                         case .failure:
                             unavailable
                         @unknown default:
@@ -67,13 +84,13 @@ struct ZoomableMediaView: View {
                         .background(.ultraThinMaterial, in: Circle())
                 }
             }
-            .frame(width: proxy.size.width, height: proxy.size.height)
-            .scaleEffect(zoomScale)
+            .frame(width: size.width, height: size.height)
+            .scaleEffect(zoomScale, anchor: zoomAnchor)
             .offset(zoomOffset)
             .contentShape(Rectangle())
             .gesture(magnificationGesture)
-            .simultaneousGesture(panGesture, including: zoomScale > 1.01 ? .all : .none)
-            .gesture(tapGesture)
+            .simultaneousGesture(panGesture(size: size), including: zoomScale > Self.zoomEpsilon ? .all : .none)
+            .gesture(tapGesture(size: size))
         }
     }
 
@@ -93,6 +110,12 @@ struct ZoomableMediaView: View {
     @State private var lastScale: CGFloat = 1
     @State private var zoomOffset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
+    /// Anchor of the double-tap zoom: the tapped point, in view-unit coordinates
+    /// (RN zooms onto the tap location, ImageViewerModal.tsx:1408-1422).
+    @State private var zoomAnchor: UnitPoint = .center
+
+    private static let zoomEpsilon: CGFloat = 1.01
+    private static let doubleTapScale: CGFloat = 2.5
 
     private var magnificationGesture: some Gesture {
         MagnifyGesture()
@@ -101,7 +124,7 @@ struct ZoomableMediaView: View {
             }
             .onEnded { _ in
                 lastScale = zoomScale
-                if zoomScale <= 1.01 {
+                if zoomScale <= Self.zoomEpsilon {
                     resetZoom()
                 }
             }
@@ -109,17 +132,18 @@ struct ZoomableMediaView: View {
 
     /// Only pans while zoomed in: the gesture is masked out at 1x so horizontal
     /// drags pass straight through to the paged `TabView`.
-    private var panGesture: some Gesture {
+    private func panGesture(size: CGSize) -> some Gesture {
         DragGesture()
             .onChanged { value in
-                guard zoomScale > 1.01 else { return }
-                zoomOffset = CGSize(
+                guard zoomScale > Self.zoomEpsilon else { return }
+                let moved = CGSize(
                     width: lastOffset.width + value.translation.width,
                     height: lastOffset.height + value.translation.height
                 )
+                zoomOffset = clampZoomOffset(moved, scale: zoomScale, anchor: zoomAnchor, size: size)
             }
             .onEnded { _ in
-                if zoomScale > 1.01 {
+                if zoomScale > Self.zoomEpsilon {
                     lastOffset = zoomOffset
                 } else {
                     resetZoom()
@@ -127,11 +151,13 @@ struct ZoomableMediaView: View {
             }
     }
 
-    /// Double tap zooms, a single tap toggles the controls. `exclusively` keeps the
-    /// double tap from also firing the single-tap handler.
-    private var tapGesture: some Gesture {
-        TapGesture(count: 2)
-            .onEnded { _ in handleDoubleTap() }
+    /// Double tap zooms onto the tapped point, a single tap toggles the controls.
+    /// `exclusively` keeps the double tap from also firing the single-tap handler.
+    private func tapGesture(size: CGSize) -> some Gesture {
+        SpatialTapGesture(count: 2)
+            .onEnded { value in
+                handleDoubleTap(at: value.location, in: size)
+            }
             .exclusively(
                 before: TapGesture(count: 1).onEnded { _ in
                     guard let onSingleTap = onSingleTap else { return }
@@ -140,20 +166,27 @@ struct ZoomableMediaView: View {
             )
     }
 
-    private func handleDoubleTap() {
+    private func handleDoubleTap(at location: CGPoint, in size: CGSize) {
         withAnimation(.easeInOut(duration: 0.2)) {
-            if zoomScale > 1 {
-                zoomScale = 1
-                lastScale = 1
-                zoomOffset = .zero
-                lastOffset = .zero
+            if zoomScale > Self.zoomEpsilon {
+                resetZoom()
             } else {
-                zoomScale = 2.5
-                lastScale = 2.5
+                zoomAnchor = unitPoint(for: location, in: size)
+                zoomScale = Self.doubleTapScale
+                lastScale = Self.doubleTapScale
                 zoomOffset = .zero
                 lastOffset = .zero
             }
         }
+    }
+
+    /// Tap location → `UnitPoint` anchor, clamped to the view bounds.
+    private func unitPoint(for location: CGPoint, in size: CGSize) -> UnitPoint {
+        guard size.width > 0, size.height > 0 else { return .center }
+        return UnitPoint(
+            x: min(max(location.x / size.width, 0), 1),
+            y: min(max(location.y / size.height, 0), 1)
+        )
     }
 
     private func resetZoom() {
@@ -161,7 +194,31 @@ struct ZoomableMediaView: View {
         lastScale = 1
         zoomOffset = .zero
         lastOffset = .zero
+        zoomAnchor = .center
     }
+}
+
+// MARK: - Anchored zoom maths
+
+/// Clamps a pan offset so a view scaled with `scaleEffect(_:anchor:)` never shows
+/// the frame behind it. Scaling about `anchor` already overhangs the frame by
+/// `anchor * size * (scale - 1)` on one side and `(1 - anchor) * size * (scale - 1)`
+/// on the other, and the offset may only travel that far.
+private func clampZoomOffset(
+    _ offset: CGSize,
+    scale: CGFloat,
+    anchor: UnitPoint,
+    size: CGSize
+) -> CGSize {
+    guard scale > 1, size.width > 0, size.height > 0 else { return .zero }
+    let maxX = anchor.x * (scale - 1) * size.width
+    let minX = -(1 - anchor.x) * (scale - 1) * size.width
+    let maxY = anchor.y * (scale - 1) * size.height
+    let minY = -(1 - anchor.y) * (scale - 1) * size.height
+    return CGSize(
+        width: min(max(offset.width, minX), maxX),
+        height: min(max(offset.height, minY), maxY)
+    )
 }
 
 // MARK: - Video playback
@@ -325,60 +382,148 @@ private struct PrivateVideoPlaybackView: View {
 // MARK: - Multi-page gallery / manga reader
 
 /// Vertical reader for multi-page posts (nhentai / manga), with a page indicator
-/// (RN `mangaPages` reader, ImageViewerModal.tsx:804-1620).
+/// (RN `mangaPages` reader, ImageViewerModal.tsx:804-1620). Double tap zooms 2.2x
+/// onto the tapped point and a second double tap returns to 1x without losing the
+/// current page (RN `handleMangaDoubleTap`, ImageViewerModal.tsx:1439-1490).
 private struct PrivateMangaReaderView: View {
     let pages: [URL]
     var onSingleTap: (() -> Void)?
+    var onZoomChanged: ((Bool) -> Void)?
 
     @State private var visiblePageID: Int?
+    @State private var zoomScale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var zoomOffset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+    @State private var zoomAnchor: UnitPoint = .center
+
+    private static let zoomEpsilon: CGFloat = 1.01
+    /// RN `tapZoom` for the manga reader (ImageViewerModal.tsx:1469).
+    private static let doubleTapScale: CGFloat = 2.2
 
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            ScrollView(.vertical) {
-                LazyVStack(spacing: 0) {
-                    ForEach(pages.indices, id: \.self) { index in
-                        let url = pages[index]
+        GeometryReader { proxy in
+            let size = proxy.size
 
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .empty:
-                                ProgressView()
-                                    .tint(AppTheme.textPrimary)
+            ZStack(alignment: .bottomTrailing) {
+                ScrollView(.vertical) {
+                    LazyVStack(spacing: 0) {
+                        ForEach(pages.indices, id: \.self) { index in
+                            let url = pages[index]
+
+                            AsyncImage(url: url) { phase in
+                                switch phase {
+                                case .empty:
+                                    ProgressView()
+                                        .tint(AppTheme.textPrimary)
+                                        .frame(maxWidth: .infinity, minHeight: 240)
+                                case .success(let image):
+                                    image
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(maxWidth: .infinity)
+                                case .failure:
+                                    VStack(spacing: 8) {
+                                        Image(systemName: "exclamationmark.triangle")
+                                        Text("Page \(index + 1) unavailable")
+                                            .font(.footnote)
+                                    }
+                                    .foregroundStyle(AppTheme.textSecondary)
                                     .frame(maxWidth: .infinity, minHeight: 240)
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(maxWidth: .infinity)
-                            case .failure:
-                                VStack(spacing: 8) {
-                                    Image(systemName: "exclamationmark.triangle")
-                                    Text("Page \(index + 1) unavailable")
-                                        .font(.footnote)
+                                @unknown default:
+                                    EmptyView()
                                 }
-                                .foregroundStyle(AppTheme.textSecondary)
-                                .frame(maxWidth: .infinity, minHeight: 240)
-                            @unknown default:
-                                EmptyView()
                             }
+                            .id(index)
                         }
-                        .id(index)
                     }
+                    .scrollTargetLayout()
                 }
-                .scrollTargetLayout()
-            }
-            .scrollPosition(id: $visiblePageID)
-            .scrollIndicators(.visible)
-            .contentShape(Rectangle())
-            .onTapGesture { onSingleTap?() }
+                .scrollPosition(id: $visiblePageID)
+                .scrollIndicators(.visible)
+                // The zoom pan owns the touch while zoomed; scrolling returns at 1x.
+                .scrollDisabled(zoomScale > Self.zoomEpsilon)
+                .contentShape(Rectangle())
+                .scaleEffect(zoomScale, anchor: zoomAnchor)
+                .offset(zoomOffset)
+                .simultaneousGesture(
+                    panGesture(size: size),
+                    including: zoomScale > Self.zoomEpsilon ? .all : .none
+                )
+                .gesture(tapGesture(size: size))
 
-            Text("\((visiblePageID ?? 0) + 1) / \(pages.count)")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(AppTheme.textPrimary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(.ultraThinMaterial, in: Capsule())
-                .padding(16)
+                Text("\((visiblePageID ?? 0) + 1) / \(pages.count)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.textPrimary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(16)
+            }
+            .clipped()
+            .onChange(of: zoomScale) { _, scale in
+                onZoomChanged?(scale > Self.zoomEpsilon)
+            }
+            .onDisappear {
+                onZoomChanged?(false)
+            }
         }
+    }
+
+    private func panGesture(size: CGSize) -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                guard zoomScale > Self.zoomEpsilon else { return }
+                let moved = CGSize(
+                    width: lastOffset.width + value.translation.width,
+                    height: lastOffset.height + value.translation.height
+                )
+                zoomOffset = clampZoomOffset(moved, scale: zoomScale, anchor: zoomAnchor, size: size)
+            }
+            .onEnded { _ in
+                if zoomScale > Self.zoomEpsilon {
+                    lastOffset = zoomOffset
+                } else {
+                    resetZoom()
+                }
+            }
+    }
+
+    private func tapGesture(size: CGSize) -> some Gesture {
+        SpatialTapGesture(count: 2)
+            .onEnded { value in
+                handleDoubleTap(at: value.location, in: size)
+            }
+            .exclusively(
+                before: TapGesture(count: 1).onEnded { _ in
+                    onSingleTap?()
+                }
+            )
+    }
+
+    private func handleDoubleTap(at location: CGPoint, in size: CGSize) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if zoomScale > Self.zoomEpsilon {
+                resetZoom()
+            } else {
+                guard size.width > 0, size.height > 0 else { return }
+                zoomAnchor = UnitPoint(
+                    x: min(max(location.x / size.width, 0), 1),
+                    y: min(max(location.y / size.height, 0), 1)
+                )
+                zoomScale = Self.doubleTapScale
+                lastScale = Self.doubleTapScale
+                zoomOffset = .zero
+                lastOffset = .zero
+            }
+        }
+    }
+
+    private func resetZoom() {
+        zoomScale = 1
+        lastScale = 1
+        zoomOffset = .zero
+        lastOffset = .zero
+        zoomAnchor = .center
     }
 }

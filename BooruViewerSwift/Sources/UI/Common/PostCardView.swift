@@ -30,6 +30,11 @@ struct PostCardView: View {
     @State private var isOnScreen = false
     /// Index into the frame slideshow (PostCard.tsx:111, 192-200).
     @State private var frameIndex = 0
+    /// Explicit hold on the card, from the moment the long press succeeds until the
+    /// finger lifts (RN `touchPreviewActive`, PostCard.tsx:110, 261-268).
+    @State private var isPressing = false
+    /// Guards the long-press callback so one hold fires it exactly once.
+    @State private var didLongPress = false
 
     init(
         post: BooruPost,
@@ -90,16 +95,35 @@ struct PostCardView: View {
         )
     }
 
-    /// Automatic listing clip. Full originals need an explicit hold, which this card
-    /// does not implement, so `allowOriginal` keeps its default (PostCard.tsx:115-118).
+    /// RN `hasPreview` (PostCard.tsx:125): a hold-widened clip or a frame source.
+    private var hasPreview: Bool {
+        !GridPreviewPolicy.videoCandidates(
+            for: post,
+            quality: imageQuality,
+            allowOriginal: true
+        ).isEmpty || !GridPreviewPolicy.frameCandidates(for: post).isEmpty
+    }
+
+    /// Motion runs for on-screen cards and, additionally, while the card is held
+    /// (PostCard.tsx:126-129, 146).
+    private var isPreviewActive: Bool {
+        canPlayInline || (isPressing && isOnScreen && gridPreviewsEnabled && hasPreview)
+    }
+
+    /// Automatic listing clip. A hold widens the candidates to the full original,
+    /// which is RN's explicit-hold path (`allowOriginal`, PostCard.tsx:146).
     private var videoURL: URL? {
-        guard canPlayInline else { return nil }
-        return GridPreviewPolicy.videoCandidates(for: post, quality: imageQuality).first
+        guard isPreviewActive else { return nil }
+        return GridPreviewPolicy.videoCandidates(
+            for: post,
+            quality: imageQuality,
+            allowOriginal: isPressing
+        ).first
     }
 
     /// Frame slideshow sources for videoless cards (PostCard.tsx:119-124).
     private var frames: [URL] {
-        guard canPlayInline else { return [] }
+        guard isPreviewActive else { return [] }
         return GridPreviewPolicy.frameCandidates(for: post)
     }
 
@@ -146,12 +170,26 @@ struct PostCardView: View {
                     .stroke(AppTheme.border, lineWidth: 1)
             }
             .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .onLongPressGesture(minimumDuration: 0.35) {
-                onLongPress?()
-            }
+            .onLongPressGesture(
+                minimumDuration: 0.35,
+                maximumDistance: 50,
+                pressing: handlePressingChange,
+                perform: beginHoldPreview
+            )
+            .simultaneousGesture(
+                // A succeeded `LongPressGesture` reports `pressing == false` at
+                // 0.35 s — finger still down — and never reports the real lift, so
+                // this zero-distance drag supplies RN's `onPressOut`
+                // (PostCard.tsx:268).
+                DragGesture(minimumDistance: 0)
+                    .onEnded { _ in endHoldPreview() }
+            )
             .onTapGesture(perform: onTap)
             .onAppear { isOnScreen = true }
-            .onDisappear { isOnScreen = false }
+            .onDisappear {
+                isOnScreen = false
+                endHoldPreview()
+            }
             .task(id: frameLoopKey) {
                 guard frameLoopKey > 0 else {
                     frameIndex = 0
@@ -171,6 +209,36 @@ struct PostCardView: View {
                     )
                 }
             }
+    }
+
+    // MARK: Press / long press
+
+    /// `pressing` turns `true` at touch-down but back to `false` when the hold
+    /// *succeeds* (at `minimumDuration`, finger still down), so it only cancels a
+    /// hold that never completed; the real release arrives from the
+    /// zero-distance drag in `body`.
+    private func handlePressingChange(_ pressing: Bool) {
+        guard !pressing, !didLongPress else { return }
+        endHoldPreview()
+    }
+
+    /// The hold reached 0.35 s: raise the inline preview and notify once
+    /// (PostCard.tsx:261-267).
+    private func beginHoldPreview() {
+        guard !didLongPress else { return }
+        didLongPress = true
+        if isOnScreen && gridPreviewsEnabled && hasPreview {
+            isPressing = true
+        }
+        onLongPress?()
+    }
+
+    /// Finger up, or the card left the grid: stop the held preview and reset
+    /// (RN `onPressOut`, PostCard.tsx:268).
+    private func endHoldPreview() {
+        guard isPressing || didLongPress else { return }
+        isPressing = false
+        didLongPress = false
     }
 
     // MARK: Badges

@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// App shell: four tabs, the viewer cover, tag navigation, and the app-lock overlay.
 ///
@@ -21,13 +24,27 @@ struct RootTabView: View {
         let index: Int
     }
 
+    /// Keeps the tab bar on the app background in both the normal and the content-under-bar
+    /// (scroll-edge) state. `BooruViewerApp` also installs a matching `UITabBarAppearance`; this
+    /// modifier states the same intent at the SwiftUI layer so no code path can fall back to
+    /// UIKit's default black fill.
+    private struct TabBarBackground: ViewModifier {
+        func body(content: Content) -> some View {
+            content
+                .toolbarBackground(AppTheme.background, for: .tabBar)
+                .toolbarBackground(.visible, for: .tabBar)
+        }
+    }
+
     private let container: AppContainer
 
-    /// Bottom clearance reserved under every tab's content, matching the height of the iOS 26
-    /// floating tab bar capsule (~57pt) plus its spacing. Without it the scroll area runs to the
-    /// window edge, so content scrolled to its end (settings footer, feed's last row) rests
-    /// underneath the bar and peeks into the home-indicator area.
-    private static let tabBarClearance: CGFloat = 68
+    /// Breathing room kept under each tab's content.
+    ///
+    /// The tab bar's own height (and the home-indicator inset) is already reserved by the system,
+    /// so content stops above the bar without any manual clearance. This is only a small visual
+    /// gap so the last row does not sit flush against the bar; the old fixed 68pt reservation
+    /// left a dead band of unused space between the content and the tab bar.
+    private static let tabBarBreathingRoom: CGFloat = 8
 
     @State private var selectedTab: Tab = .explore
     @State private var explorePath: [TagSearchTarget] = []
@@ -134,6 +151,8 @@ struct RootTabView: View {
             )
         }
         .onChange(of: selectedTab) { _, tab in
+            // RN fires a light impact on every tab press (App.tsx:60).
+            Self.playTabSelectionHaptic()
             Task { @MainActor in
                 await container.reloadSharedState()
                 if tab == .settings {
@@ -165,7 +184,8 @@ struct RootTabView: View {
                 detailScreen(for: target)
             }
         }
-        .padding(.bottom, Self.tabBarClearance)
+        .modifier(TabBarBackground())
+        .padding(.bottom, Self.tabBarBreathingRoom)
     }
 
     private var searchTab: some View {
@@ -189,7 +209,8 @@ struct RootTabView: View {
             .toolbar(.hidden, for: .navigationBar)
             .id(searchToken)
         }
-        .padding(.bottom, Self.tabBarClearance)
+        .modifier(TabBarBackground())
+        .padding(.bottom, Self.tabBarBreathingRoom)
     }
 
     private var favoritesTab: some View {
@@ -206,14 +227,27 @@ struct RootTabView: View {
                 onOpenPost: { posts, index in openViewer(posts, index) }
             )
         }
-        .padding(.bottom, Self.tabBarClearance)
+        .modifier(TabBarBackground())
+        .padding(.bottom, Self.tabBarBreathingRoom)
     }
 
     private var settingsTab: some View {
         NavigationStack {
             SettingsScreen(viewModel: settingsModel)
         }
-        .padding(.bottom, Self.tabBarClearance)
+        .modifier(TabBarBackground())
+        .padding(.bottom, Self.tabBarBreathingRoom)
+    }
+
+    // MARK: - Haptics
+
+    /// Light tap feedback on tab change, mirroring RN's `Haptics.impactAsync(.Light)`.
+    private static func playTabSelectionHaptic() {
+        #if canImport(UIKit)
+        let generator = UISelectionFeedbackGenerator()
+        generator.prepare()
+        generator.selectionChanged()
+        #endif
     }
 
     // MARK: - Navigation

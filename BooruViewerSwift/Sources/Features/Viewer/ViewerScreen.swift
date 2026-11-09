@@ -13,6 +13,21 @@ struct ViewerScreen: View {
     @State private var showControls = true
     @State private var showInfo = false
 
+    /// Live vertical offset of the media while a swipe is in flight, so the
+    /// dismiss / info-sheet drag feels attached to the finger
+    /// (ImageViewerModal.tsx:1331-1372).
+    @State private var verticalDragOffset: CGFloat = 0
+    /// Set once a drag has been classified as clearly vertical; horizontal drags
+    /// then stay with the paged `TabView`.
+    @State private var isVerticalDrag = false
+    /// Live horizontal offset of the whole viewer during the left-edge dismiss
+    /// (ImageViewerModal.tsx:284-324).
+    @State private var edgeDragOffset: CGFloat = 0
+    @State private var isEdgeDrag = false
+    /// Mirrors the visible page's zoom so the viewer's own drags stand down while
+    /// the media pan gesture owns the touch.
+    @State private var isMediaZoomed = false
+
     init(
         posts: [BooruPost],
         initialIndex: Int = 0,
@@ -55,18 +70,33 @@ struct ViewerScreen: View {
                         isActive: index == viewModel.currentIndex,
                         isMangaMode: viewModel.isMangaMode && index == viewModel.currentIndex,
                         galleryPages: viewModel.galleryPages(for: post),
-                        onSingleTap: { toggleControls() }
+                        onSingleTap: { toggleControls() },
+                        onZoomChanged: { zoomed in isMediaZoomed = zoomed }
                     )
                     .tag(index)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             .ignoresSafeArea()
+            .offset(y: verticalDragOffset)
+            .opacity(mediaOpacity)
+            // Both drags are simultaneous so the `.page` `TabView` keeps its own
+            // horizontal paging; each one only acts after deciding the drag belongs
+            // to it (dominant axis, left-edge start).
+            .simultaneousGesture(verticalDismissGesture)
+            .simultaneousGesture(edgeDismissGesture)
 
             overlays
         }
+        .offset(x: edgeDragOffset)
         .statusBarHidden(!showControls)
         .animation(.easeInOut(duration: 0.2), value: showControls)
+        .onChange(of: vm.currentIndex) { _, _ in
+            resetPagerGestures()
+        }
+        .onChange(of: isMediaZoomed) { _, zoomed in
+            if zoomed { resetVerticalDrag() }
+        }
         .task(id: vm.currentIndex) { [vm] in
             await vm.prepareCurrentPage()
         }
@@ -87,6 +117,116 @@ struct ViewerScreen: View {
                 .presentationDragIndicator(.visible)
             }
         }
+    }
+
+    // MARK: Dismiss gestures
+
+    /// Swipe down closes the viewer, swipe up opens the info sheet
+    /// (ImageViewerModal.tsx:1331-1372, PostPageItem scroll handler).
+    ///
+    /// It is attached simultaneously with the paged `TabView` and only claims a
+    /// drag once it is clearly vertical, so left/right swipes still page.
+    private var verticalDismissGesture: some Gesture {
+        DragGesture(minimumDistance: 20)
+            .onChanged { value in
+                guard !isVerticalDismissSuspended else { return }
+                let translation = value.translation
+                if !isVerticalDrag {
+                    guard abs(translation.height) > abs(translation.width) else { return }
+                    isVerticalDrag = true
+                }
+                verticalDragOffset = translation.height
+            }
+            .onEnded { value in
+                guard isVerticalDrag else { return }
+                isVerticalDrag = false
+                guard !isVerticalDismissSuspended else {
+                    resetVerticalDrag()
+                    return
+                }
+                let dy = value.translation.height
+                if dy > Self.swipeDownThreshold {
+                    resetVerticalDrag()
+                    onClose()
+                } else if dy < -Self.swipeUpThreshold {
+                    resetVerticalDrag(animated: true)
+                    showInfo = true
+                } else {
+                    resetVerticalDrag(animated: true)
+                }
+            }
+    }
+
+    /// Interactive left-edge pan to dismiss (ImageViewerModal.tsx:284-324). Only a
+    /// drag that starts inside the left ~24 pt strip and travels sideways tracks;
+    /// anything else is left to the pager.
+    private var edgeDismissGesture: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                guard value.startLocation.x < Self.edgeStripWidth else { return }
+                guard !isMediaZoomed else { return }
+                let translation = value.translation
+                if !isEdgeDrag {
+                    guard translation.width > 0,
+                          abs(translation.width) > abs(translation.height) else { return }
+                    isEdgeDrag = true
+                }
+                edgeDragOffset = translation.width
+            }
+            .onEnded { value in
+                guard isEdgeDrag else { return }
+                isEdgeDrag = false
+                let shouldDismiss = !isMediaZoomed
+                    && (value.translation.width > Self.edgeDismissThreshold
+                        || value.predictedEndTranslation.width > Self.edgePredictedThreshold)
+                if shouldDismiss {
+                    edgeDragOffset = 0
+                    onClose()
+                } else {
+                    withAnimation(Self.springBack) {
+                        edgeDragOffset = 0
+                    }
+                }
+            }
+    }
+
+    /// Vertical dismissal is suspended while the page is zoomed (the media pan owns
+    /// the drag) and inside the multi-page reader, whose scroll view owns vertical
+    /// drags (ImageViewerModal.tsx:1345).
+    private var isVerticalDismissSuspended: Bool {
+        isMediaZoomed || viewModel.isMangaMode
+    }
+
+    /// Fades the media as it is pulled off screen, like RN's dismiss transition.
+    private var mediaOpacity: Double {
+        guard verticalDragOffset > 0 else { return 1 }
+        return Double(max(0.4, 1 - verticalDragOffset / 320))
+    }
+
+    private static let swipeDownThreshold: CGFloat = 80
+    private static let swipeUpThreshold: CGFloat = 70
+    private static let edgeStripWidth: CGFloat = 24
+    private static let edgeDismissThreshold: CGFloat = 80
+    private static let edgePredictedThreshold: CGFloat = 120
+    private static let springBack = Animation.spring(response: 0.32, dampingFraction: 0.86)
+
+    private func resetVerticalDrag(animated: Bool = false) {
+        isVerticalDrag = false
+        guard animated else {
+            verticalDragOffset = 0
+            return
+        }
+        withAnimation(Self.springBack) {
+            verticalDragOffset = 0
+        }
+    }
+
+    private func resetPagerGestures() {
+        isMediaZoomed = false
+        isVerticalDrag = false
+        isEdgeDrag = false
+        verticalDragOffset = 0
+        edgeDragOffset = 0
     }
 
     // MARK: Overlays
