@@ -801,7 +801,7 @@ struct HentaiHavenSource: BooruSource {
             sourceLink: URL(string: "\(HentaiHavenSource.baseURL)/watch/\(slug)/"),
             fileExt: "mp4",
             fileSize: nil,
-            createdAt: BooruJSONSupport.firstNonEmpty(dto.chapterDate, dto.postDate, BooruJSONSupport.isoString(Date())),
+            createdAt: BooruJSONSupport.firstNonEmpty(dto.chapterDate, BooruJSONSupport.isoString(Date())),
             niches: nil,
             isPremium: nil,
             pageCount: nil,
