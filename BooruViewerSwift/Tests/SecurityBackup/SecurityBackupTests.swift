@@ -422,7 +422,7 @@ final class SecurityBackupTests: XCTestCase {
     func testExportDerivesFavoritesCountAndRNMetadata() async throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let stores = makeStores(directory)
+        let stores = makeStores(directory: directory)
 
         try await stores.favorites.add(makePost(id: "1"))
         try await stores.favoriteTags.add("cats")
@@ -453,7 +453,7 @@ final class SecurityBackupTests: XCTestCase {
     func testNativeImportMergesAndDedupesByPostKeyAndMediaKey() async throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let stores = makeStores(directory)
+        let stores = makeStores(directory: directory)
         let service = makeBackupService(stores)
 
         let existing = makePost(id: "1", originalURL: "https://img4.gelbooru.com/images/1.jpg")
@@ -480,7 +480,7 @@ final class SecurityBackupTests: XCTestCase {
     func testNativeImportUnionsTagsAndSearchHistory() async throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let stores = makeStores(directory)
+        let stores = makeStores(directory: directory)
         let service = makeBackupService(stores)
 
         try await stores.favoriteTags.add("cats")
@@ -514,7 +514,7 @@ final class SecurityBackupTests: XCTestCase {
     func testAnimeBoxesImportMapsLegacyFavoritesAndTags() async throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let stores = makeStores(directory)
+        let stores = makeStores(directory: directory)
         let service = makeBackupService(stores)
 
         let favorite: [String: Any] = [
@@ -585,7 +585,7 @@ final class SecurityBackupTests: XCTestCase {
     func testAnimeBoxesRecentViewsMergeNewestFirst() async throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let stores = makeStores(directory)
+        let stores = makeStores(directory: directory)
         let service = makeBackupService(stores)
 
         try await stores.recentViews.record(makePost(id: "old", createdAt: "2019-01-01T00:00:00Z"))
@@ -623,7 +623,7 @@ final class SecurityBackupTests: XCTestCase {
     func testSearchHistoryImportKeepsImportedAndExistingEntries() async throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let stores = makeStores(directory)
+        let stores = makeStores(directory: directory)
         let service = makeBackupService(stores)
 
         let existing = (0..<10).map { "existing \($0)" }
@@ -646,7 +646,7 @@ final class SecurityBackupTests: XCTestCase {
     func testRecentViewsImportCapsAt500() async throws {
         let directory = try makeDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let stores = makeStores(directory)
+        let stores = makeStores(directory: directory)
         let service = makeBackupService(stores)
 
         let imported = (0..<520).map { index in
