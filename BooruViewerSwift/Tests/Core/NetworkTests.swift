@@ -268,6 +268,37 @@ final class NetworkTests: XCTestCase {
         XCTAssertEqual(requests[1].httpShouldHandleCookies, false)
     }
 
+    func testProxyAwareForwardsAllowedHeadersAndDirectLegKeepsOriginHeaders() async throws {
+        // The relayed leg must carry exactly the sanitized set; the direct leg must keep every origin header.
+        let stub = ScriptedHTTPClient { request in
+            if request.url?.host == "example.com" {
+                throw BooruError.network("timed out")
+            }
+            return (Data(), makeResponse(request.url!, status: 200))
+        }
+        let client = ProxyAwareHTTPClient(direct: stub, proxy: ProxyConfig(enabled: false, workerURL: workerURL))
+        var original = URLRequest(url: itemURL)
+        original.setValue("https://example.com/", forHTTPHeaderField: "Referer")
+        original.setValue("a=1", forHTTPHeaderField: "Cookie")
+        original.setValue("image/*", forHTTPHeaderField: "Accept")
+        original.setValue("token-123", forHTTPHeaderField: "X-Test-Key")
+
+        _ = try await client.data(for: original)
+
+        let requests = stub.requests
+        XCTAssertEqual(requests.count, 2)
+        let directHeaders = requests[0].allHTTPHeaderFields ?? [:]
+        XCTAssertEqual(directHeaders["Referer"], "https://example.com/")
+        XCTAssertEqual(directHeaders["Cookie"], "a=1")
+        XCTAssertEqual(directHeaders["Accept"], "image/*")
+        XCTAssertEqual(directHeaders["X-Test-Key"], "token-123")
+        let relayHeaders = requests[1].allHTTPHeaderFields ?? [:]
+        XCTAssertEqual(relayHeaders["Accept"], "image/*")
+        XCTAssertEqual(relayHeaders["X-Test-Key"], "token-123")
+        XCTAssertNil(relayHeaders["Referer"])
+        XCTAssertNil(relayHeaders["Cookie"])
+    }
+
     func testProxyAwareFallsBackOnForbiddenThroughRelay() async throws {
         let stub = ScriptedHTTPClient { request in
             let status = request.url?.host == "example.com" ? 403 : 200
