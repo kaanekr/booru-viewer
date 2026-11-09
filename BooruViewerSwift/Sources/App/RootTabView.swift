@@ -34,6 +34,7 @@ struct RootTabView: View {
 
     init(container: AppContainer) {
         self.container = container
+        _selectedTab = State(initialValue: Self.tab(for: container.launchOptions.initialTab))
         _settingsModel = State(initialValue: SettingsViewModel(
             settingsStore: container.settingsStore,
             blacklistedStore: container.blacklistedTagsStore,
@@ -42,6 +43,11 @@ struct RootTabView: View {
             lockController: container.lockController,
             probeClient: { URLSessionHTTPClient.makeProbeClient() },
             clearSearchHistory: {
+                if container.launchOptions.demoMode {
+                    // Demo state lives in memory; never touch the storage file for it.
+                    await container.clearDemoSearchHistory()
+                    return
+                }
                 try await container.fileStore.write(SearchHistoryStore.fileName, [String]())
             },
             onSourceChanged: { _ in
@@ -50,6 +56,22 @@ struct RootTabView: View {
                 }
             }
         ))
+    }
+
+    /// Maps `-initialTab` onto the tab selection; a normal launch keeps Explore.
+    private static func tab(for initialTab: LaunchOptions.InitialTab?) -> Tab {
+        switch initialTab {
+        case .feed:
+            return .explore
+        case .search:
+            return .search
+        case .favorites:
+            return .favorites
+        case .settings:
+            return .settings
+        case nil:
+            return .explore
+        }
     }
 
     // MARK: - Body
@@ -76,12 +98,16 @@ struct RootTabView: View {
             .tint(AppTheme.primary)
 
             // The lock/curtain covers the whole window, including the tab bar.
-            LockScreenView(controller: container.lockController)
-                .ignoresSafeArea()
-                .allowsHitTesting(
-                    container.lockController.isLocked
-                        || container.lockController.isPrivacyCurtainVisible
-                )
+            // `-forceLock` skips the biometric auto-prompt so the PIN pad stays on screen.
+            LockScreenView(
+                controller: container.lockController,
+                useBiometrics: !container.launchOptions.forceLock
+            )
+            .ignoresSafeArea()
+            .allowsHitTesting(
+                container.lockController.isLocked
+                    || container.lockController.isPrivacyCurtainVisible
+            )
         }
         .background(AppTheme.background.ignoresSafeArea())
         .fullScreenCover(item: $viewer, onDismiss: { reloadAfterViewer() }) { presentation in
@@ -119,6 +145,7 @@ struct RootTabView: View {
                 context: container.makeSourceContext(),
                 blacklistedTags: container.blacklistedTags,
                 favoriteKeys: container.favoriteKeys,
+                sourceProvider: container.sourceProvider,
                 onSelectTag: { tag in
                     explorePath.append(
                         TagSearchTarget(sourceID: container.settings.activeSourceID, tags: tag)
@@ -143,6 +170,7 @@ struct RootTabView: View {
                 favoriteKeys: container.favoriteKeys,
                 imageQuality: container.settings.imageQuality,
                 gridPreviewsEnabled: container.settings.gridPreviews,
+                sourceProvider: container.sourceProvider,
                 initialQuery: pendingSearch,
                 onOpenTag: { tag in openTag(tag) },
                 onToggleFavorite: { post in
@@ -188,6 +216,7 @@ struct RootTabView: View {
             blacklistedTags: container.blacklistedTags,
             imageQuality: container.settings.imageQuality,
             gridPreviewsEnabled: container.settings.gridPreviews,
+            sourceProvider: container.sourceProvider,
             onOpenPost: { posts, index in openViewer(posts, index) }
         )
     }

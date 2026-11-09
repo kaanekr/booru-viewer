@@ -13,12 +13,20 @@ final class AppContainer {
 
     /// One JSON actor shared by every file-backed store so read-modify-write is serialized app-wide.
     let fileStore: JSONFileStore
-    let settingsStore: SettingsStore
-    let favoritesStore: FavoritesStore
-    let favoriteTagsStore: TagListStore
-    let blacklistedTagsStore: TagListStore
-    let searchHistoryStore: SearchHistoryStore
-    let recentViewsStore: RecentViewsStore
+    /// In `-demoMode` these are the in-memory stores from `DemoData`; otherwise the file-backed ones.
+    let settingsStore: any SettingsStoring
+    let favoritesStore: any FavoritesStoring
+    let favoriteTagsStore: any TagListStoring
+    let blacklistedTagsStore: any TagListStoring
+    let searchHistoryStore: any SearchHistoryStoring
+    let recentViewsStore: any RecentViewsStoring
+
+    // MARK: - Launch
+
+    /// Parsed launch arguments; every flag is off for a normal launch.
+    let launchOptions: LaunchOptions
+    /// Source lookup: the demo adapter in `-demoMode`, the real registry otherwise.
+    let sourceProvider: (SourceID) -> (any BooruSource)?
 
     // MARK: - Services
 
@@ -41,14 +49,32 @@ final class AppContainer {
     // MARK: - Init
 
     init(directory: URL = JSONFileStore.defaultDirectory()) {
+        let options = LaunchOptions.current()
+        self.launchOptions = options
+        if options.demoMode {
+            self.sourceProvider = DemoBooruSource.provider
+        } else {
+            self.sourceProvider = { SourceRegistry.source(for: $0) }
+        }
+
         let fileStore = JSONFileStore(directory: directory)
         self.fileStore = fileStore
-        self.settingsStore = SettingsStore(file: fileStore)
-        self.favoritesStore = FavoritesStore(file: fileStore)
-        self.favoriteTagsStore = TagListStore(file: fileStore, kind: .favorite)
-        self.blacklistedTagsStore = TagListStore(file: fileStore, kind: .blacklisted)
-        self.searchHistoryStore = SearchHistoryStore(file: fileStore)
-        self.recentViewsStore = RecentViewsStore(file: fileStore)
+        if options.demoMode {
+            // Demo state stays in memory: no demo data is written to the JSON storage files.
+            self.settingsStore = DemoSettingsStore(settings: DemoData.settings)
+            self.favoritesStore = DemoFavoritesStore(posts: DemoData.favorites)
+            self.favoriteTagsStore = DemoTagListStore(tags: DemoData.favoriteTags)
+            self.blacklistedTagsStore = DemoTagListStore(tags: DemoData.blacklistedTags)
+            self.searchHistoryStore = DemoSearchHistoryStore(queries: DemoData.searchHistory)
+            self.recentViewsStore = DemoRecentViewsStore(posts: DemoData.recentViews)
+        } else {
+            self.settingsStore = SettingsStore(file: fileStore)
+            self.favoritesStore = FavoritesStore(file: fileStore)
+            self.favoriteTagsStore = TagListStore(file: fileStore, kind: .favorite)
+            self.blacklistedTagsStore = TagListStore(file: fileStore, kind: .blacklisted)
+            self.searchHistoryStore = SearchHistoryStore(file: fileStore)
+            self.recentViewsStore = RecentViewsStore(file: fileStore)
+        }
         self.httpClient = URLSessionHTTPClient()
 
         let securityService = SecurityService()
@@ -62,14 +88,25 @@ final class AppContainer {
             searchHistory: searchHistoryStore,
             recentViews: recentViewsStore
         )
+
+        if options.demoMode {
+            // Seed the first render too, so no tab flashes empty before `bootstrap()` runs.
+            settings = DemoData.settings
+            favoriteKeys = Set(DemoData.favorites.map(postKey))
+            blacklistedTags = DemoData.blacklistedTags
+        }
     }
 
     // MARK: - Launch
 
     /// Loads persisted state, restores credentials, then arms the cold-start lock.
+    /// `-forceLock` additionally locks the app so the PIN pad can be screenshotted.
     func bootstrap() async {
         await reloadSharedState()
         await lockController.prepareForLaunch()
+        if launchOptions.forceLock {
+            lockController.lockNow()
+        }
     }
 
     // MARK: - Shared state
@@ -126,7 +163,17 @@ final class AppContainer {
     /// Persists an empty recent-views document. `RecentViewsStoring` has no delete operation, so
     /// `FavoritesScreen`'s "Clear History" calls this app-level hook instead.
     func clearRecentViews() async {
+        if launchOptions.demoMode {
+            // Demo state lives in memory; never touch the storage file for it.
+            await (recentViewsStore as? DemoRecentViewsStore)?.clear()
+            return
+        }
         try? await fileStore.write(RecentViewsStore.fileName, [BooruPost]())
+    }
+
+    /// Demo-mode helper: empties the in-memory search history instead of the storage file.
+    func clearDemoSearchHistory() async {
+        await (searchHistoryStore as? DemoSearchHistoryStore)?.clear()
     }
 
     // MARK: - Credentials
