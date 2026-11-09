@@ -17,6 +17,9 @@ struct ZoomableMediaView: View {
     var isActive = true
     var isMangaMode = false
     var galleryPages: [URL] = []
+    /// Mirrors the viewer's controls visibility so the video transport card hides
+    /// together with `ViewerScreen`'s top/bottom bars.
+    var showsControls = true
     /// Single tap on the media toggles the viewer controls (RN `handleToggleControls`).
     var onSingleTap: (() -> Void)?
     /// Reports pinch / double-tap zoom so the viewer can stand down its own
@@ -28,11 +31,18 @@ struct ZoomableMediaView: View {
             if isMangaMode, galleryPages.count > 1 {
                 PrivateMangaReaderView(
                     pages: galleryPages,
+                    aspectRatioFallback: post.aspectRatio,
                     onSingleTap: onSingleTap,
                     onZoomChanged: onZoomChanged
                 )
             } else if let videoURL = media?.videoURL {
-                PrivateVideoPlaybackView(url: videoURL, isActive: isActive, onSingleTap: onSingleTap)
+                PrivateVideoPlaybackView(
+                    url: videoURL,
+                    isActive: isActive,
+                    showsControls: showsControls,
+                    onSingleTap: onSingleTap
+                )
+                .id(videoURL)
             } else {
                 imagePage
             }
@@ -53,7 +63,8 @@ struct ZoomableMediaView: View {
     private var imagePage: some View {
         GeometryReader { proxy in
             let size = proxy.size
-            let imageChain = [media?.imageURL, media?.placeholderURL].compactMap { $0 }
+            let nhentaiCover = post.sourceID == .nhentai ? (post.sampleURL ?? post.previewURL) : nil
+            let imageChain = [media?.imageURL, media?.placeholderURL, nhentaiCover].compactMap { $0 }
 
             ZStack {
                 Color.black
@@ -199,6 +210,9 @@ private struct PrivateViewerImage: View {
 
     @State private var image: UIImage?
     @State private var didFail = false
+    /// URLs whose image is already applied, so a parent re-render never re-runs
+    /// the task (or flashes the spinner) for a decoded page.
+    @State private var loadedURLs: [URL]?
 
     var body: some View {
         Group {
@@ -224,24 +238,36 @@ private struct PrivateViewerImage: View {
 
     /// Walks the chain until one URL decodes; a cached image is applied without a
     /// visible placeholder frame. The loader already retried the other route leg.
+    /// An already-loaded image is kept across view updates, so re-rendering the
+    /// page never flashes the spinner.
     private func load() async {
+        guard loadedURLs != urls else { return }
         guard !urls.isEmpty else {
             image = nil
             didFail = true
             return
         }
-        didFail = false
+
+        // Fast path: check cache for all candidates first without clearing image.
         for url in urls {
             if Task.isCancelled { return }
             if let cached = await MediaImageLoader.shared.cachedImage(for: url) {
                 if Task.isCancelled { return }
                 image = cached
+                loadedURLs = urls
+                didFail = false
                 return
             }
+        }
+
+        didFail = false
+        for url in urls {
+            if Task.isCancelled { return }
             do {
                 let loaded = try await MediaImageLoader.shared.image(for: url)
                 if Task.isCancelled { return }
                 image = loaded
+                loadedURLs = urls
                 return
             } catch {
                 continue
@@ -288,6 +314,8 @@ private func clampZoomOffset(
 private struct PrivateVideoPlaybackView: View {
     let url: URL
     var isActive: Bool
+    /// Only show the transport card while the viewer's controls are visible.
+    var showsControls = true
     var onSingleTap: (() -> Void)?
 
     @State private var player: AVPlayer?
@@ -309,10 +337,13 @@ private struct PrivateVideoPlaybackView: View {
                     .ignoresSafeArea()
                     .onTapGesture { onSingleTap?() }
                     .overlay(alignment: .bottom) {
-                        if isActive {
+                        if isActive, showsControls {
                             playbackControls(player)
                                 .padding(.horizontal, 16)
-                                .padding(.bottom, 24)
+                                // Clears `ViewerScreen.bottomBar` (manga / favorite /
+                                // info buttons) so the card never hides under it.
+                                .padding(.bottom, 96)
+                                .transition(.opacity)
                         }
                     }
             } else {
@@ -322,6 +353,10 @@ private struct PrivateVideoPlaybackView: View {
         }
         .onAppear(perform: setUp)
         .onDisappear(perform: tearDown)
+        .onChange(of: url) { _, _ in
+            tearDown()
+            setUp()
+        }
         .onChange(of: isActive) { _, active in
             guard let player else { return }
             if active {
@@ -334,19 +369,14 @@ private struct PrivateVideoPlaybackView: View {
         }
     }
 
+    /// Classic transport card: scrubber row (time / slider / duration) plus a
+    /// button row (-10s / play-pause / +10s / mute), on a translucent surface.
     private func playbackControls(_ player: AVPlayer) -> some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 10) {
             HStack(spacing: 10) {
-                Button {
-                    togglePlayback(player)
-                } label: {
-                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                        .frame(width: 32, height: 32)
-                }
-
                 Text(Self.timeLabel(currentTime))
                     .font(.caption2.monospacedDigit())
+                    .frame(width: 38, alignment: .leading)
 
                 Slider(
                     value: Binding(
@@ -365,20 +395,47 @@ private struct PrivateVideoPlaybackView: View {
 
                 Text(Self.timeLabel(duration))
                     .font(.caption2.monospacedDigit())
+                    .frame(width: 38, alignment: .trailing)
+            }
+
+            HStack(spacing: 18) {
+                circleControl(system: "gobackward.10") { seek(player, by: -10) }
 
                 Button {
-                    toggleMute(player)
+                    togglePlayback(player)
                 } label: {
-                    Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 32, height: 32)
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(AppTheme.textPrimary)
+                        .frame(width: 48, height: 48)
+                        .background(AppTheme.primary.opacity(0.9), in: Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isPlaying ? "Pause" : "Play")
+
+                circleControl(system: "goforward.10") { seek(player, by: 10) }
+
+                Spacer(minLength: 0)
+
+                circleControl(system: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill") {
+                    toggleMute(player)
                 }
             }
             .foregroundStyle(AppTheme.textPrimary)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(AppTheme.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func circleControl(system: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system)
+                .font(.system(size: 17, weight: .semibold))
+                .frame(width: 36, height: 36)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: Player lifecycle
@@ -457,10 +514,18 @@ private struct PrivateVideoPlaybackView: View {
         player.isMuted = isMuted
     }
 
+    /// Relative seek (-10s / +10s), clamped to the clip bounds.
+    private func seek(_ player: AVPlayer, by delta: Double) {
+        let upperBound = duration > 0 ? duration : max(currentTime + delta, 0)
+        let target = min(max(currentTime + delta, 0), upperBound)
+        currentTime = target
+        player.seek(to: CMTime(seconds: target, preferredTimescale: 600))
+    }
+
     private static func timeLabel(_ seconds: Double) -> String {
         guard seconds.isFinite, seconds > 0 else { return "0:00" }
         let total = Int(seconds.rounded())
-        return String(format: "%ld:%02ld", total / 60, total % 60)
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 
@@ -472,6 +537,8 @@ private struct PrivateVideoPlaybackView: View {
 /// current page (RN `handleMangaDoubleTap`, ImageViewerModal.tsx:1439-1490).
 private struct PrivateMangaReaderView: View {
     let pages: [URL]
+    /// Post-level aspect ratio used when a page has no cached/source ratio.
+    var aspectRatioFallback: Double?
     var onSingleTap: (() -> Void)?
     var onZoomChanged: ((Bool) -> Void)?
 
@@ -486,6 +553,12 @@ private struct PrivateMangaReaderView: View {
     /// RN `tapZoom` for the manga reader (ImageViewerModal.tsx:1469).
     private static let doubleTapScale: CGFloat = 2.2
 
+    /// Guards against zero/NaN post ratios so a page always reserves a height.
+    private static func validRatio(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value > 0.05 else { return nil }
+        return value
+    }
+
     var body: some View {
         GeometryReader { proxy in
             let size = proxy.size
@@ -495,10 +568,29 @@ private struct PrivateMangaReaderView: View {
                     LazyVStack(spacing: 0) {
                         ForEach(pages.indices, id: \.self) { index in
                             let url = pages[index]
+                            // Reserve the page's exact height before its image arrives,
+                            // so fast scrolling never reflows the reader.
+                            let ratio = MediaAspectRatioCache.aspectRatio(for: url)
+                                ?? Self.validRatio(aspectRatioFallback)
+                                ?? 0.707
 
-                            PrivateViewerImage(urls: [url], failureText: "Page \(index + 1) unavailable")
-                                .frame(maxWidth: .infinity, minHeight: 240)
+                            Color.clear
+                                .aspectRatio(CGFloat(ratio), contentMode: .fit)
+                                .overlay {
+                                    PrivateViewerImage(
+                                        urls: [url],
+                                        failureText: "Page \(index + 1) unavailable"
+                                    )
+                                }
+                                .frame(maxWidth: .infinity)
                                 .id(index)
+                                .onAppear {
+                                    let upcoming = Array(pages.dropFirst(index + 1).prefix(6))
+                                    guard !upcoming.isEmpty else { return }
+                                    Task {
+                                        await MediaImageLoader.shared.prefetch(urls: upcoming)
+                                    }
+                                }
                         }
                     }
                     .scrollTargetLayout()

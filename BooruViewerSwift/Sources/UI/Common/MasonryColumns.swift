@@ -10,10 +10,9 @@ import Foundation
 /// paging in another page never reshuffles the cards already on screen.
 ///
 /// Heights are estimated from the card's presentation rules instead of measured:
-/// the stored `aspectRatio` clamped to 0.6...1.4 with a 0.75 fallback
-/// (src/components/PostCard.tsx:84), plus one fixed badge/footer allowance.
-/// `width`/`height` are not consulted because every source precomputes
-/// `aspectRatio` and `PostCardView` reads only that field.
+/// the stored `aspectRatio`, then the ratio `MediaAspectRatioCache` measured for
+/// the post, then a per-source default, clamped to `0.5...1.78` (the same clamp
+/// `PostCardView` applies), plus one fixed badge/footer allowance.
 struct MasonryColumns {
     /// Columns the Explore grid renders (FeedScreen.tsx:504).
     static let defaultColumnCount = 2
@@ -70,10 +69,22 @@ struct MasonryColumns {
         return columnWidth / CGFloat(clampedAspectRatio(post)) + badgeFooterAllowance
     }
 
-    /// RN clamp (src/components/PostCard.tsx:84):
-    /// `max(0.6, min(1.4, aspectRatio || 0.75))`, shared with `PostCardView`.
+    /// Aspect ratio used for the estimate: the stored value, then the ratio the
+    /// image loader measured for the post, then the per-source default, clamped
+    /// to `0.5...1.78` (same clamp as `PostCardView`).
     static func clampedAspectRatio(_ post: BooruPost) -> Double {
-        let raw = post.aspectRatio > 0 ? post.aspectRatio : 0.75
-        return min(1.4, max(0.6, raw))
+        let postRatio = post.aspectRatio > 0 ? post.aspectRatio : nil
+        let rawRatio = postRatio ?? MediaAspectRatioCache.aspectRatio(for: post) ?? defaultAspectRatio(for: post)
+        return min(1.78, max(0.5, rawRatio))
+    }
+
+    /// Video sources render in a landscape player, nhentai pages are portrait,
+    /// every other source keeps the 0.75 card fallback (PostCard.tsx:84).
+    static func defaultAspectRatio(for post: BooruPost) -> Double {
+        switch post.sourceID {
+        case .xvideos, .xhamster, .pornhub: return 16.0 / 9.0
+        case .nhentai: return 0.71
+        default: return 0.75
+        }
     }
 }

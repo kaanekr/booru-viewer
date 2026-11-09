@@ -1,5 +1,8 @@
 import Foundation
 
+#if canImport(CoreGraphics)
+import CoreGraphics
+#endif
 #if canImport(AVFoundation)
 import AVFoundation
 #endif
@@ -87,8 +90,12 @@ enum MediaRequestConfiguration {
             // token is bound to this Origin.
             headers["Referer"] = "https://www.redgifs.com/"
             headers["Origin"] = "https://www.redgifs.com"
-        } else if contains(target, "nhentai.net") {
-            headers["Referer"] = "https://nhentai.net/"
+        }
+        // nhentai (nhentai.net / i.nhentai.net / t.nhentai.net) intentionally gets no
+        // Referer: the CDN blocks/throttles requests that carry one
+        // (src/services/nhentai.ts:38).
+        if contains(target, "nhentai.net") {
+            headers.removeValue(forKey: "Referer")
         }
 
         return headers
@@ -114,9 +121,21 @@ enum MediaRequestConfiguration {
 
     /// Every leg for `url`, primary first and the alternate leg second (when a
     /// worker makes one possible). The retry mirrors `ProxyAwareHTTPClient`.
+    /// CDN mirrors (nhentai i1..i4/t1..t4, Gelbooru thumbnail hosts) follow as
+    /// extra legs, so a dead host automatically falls through to a live one.
     static func routeAttempts(for url: URL, proxy: ProxyConfig? = nil) -> [MediaRouteAttempt] {
         let normalized = MediaURLNormalizer.normalize(url) ?? url
         let cfg = proxy ?? currentProxy()
+        var legs = attempts(for: normalized, proxy: cfg)
+        for mirror in mirrorURLs(for: normalized) {
+            guard !legs.contains(where: { $0.originalURL == mirror }) else { continue }
+            legs.append(contentsOf: attempts(for: mirror, proxy: cfg))
+        }
+        return legs
+    }
+
+    /// Legs for one origin URL, without mirror expansion.
+    private static func attempts(for normalized: URL, proxy cfg: ProxyConfig) -> [MediaRouteAttempt] {
         let worker = ProxyRelay.normalizedWorkerURL(cfg.workerURL)
         // proxyService.ts:81/201: a URL that already points at the worker is not wrapped again.
         let isAlreadyRelay = worker.map { normalized.absoluteString.hasPrefix($0) } ?? false
@@ -130,6 +149,44 @@ enum MediaRequestConfiguration {
         guard let relay, relay != normalized else { return [direct] }
         let relayed = MediaRouteAttempt(url: relay, originalURL: normalized, isRelayed: true)
         return relayPreferred ? [relayed, direct] : [direct, relayed]
+    }
+
+    /// Alternate CDN hosts to try after `url` fails, in a stable order.
+    ///
+    /// - nhentai: `i1`...`i4` (or `t1`...`t4`) galleries are mirrored across all four
+    ///   hosts, so a throttled/missing host falls through to the next mirror.
+    /// - Gelbooru: thumbnails live on `img3`/`assets`, not always `img4`.
+    static func mirrorURLs(for url: URL) -> [URL] {
+        guard let host = url.host?.lowercased() else { return [] }
+        var mirrors: [URL] = []
+
+        if let match = host.range(of: #"^([it])[1-4]?\.nhentai\.net$"#, options: [.regularExpression, .caseInsensitive]) {
+            let prefix = String(host[match].prefix(1))
+            for index in 1...4 {
+                let mirrorHost = "\(prefix)\(index).nhentai.net"
+                guard mirrorHost != host else { continue }
+                mirrors.append(replacingHost(of: url, with: mirrorHost))
+            }
+            return mirrors
+        }
+
+        let path = url.path.lowercased()
+        let isGelbooruThumbnail = host.hasSuffix("gelbooru.com")
+            && (path.contains("/thumbnails/") || path.contains("thumbnail_"))
+        if isGelbooruThumbnail {
+            for mirrorHost in ["img4.gelbooru.com", "img3.gelbooru.com", "assets.gelbooru.com"]
+            where mirrorHost != host {
+                mirrors.append(replacingHost(of: url, with: mirrorHost))
+            }
+        }
+        return mirrors
+    }
+
+    /// Same URL on a different host, keeping scheme, path, query and fragment.
+    private static func replacingHost(of url: URL, with host: String) -> URL {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+        components.host = host
+        return components.url ?? url
     }
 
     /// A one-leg `URLRequest` carrying the right headers for its route.
@@ -176,6 +233,52 @@ enum MediaRequestConfiguration {
     }
 }
 
+/// Aspect-ratio memo of media that actually loaded, keyed by normalized URL.
+///
+/// Booru posts often arrive without `width`/`height`, so cards measure the
+/// image the loader decoded (or the video poster frame it generated) and reuse
+/// that ratio for the following passes. Ratios are clamped to `0.45...1.85`,
+/// slightly wider than the card clamp, so the clamp still has room to work.
+enum MediaAspectRatioCache {
+    private static let lock = NSLock()
+    private static var ratios: [String: Double] = [:]
+    private static let minimumRatio = 0.45
+    private static let maximumRatio = 1.85
+
+    /// Ratio recorded for `url`, if any.
+    static func aspectRatio(for url: URL?) -> Double? {
+        guard let url else { return nil }
+        let key = cacheKey(for: url)
+        lock.lock()
+        defer { lock.unlock() }
+        return ratios[key]
+    }
+
+    /// First recorded ratio across the post's preview, sample and original URLs.
+    static func aspectRatio(for post: BooruPost) -> Double? {
+        for candidate in [post.previewURL, post.sampleURL, post.originalURL] {
+            if let ratio = aspectRatio(for: candidate) { return ratio }
+        }
+        return nil
+    }
+
+    /// Stores the clamped `width / height` ratio for `url`.
+    static func record(width: CGFloat, height: CGFloat, for url: URL) {
+        guard width > 0, height > 0, width.isFinite, height.isFinite else { return }
+        let ratio = min(maximumRatio, max(minimumRatio, Double(width / height)))
+        let key = cacheKey(for: url)
+        lock.lock()
+        defer { lock.unlock() }
+        ratios[key] = ratio
+    }
+
+    /// Same normalization as the image cache, so a post URL and its loaded
+    /// mirror share one entry.
+    private static func cacheKey(for url: URL) -> String {
+        (MediaURLNormalizer.normalize(url) ?? url).absoluteString
+    }
+}
+
 #if canImport(UIKit)
 /// Shared in-memory image loader with the proxy fallback the RN media path gets
 /// from `proxyService.fetchWithFallback` (proxyService.ts:106-151).
@@ -184,20 +287,48 @@ actor MediaImageLoader {
 
     private let cache = NSCache<NSString, UIImage>()
     private var inFlight: [NSString: Task<UIImage, Error>] = [:]
+    private var prefetching: Set<NSString> = []
     private let session: URLSession
+
+    /// Concurrent background prefetches; visible loads are not limited by this.
+    private static let maxConcurrentPrefetches = 6
 
     init(session: URLSession? = nil) {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = 30
         configuration.requestCachePolicy = .useProtocolCachePolicy
         self.session = session ?? URLSession(configuration: configuration)
-        cache.countLimit = 240
-        cache.totalCostLimit = 96 * 1024 * 1024
+        cache.countLimit = 260
+        cache.totalCostLimit = 256 * 1024 * 1024
     }
 
     /// Cache hit check usable before a `task` spends time on the actor hop.
     func cachedImage(for url: URL) -> UIImage? {
         cache.object(forKey: MediaImageLoader.cacheKey(for: url))
+    }
+
+    /// Background warm-up for URLs that are not cached yet (manga reader
+    /// scrolling). At most six prefetches run at a time; the rest are picked up
+    /// on the next call.
+    func prefetch(urls: [URL]) {
+        let session = self.session
+        for url in urls {
+            guard prefetching.count < MediaImageLoader.maxConcurrentPrefetches else { return }
+            let key = MediaImageLoader.cacheKey(for: url)
+            guard cache.object(forKey: key) == nil,
+                  inFlight[key] == nil,
+                  !prefetching.contains(key) else { continue }
+            let task = Task<UIImage, Error> { [session] in
+                try await MediaImageLoader.fetchImage(for: url, proxy: nil, session: session)
+            }
+            inFlight[key] = task
+            prefetching.insert(key)
+            let prefetchKey = key as String
+            Task.detached { [weak self] in
+                let image = try? await task.value
+                await self?.finishPrefetch(key: prefetchKey, image: image)
+            }
+        }
     }
 
     /// Decoded image for `url`, relay-first with a single alternate-leg retry.
@@ -233,6 +364,15 @@ actor MediaImageLoader {
         cache.removeAllObjects()
     }
 
+    /// Completes one background prefetch, caching the decoded image on success.
+    private func finishPrefetch(key: String, image: UIImage?) {
+        let cacheKey = key as NSString
+        inFlight[cacheKey] = nil
+        prefetching.remove(cacheKey)
+        guard let image else { return }
+        cache.setObject(image, forKey: cacheKey, cost: MediaImageLoader.cost(of: image))
+    }
+
     // MARK: Fetch
 
     private static func fetchImage(for url: URL, proxy: ProxyConfig?, session: URLSession) async throws -> UIImage {
@@ -241,9 +381,21 @@ actor MediaImageLoader {
             ? [MediaRouteAttempt(url: MediaURLNormalizer.normalize(url) ?? url, originalURL: url, isRelayed: false)]
             : attempts
 
+        let wantsVideoPoster = isVideoURL(url)
         var lastError: Error = BooruError.network("Media request failed")
         for attempt in legs {
             try Task.checkCancellation()
+            if wantsVideoPoster {
+                // Video-only cards (Cum.st, raw .mp4/.m3u8 links) never yield a
+                // static image: extract a poster frame instead of a black box.
+                #if canImport(AVFoundation)
+                if let poster = await videoPosterImage(for: attempt) {
+                    return await prepared(poster, for: url)
+                }
+                #endif
+                lastError = BooruError.network("Video poster extraction failed")
+                continue
+            }
             var request = URLRequest(url: attempt.url)
             request.timeoutInterval = 30
             request.httpShouldHandleCookies = !attempt.isRelayed
@@ -257,10 +409,16 @@ actor MediaImageLoader {
                     continue
                 }
                 guard let image = UIImage(data: data) else {
+                    // A payload that is not an image can still be video bytes.
+                    #if canImport(AVFoundation)
+                    if let poster = await videoPosterImage(for: attempt) {
+                        return await prepared(poster, for: url)
+                    }
+                    #endif
                     lastError = BooruError.network("Media payload was not a decodable image")
                     continue
                 }
-                return image
+                return await prepared(image, for: url)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -269,6 +427,44 @@ actor MediaImageLoader {
             }
         }
         throw lastError
+    }
+
+    /// Fully prepares an image for display and memoizes its aspect ratio.
+    private static func prepared(_ image: UIImage, for url: URL) async -> UIImage {
+        MediaAspectRatioCache.record(width: image.size.width, height: image.size.height, for: url)
+        let display = await image.byPreparingForDisplay() ?? image
+        return display
+    }
+
+    #if canImport(AVFoundation)
+    /// Mid-frame poster for one route leg, carrying the media headers AVPlayer
+    /// relies on.
+    private static func videoPosterImage(for attempt: MediaRouteAttempt) async -> UIImage? {
+        let asset = AVURLAsset(
+            url: attempt.url,
+            options: ["AVURLAssetHTTPHeaderFieldsKey": MediaRequestConfiguration.headers(for: attempt)]
+        )
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        do {
+            let (cgImage, _) = try await generator.image(at: CMTime(seconds: 0.5, preferredTimescale: 600))
+            return UIImage(cgImage: cgImage)
+        } catch {
+            return nil
+        }
+    }
+    #endif
+
+    /// Card cover extensions that never decode as a still image.
+    static func isVideoURL(_ url: URL?) -> Bool {
+        guard let url else { return false }
+        let path = url.path.lowercased()
+        let raw = url.absoluteString.lowercased()
+        let clean = raw.split(whereSeparator: { $0 == "?" || $0 == "#" }).first.map(String.init) ?? raw
+        let extensions = ["mp4", "mov", "m4v", "m3u8", "webm"]
+        return extensions.contains { path.hasSuffix("." + $0) || clean.hasSuffix("." + $0) }
     }
 
     private static func cacheKey(for url: URL) -> NSString {

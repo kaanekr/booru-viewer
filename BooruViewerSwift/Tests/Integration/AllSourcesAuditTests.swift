@@ -436,6 +436,135 @@ final class AllSourcesAuditTests: XCTestCase {
         )
     }
 
+    // MARK: - (d) Source-specific helpers and Explore quick filters
+
+    func testNHentaiGalleryIDAndMediaResolution() async throws {
+        XCTAssertEqual(NHentaiSource.galleryID(from: "nhentai_123456"), "123456")
+        XCTAssertEqual(NHentaiSource.galleryID(from: "nh_123456"), "123456")
+        XCTAssertEqual(NHentaiSource.galleryID(from: "123456"), "123456")
+
+        let source = NHentaiSource()
+        let post = BooruPost(
+            id: "nhentai_123456",
+            sourceID: .nhentai,
+            sourceName: "nhentai",
+            title: "Test Gallery",
+            previewURL: URL(string: "https://t.nhentai.net/galleries/123456/thumb.jpg"),
+            previewFallbackURL: nil,
+            previewVideoURL: nil,
+            previewThumbURL: nil,
+            previewThumbs: nil,
+            sampleURL: URL(string: "https://i.nhentai.net/galleries/123456/1.jpg"),
+            originalURL: URL(string: "https://i.nhentai.net/galleries/123456/1.jpg"),
+            width: 800,
+            height: 1200,
+            aspectRatio: 800.0 / 1200.0,
+            rating: .explicit,
+            score: 10,
+            favCount: 5,
+            tags: BooruTagGroups(general: []),
+            allTags: [],
+            sourceLink: URL(string: "https://nhentai.net/g/123456/"),
+            fileExt: "jpg",
+            fileSize: nil,
+            createdAt: nil,
+            niches: nil,
+            isPremium: nil,
+            pageCount: 10,
+            mediaId: "123456"
+        )
+        let emptyClient = AuditHTTPClient(rules: [])
+        let sourceContext = context(emptyClient, for: .nhentai)
+        let resolved = try await source.resolveMedia(for: post, context: sourceContext)
+        XCTAssertNotNil(resolved.imageURL, "NHentaiSource resolveMedia must return a non-nil imageURL")
+    }
+
+    func testHentaiHavenFetchEpisodesReturnsSortedEpisodes() async throws {
+        await HentaiHavenSource.HentaiHavenWardenCache.shared.clear()
+        await HentaiHavenSource.HentaiHavenEpisodeCache.shared.clear()
+
+        let source = HentaiHavenSource()
+        let detailRule = AuditHTTPClient.Rule(
+            match: "api.hentaihaven.app/v1/hentai/321",
+            body: """
+            {"data":{"post_ID":321,"post_name":"some-series","post_title":"Some Series","post_episodes":[
+              {"chapter_id":22,"chapter_name":"Episode 2","chapter_content":"https://cdn.hentaihaven.app/hls/321/ep2.m3u8","preview":"https://cdn.hentaihaven.app/ep2.mp4"},
+              {"chapter_id":11,"chapter_name":"Episode 1","chapter_content":"https://cdn.hentaihaven.app/hls/321/ep1.m3u8","preview":"https://cdn.hentaihaven.app/ep1.mp4"},
+              {"chapter_id":33,"chapter_name":"Episode 3","chapter_content":"https://cdn.hentaihaven.app/hls/321/ep3.m3u8","preview":"https://cdn.hentaihaven.app/ep3.mp4"}
+            ]}}
+            """
+        )
+        let wardenRule = AuditHTTPClient.Rule(
+            match: "api.hentaihaven.app/v1/warden",
+            body: #"{"data":{"token":"warden_audit"}}"#
+        )
+        let http = AuditHTTPClient(rules: [wardenRule, detailRule])
+        let sourceContext = context(http, for: .hentaihaven)
+
+        let post = BooruPost(
+            id: "hh_321",
+            sourceID: .hentaihaven,
+            sourceName: "hentaihaven",
+            title: "Some Series",
+            previewURL: URL(string: "https://hentaihaven.xxx/img/321.jpg"),
+            previewFallbackURL: nil,
+            previewVideoURL: nil,
+            previewThumbURL: nil,
+            previewThumbs: nil,
+            sampleURL: nil,
+            originalURL: nil,
+            width: 1280,
+            height: 720,
+            aspectRatio: 16.0 / 9.0,
+            rating: .explicit,
+            score: 100,
+            favCount: 50,
+            tags: BooruTagGroups(general: []),
+            allTags: [],
+            sourceLink: URL(string: "https://hentaihaven.xxx/watch/some-series/"),
+            fileExt: "mp4",
+            fileSize: nil,
+            createdAt: nil,
+            niches: nil,
+            isPremium: nil,
+            pageCount: nil,
+            mediaId: "321"
+        )
+
+        let episodes: [HentaiHavenEpisode] = try await source.fetchEpisodes(for: post, context: sourceContext)
+        XCTAssertEqual(episodes.count, 3)
+        XCTAssertEqual(episodes.map(\.number), [1, 2, 3], "fetchEpisodes must return sorted [HentaiHavenEpisode]")
+    }
+
+    func testSourceQuickFiltersExploreChips() {
+        let options = SourceQuickFilters.options(for: .gelbooru, context: .feed)
+        guard let topChip = options.first(where: { $0.id == "top" }),
+              let dayChip = options.first(where: { $0.id == "day" }),
+              let weekChip = options.first(where: { $0.id == "week" }),
+              let monthChip = options.first(where: { $0.id == "month" }) else {
+            XCTFail("Missing Explore quick filter chips")
+            return
+        }
+
+        let base = SearchFilterConfig()
+
+        let appliedTop = SourceQuickFilters.apply(topChip, to: base)
+        XCTAssertEqual(appliedTop.sortBy, .score)
+        XCTAssertEqual(appliedTop.timeRange, .all)
+
+        let appliedDay = SourceQuickFilters.apply(dayChip, to: base)
+        XCTAssertEqual(appliedDay.sortBy, .score)
+        XCTAssertEqual(appliedDay.timeRange, .oneDay)
+
+        let appliedWeek = SourceQuickFilters.apply(weekChip, to: base)
+        XCTAssertEqual(appliedWeek.sortBy, .score)
+        XCTAssertEqual(appliedWeek.timeRange, .oneWeek)
+
+        let appliedMonth = SourceQuickFilters.apply(monthChip, to: base)
+        XCTAssertEqual(appliedMonth.sortBy, .score)
+        XCTAssertEqual(appliedMonth.timeRange, .oneMonth)
+    }
+
     // MARK: - Canned bodies
 
     private static let gelbooruBody = """

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Search tab: tag input with debounced server autocomplete, recent-search chips, the filter sheet,
 /// and a two-column result grid. Mirrors RN `SearchScreen.tsx`.
@@ -18,10 +19,15 @@ struct SearchScreen: View {
     private let onOpenTag: ((String) -> Void)?
     private let onToggleFavorite: ((BooruPost) -> Void)?
     private let onOpenPost: ([BooruPost], Int) -> Void
+    /// Optional stores that power the tag-chip context menu (pin/blacklist).
+    private let favoriteTagsStore: (any TagListStoring)?
+    private let blacklistStore: (any TagListStoring)?
 
     @State private var model: SearchViewModel
     @State private var isFilterSheetPresented = false
     @State private var isSourceSheetPresented = false
+    @State private var pinnedTagKeys: Set<String> = []
+    @State private var blacklistedTagKeys: Set<String> = []
     @FocusState private var isSearchFieldFocused: Bool
 
     /// RN `POPULAR_TAGS` (SearchScreen.tsx:66-77) plus a wider set of community favourites,
@@ -34,10 +40,9 @@ struct SearchScreen: View {
         "night_sky", "aesthetic", "portrait", "wallpaper"
     ]
 
-    private static let gridColumns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12)
-    ]
+    /// Grid metrics shared by the masonry split (FeedScreen.tsx:504).
+    private static let columnSpacing: CGFloat = 12
+    private static let horizontalPadding: CGFloat = 12
 
     /// - Parameters:
     ///   - activeSourceID: source the search opens on (RN default `gelbooru`).
@@ -62,6 +67,8 @@ struct SearchScreen: View {
         sourceProvider: @escaping SearchViewModel.SourceProvider = { SourceRegistry.source(for: $0) },
         initialQuery: String? = nil,
         initialFilter: SearchFilterConfig? = nil,
+        favoriteTagsStore: (any TagListStoring)? = nil,
+        blacklistStore: (any TagListStoring)? = nil,
         onOpenTag: ((String) -> Void)? = nil,
         onToggleFavorite: ((BooruPost) -> Void)? = nil,
         onOpenPost: @escaping ([BooruPost], Int) -> Void = { _, _ in }
@@ -72,6 +79,8 @@ struct SearchScreen: View {
         self.gridPreviewsEnabled = gridPreviewsEnabled
         self.context = context
         self.contextVersion = contextVersion
+        self.favoriteTagsStore = favoriteTagsStore ?? TagListStore(directory: JSONFileStore.defaultDirectory(), kind: .favorite)
+        self.blacklistStore = blacklistStore ?? TagListStore(directory: JSONFileStore.defaultDirectory(), kind: .blacklisted)
         self.onOpenTag = onOpenTag
         self.onToggleFavorite = onToggleFavorite
         self.onOpenPost = onOpenPost
@@ -99,7 +108,10 @@ struct SearchScreen: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(AppTheme.background.ignoresSafeArea())
-        .task { await model.start() }
+        .task {
+            await model.start()
+            await reloadTagLists()
+        }
         .onAppear { model.updateContext(context) }
         .onChange(of: contextVersion) { _, _ in
             // A Worker URL, API key, or quality edit pushes a fresh context into the model.
@@ -251,6 +263,7 @@ struct SearchScreen: View {
             HStack(spacing: 6) {
                 ForEach(model.filter.tags, id: \.self) { tag in
                     TagChipView(text: tag, isSelected: true, onTap: { onOpenTag?(tag) })
+                        .contextMenu { tagContextMenu(for: tag) }
                 }
             }
         }
@@ -296,53 +309,77 @@ struct SearchScreen: View {
     // MARK: Results
 
     private var resultsContent: some View {
-        ScrollView {
-            LazyVStack(spacing: 16) {
-                if model.isLoading {
-                    loadingState
-                } else if let message = model.errorMessage {
-                    errorState(message)
-                } else {
-                    if !model.results.isEmpty {
-                        grid
-                    }
-                    if model.isLoadingMore {
-                        ProgressView()
-                            .tint(AppTheme.primary)
-                            .padding(.vertical, 14)
-                    } else if model.blacklistedCount > 0, !model.filter.includeBlacklisted {
-                        hiddenPostsButton
+        GeometryReader { geometry in
+            let columnWidth = Self.columnWidth(for: geometry.size.width)
+            ScrollView {
+                LazyVStack(spacing: 16) {
+                    if model.isLoading {
+                        loadingState
+                    } else if let message = model.errorMessage {
+                        errorState(message)
+                    } else {
+                        if !model.results.isEmpty {
+                            grid(columnWidth: columnWidth)
+                        }
+                        if model.isLoadingMore {
+                            ProgressView()
+                                .tint(AppTheme.primary)
+                                .padding(.vertical, 14)
+                        } else if model.blacklistedCount > 0, !model.filter.includeBlacklisted {
+                            hiddenPostsButton
+                        }
                     }
                 }
+                .padding(.horizontal, Self.horizontalPadding)
+                .padding(.vertical, 12)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 12)
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
         }
-        .scrollIndicators(.hidden)
-        .scrollDismissesKeyboard(.interactively)
     }
 
-    private var grid: some View {
-        LazyVGrid(columns: Self.gridColumns, spacing: 12) {
-            ForEach(model.results.indices, id: \.self) { index in
-                let post = model.results[index]
-                let longPress: (() -> Void)? = onToggleFavorite.map { handler in { handler(post) } }
-                PostCardView(
-                    post: post,
-                    imageQuality: imageQuality,
-                    gridPreviewsEnabled: gridPreviewsEnabled,
-                    isFavorite: favoriteKeys.contains(postKey(post)),
-                    onTap: { open(post) },
-                    onLongPress: longPress
-                )
-                .onAppear {
-                    // Prefetch the next page when the last card appears (RN `onEndReached`).
-                    if index == model.results.count - 1 {
-                        model.loadMore()
+    /// Two height-balanced columns (same `MasonryColumns` pass as `FeedScreen`),
+    /// so tall cards never leave holes under the shorter column.
+    private func grid(columnWidth: CGFloat) -> some View {
+        var masonry = MasonryColumns()
+        let columns = masonry.layout(model.results) { post in
+            MasonryColumns.estimatedHeight(for: post, columnWidth: columnWidth)
+        }
+        return HStack(alignment: .top, spacing: Self.columnSpacing) {
+            ForEach(columns.indices, id: \.self) { index in
+                LazyVStack(spacing: Self.columnSpacing) {
+                    ForEach(columns[index]) { post in
+                        card(for: post)
                     }
                 }
+                .frame(width: columnWidth > 0 ? columnWidth : nil, alignment: .top)
             }
         }
+    }
+
+    private func card(for post: BooruPost) -> some View {
+        let longPress: (() -> Void)? = onToggleFavorite.map { handler in { handler(post) } }
+        return PostCardView(
+            post: post,
+            imageQuality: imageQuality,
+            gridPreviewsEnabled: gridPreviewsEnabled,
+            isFavorite: favoriteKeys.contains(postKey(post)),
+            onTap: { open(post) },
+            onLongPress: longPress
+        )
+        .onAppear {
+            // Prefetch the next page when the last card appears (RN `onEndReached`).
+            if post.id == model.results.last?.id {
+                model.loadMore()
+            }
+        }
+    }
+
+    /// Equal column width that fits the measured grid exactly.
+    private static func columnWidth(for totalWidth: CGFloat) -> CGFloat {
+        let usable = totalWidth - horizontalPadding * 2 - columnSpacing
+        guard usable > 0 else { return 0 }
+        return (usable / CGFloat(MasonryColumns.defaultColumnCount)).rounded(.down)
     }
 
     private var hiddenPostsButton: some View {
@@ -445,6 +482,7 @@ struct SearchScreen: View {
                             isSearchFieldFocused = false
                             model.search(text: entry)
                         })
+                        .contextMenu { tagContextMenu(for: entry) }
                     }
                 }
                 .padding(.vertical, 2)
@@ -471,8 +509,99 @@ struct SearchScreen: View {
                         isSearchFieldFocused = false
                         model.search(text: tag)
                     })
+                    .contextMenu { tagContextMenu(for: tag) }
                 }
             }
+        }
+    }
+
+    // MARK: Tag context menu
+
+    /// Mirrors `TagListStore.favorite` normalization: trimmed, whitespace
+    /// collapsed, lowercased.
+    private static func pinnedKey(_ tag: String) -> String {
+        tag.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ").lowercased()
+    }
+
+    /// Mirrors `TagListStore.blacklisted` normalization: whitespace becomes `_`.
+    private static func blacklistKey(_ tag: String) -> String {
+        tag.split(whereSeparator: { $0.isWhitespace }).joined(separator: "_").lowercased()
+    }
+
+    /// Refreshes the pin/blacklist state shown by the chip menus.
+    private func reloadTagLists() async {
+        if let favoriteTagsStore, let tags = try? await favoriteTagsStore.list() {
+            pinnedTagKeys = Set(tags.map(Self.pinnedKey))
+        }
+        if let blacklistStore, let tags = try? await blacklistStore.list() {
+            blacklistedTagKeys = Set(tags.map(Self.blacklistKey))
+            model.updateBlacklist(tags)
+        }
+    }
+
+    private func togglePinnedTag(_ tag: String) async {
+        guard let favoriteTagsStore else { return }
+        let key = Self.pinnedKey(tag)
+        if pinnedTagKeys.contains(key) {
+            try? await favoriteTagsStore.remove(key)
+        } else {
+            try? await favoriteTagsStore.add(key)
+        }
+        await reloadTagLists()
+    }
+
+    private func toggleBlacklistedTag(_ tag: String) async {
+        guard let blacklistStore else { return }
+        let key = Self.blacklistKey(tag)
+        if blacklistedTagKeys.contains(key) {
+            try? await blacklistStore.remove(key)
+        } else {
+            try? await blacklistStore.add(key)
+        }
+        await reloadTagLists()
+    }
+
+    /// Tag actions available from any chip: search, add, exclude, pin, blacklist, copy.
+    @ViewBuilder
+    private func tagContextMenu(for tag: String) -> some View {
+        Button {
+            isSearchFieldFocused = false
+            model.search(text: tag, mode: .replace)
+        } label: {
+            Label("Search Tag", systemImage: "magnifyingglass")
+        }
+        Button {
+            isSearchFieldFocused = false
+            model.search(text: "+" + tag, mode: .add)
+        } label: {
+            Label("Add +\(tag)", systemImage: "plus.circle")
+        }
+        Button {
+            isSearchFieldFocused = false
+            model.search(text: "-" + tag, mode: .exclude)
+        } label: {
+            Label("Exclude -\(tag)", systemImage: "minus.circle")
+        }
+        Button {
+            Task { await togglePinnedTag(tag) }
+        } label: {
+            Label(
+                pinnedTagKeys.contains(Self.pinnedKey(tag)) ? "Unpin Favorite Tag" : "Pin to Favorite Tags",
+                systemImage: "pin"
+            )
+        }
+        Button(role: .destructive) {
+            Task { await toggleBlacklistedTag(tag) }
+        } label: {
+            Label(
+                blacklistedTagKeys.contains(Self.blacklistKey(tag)) ? "Remove from Blacklist" : "Add to Blacklist",
+                systemImage: "eye.slash"
+            )
+        }
+        Button {
+            UIPasteboard.general.string = tag
+        } label: {
+            Label("Copy Tag", systemImage: "doc.on.doc")
         }
     }
 }

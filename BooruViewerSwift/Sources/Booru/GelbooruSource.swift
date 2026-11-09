@@ -326,13 +326,16 @@ struct GelbooruSource: BooruSource {
 // MARK: - Lower-bound cache
 
 /// One cached walk result. `bound` is nil when the window had no posts (RN `GelbooruBoundEntry`, booruApi.ts:85-88).
-fileprivate struct GelbooruBoundEntry: Sendable {
+struct GelbooruBoundEntry: Sendable {
     let bound: Int?
     let at: Date
 }
 
 /// Process-wide 5-minute cache shared by every Gelbooru-engine instance (RN `gelbooruBoundCache`, booruApi.ts:89-90).
-fileprivate actor GelbooruBoundCache {
+///
+/// Internal rather than file-private: pull-to-refresh clears it so a timed top re-walks
+/// instead of reusing a bound from before the user's last refresh.
+actor GelbooruBoundCache {
     static let shared = GelbooruBoundCache()
 
     private var entries: [String: GelbooruBoundEntry] = [:]
@@ -344,5 +347,10 @@ fileprivate actor GelbooruBoundCache {
 
     func store(_ key: String, _ entry: GelbooruBoundEntry) {
         entries[key] = entry
+    }
+
+    /// Drops every cached lower bound so the next timed top walks the window again.
+    func clear() {
+        entries.removeAll()
     }
 }

@@ -13,6 +13,7 @@ import UIKit
 struct AsyncMediaImage: View {
     private let urls: [URL]
     private let contentMode: ContentMode
+    private let onImageLoaded: ((UIImage) -> Void)?
 
     /// Decoded image for the current chain; `nil` while loading or failed.
     @State private var image: UIImage?
@@ -21,13 +22,20 @@ struct AsyncMediaImage: View {
     ///   - url: primary URL.
     ///   - fallbackURLs: tried in order after `url` fails.
     ///   - contentMode: `.fill` for covers, `.fit` for detail images.
-    init(url: URL?, fallbackURLs: [URL] = [], contentMode: ContentMode = .fill) {
+    ///   - onImageLoaded: invoked whenever an image is resolved from cache or network.
+    init(
+        url: URL?,
+        fallbackURLs: [URL] = [],
+        contentMode: ContentMode = .fill,
+        onImageLoaded: ((UIImage) -> Void)? = nil
+    ) {
         var chain: [URL] = []
         for candidate in ([url].compactMap { $0 } + fallbackURLs) where !chain.contains(candidate) {
             chain.append(candidate)
         }
         urls = chain
         self.contentMode = contentMode
+        self.onImageLoaded = onImageLoaded
     }
 
     var body: some View {
@@ -62,6 +70,7 @@ struct AsyncMediaImage: View {
             if let cached = await MediaImageLoader.shared.cachedImage(for: url) {
                 if Task.isCancelled { return }
                 image = cached
+                onImageLoaded?(cached)
                 return
             }
             do {
@@ -70,6 +79,7 @@ struct AsyncMediaImage: View {
                 withAnimation(.easeIn(duration: 0.15)) {
                     image = loaded
                 }
+                onImageLoaded?(loaded)
                 return
             } catch {
                 // Real failure only: the loader already retried the other route leg.

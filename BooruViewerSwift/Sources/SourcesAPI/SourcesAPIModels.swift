@@ -490,6 +490,17 @@ struct NHentaiTagDTO: Decodable {
 
 // MARK: - HentaiHaven DTOs
 
+/// One selectable series episode surfaced to the viewer. `id` is the API `chapter_id`
+/// (or a stable `seriesID_number` fallback), and `streamURL` already carries the direct HLS
+/// stream from `chapter_content` or the MP4 `preview` fallback when the detail response had it.
+struct HentaiHavenEpisode: Codable, Identifiable, Equatable, Sendable {
+    let id: String
+    let number: Int
+    let title: String
+    let streamURL: URL?
+    let thumbnailURL: URL?
+}
+
 /// Every v1 endpoint answers with `{"data": ...}` (hentaihavens.ts:117-127).
 struct HentaiHavenEnvelope<Payload: Decodable>: Decodable {
     let data: Payload?

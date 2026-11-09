@@ -150,11 +150,21 @@ final class FeedViewModel {
 
     /// Pull-to-refresh: the list stays visible while page 1 is fetched again
     /// (FeedScreen.tsx:247-254).
+    ///
+    /// `.refreshable` cancels its task as soon as a view update lands (setting
+    /// `isRefreshing` redraws the header), which used to abort the shared `load` on its
+    /// `Task.isCancelled` guard and made the pull work only sometimes. The fetch therefore
+    /// runs in an unstructured task that `.refreshable` cannot cancel; only a source/order
+    /// switch (a new `generation`) still discards its response.
     func refresh() async {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
-        await reload(showLoading: false)
+        // A manual refresh must not reuse a Gelbooru lower bound cached before it.
+        await GelbooruBoundCache.shared.clear()
+        await Task { @MainActor in
+            await self.loadPage(1, replacing: true, ignoreCancellation: true)
+        }.value
     }
 
     /// Next page, guarded exactly like `handleLoadMore` (FeedScreen.tsx:256-260).
@@ -185,9 +195,16 @@ final class FeedViewModel {
     }
 
     /// Applies a chip patch and reloads (FeedScreen.tsx:240-245, 228-238).
+    ///
+    /// Tapping the already-active chip is a manual refresh, not a no-op: the user is
+    /// telling the feed to fetch again with the same order.
     func applyQuickFilter(_ option: SourceQuickFilter) async {
+        await GelbooruBoundCache.shared.clear()
         let next = SourceQuickFilters.apply(option, to: filter)
-        guard next != filter else { return }
+        guard next != filter else {
+            await refresh()
+            return
+        }
         filter = next
         await reload(showLoading: true)
     }
@@ -201,7 +218,24 @@ final class FeedViewModel {
 
     // MARK: Requests
 
-    private func reload(showLoading: Bool) async {
+    private func loadPage(_ page: Int, replacing: Bool, ignoreCancellation: Bool = false) async {
+        generation += 1
+        let requestGeneration = generation
+        if replacing && posts.isEmpty {
+            phase = .loading
+        }
+        errorMessage = nil
+        hasMore = true
+        nextPage = page
+        await load(
+            page: page,
+            replacing: replacing,
+            generation: requestGeneration,
+            ignoreCancellation: ignoreCancellation
+        )
+    }
+
+    private func reload(showLoading: Bool, ignoreCancellation: Bool = false) async {
         generation += 1
         let requestGeneration = generation
         if showLoading {
@@ -210,10 +244,20 @@ final class FeedViewModel {
         errorMessage = nil
         hasMore = true
         nextPage = 1
-        await load(page: 1, replacing: true, generation: requestGeneration)
+        await load(
+            page: 1,
+            replacing: true,
+            generation: requestGeneration,
+            ignoreCancellation: ignoreCancellation
+        )
     }
 
-    private func load(page: Int, replacing: Bool, generation requestGeneration: Int) async {
+    private func load(
+        page: Int,
+        replacing: Bool,
+        generation requestGeneration: Int,
+        ignoreCancellation: Bool = false
+    ) async {
         guard let source = sourceProvider(sourceID) else {
             if replacing {
                 posts = []
@@ -232,8 +276,11 @@ final class FeedViewModel {
                 context: context
             )
             // A stale request finishing during a source/order change must not overwrite
-            // the new list (FeedScreen.tsx:161-162).
-            guard requestGeneration == generation, !Task.isCancelled else { return }
+            // the new list (FeedScreen.tsx:161-162). A refresh's own unstructured task is
+            // never cancelled, so `ignoreCancellation` keeps its result even when the
+            // `.refreshable` task that started it was torn down.
+            guard requestGeneration == generation,
+                  ignoreCancellation || !Task.isCancelled else { return }
 
             let existing = replacing ? [] : posts
             let fresh = uniquePosts(result.posts, excluding: existing)

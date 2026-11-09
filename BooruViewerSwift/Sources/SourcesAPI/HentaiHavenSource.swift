@@ -120,6 +120,30 @@ struct HentaiHavenSource: BooruSource {
         }
     }
 
+    // MARK: - Episode cache
+
+    /// Series episodes keyed by slug (RN `resolveHentaiHavenGalleryDetail` list reuse). The viewer
+    /// asks for the episode list and then, per selection, for one stream URL; caching the parsed
+    /// list per series keeps episode switching from refetching the detail every time.
+    actor HentaiHavenEpisodeCache {
+        static let shared = HentaiHavenEpisodeCache()
+
+        private var cached: [String: [HentaiHavenEpisode]] = [:]
+
+        func episodes(for slug: String) -> [HentaiHavenEpisode]? {
+            cached[slug]
+        }
+
+        func store(_ episodes: [HentaiHavenEpisode], for slug: String) {
+            cached[slug] = episodes
+        }
+
+        /// Resets the cache. Used by tests; the app never needs it.
+        func clear() {
+            cached.removeAll()
+        }
+    }
+
     // MARK: - Requests
 
     static func apiRequest(path: String, token: String) -> URLRequest? {
@@ -523,34 +547,110 @@ struct HentaiHavenSource: BooruSource {
         }
     }
 
-    /// RN `resolveHentaiHavenEpisodeUrls` (hentaihavens.ts:1390-1465): the newest episode's HLS
-    /// stream, or its MP4 fallback. A failed lookup degrades to the series cover.
+    /// RN `resolveHentaiHavenEpisodeUrls` (hentaihavens.ts:1417-1447): the series episode list is
+    /// read here, then the default (newest) episode's HLS stream or its MP4 fallback is returned.
+    /// Every failure path still exposes the cover and the listing-level video, so the viewer never
+    /// opens onto a bare "Media unavailable" state.
     func resolveMedia(for post: BooruPost, context: SourceContext) async throws -> ResolvedMedia {
         let placeholder = ImageQualityResolver.placeholderURL(for: post)
+        let fallbackVideo = post.previewVideoURL ?? post.sampleURL
+        let episodes: [HentaiHavenEpisode]
+        do {
+            episodes = try await fetchEpisodes(for: post, context: context)
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            episodes = []
+        }
+
+        // `fetchEpisodes` is ordered ascending for the selector; the newest episode is the default.
+        guard let target = episodes.last ?? episodes.first else {
+            return ResolvedMedia(
+                imageURL: post.previewURL,
+                videoURL: fallbackVideo,
+                isVideo: fallbackVideo != nil,
+                placeholderURL: placeholder
+            )
+        }
+
+        let stream: URL?
+        do {
+            stream = try await resolveEpisodeStream(episode: target, post: post, context: context)
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            stream = nil
+        }
+        let video = stream ?? fallbackVideo
+        return ResolvedMedia(
+            imageURL: target.thumbnailURL ?? post.previewURL,
+            videoURL: video,
+            isVideo: video != nil,
+            placeholderURL: placeholder
+        )
+    }
+
+    // MARK: - Episodes
+
+    /// All playable episodes of one series, ordered ascending by episode number.
+    /// Numeric ids go straight to `/v1/hentai/{id}` (the `hentaihaven_` / `hh_` prefixes are
+    /// stripped the same way `resolveMedia` resolves its target); slug-only cards reuse the title
+    /// search path. The parsed list is cached per series slug.
+    func fetchEpisodes(for post: BooruPost, context: SourceContext) async throws -> [HentaiHavenEpisode] {
+        guard let slug = HentaiHavenSource.seriesSlug(for: post) else { return [] }
+        if let cached = await HentaiHavenEpisodeCache.shared.episodes(for: slug) {
+            return cached
+        }
+
         let detail: HentaiHavenDetailDTO?
         do {
-            detail = try await HentaiHavenSource.detail(for: post, http: context.http)
+            detail = try await HentaiHavenSource.seriesDetail(for: post, http: context.http)
         } catch let error as CancellationError {
             throw error
         } catch {
             detail = nil
         }
+        guard let detail else { return [] }
 
-        guard let detail, let episode = HentaiHavenSource.episodes(from: detail).first else {
-            return ResolvedMedia(imageURL: post.previewURL, videoURL: nil, isVideo: false, placeholderURL: placeholder)
+        let episodes = HentaiHavenSource.episodeModels(from: detail)
+        if !episodes.isEmpty {
+            await HentaiHavenEpisodeCache.shared.store(episodes, for: slug)
+        }
+        return episodes
+    }
+
+    /// Direct playable URL for one episode. The detail payload usually carries it already; when it
+    /// does not, the series detail is fetched again and the matching episode is used. The post's
+    /// own video/cover chain is the final fallback.
+    func resolveEpisodeStream(
+        episode: HentaiHavenEpisode,
+        post: BooruPost,
+        context: SourceContext
+    ) async throws -> URL? {
+        if let stream = episode.streamURL {
+            return stream
         }
 
-        let stream = BooruJSONSupport.absoluteURL(episode.streamURL, baseURL: HentaiHavenSource.baseURL)
-        let mp4 = BooruJSONSupport.absoluteURL(episode.previewURL, baseURL: HentaiHavenSource.baseURL)
-        let video = stream ?? mp4
-        let poster = BooruJSONSupport.absoluteURL(episode.thumbnail, baseURL: HentaiHavenSource.baseURL)
-
-        return ResolvedMedia(
-            imageURL: poster ?? post.previewURL,
-            videoURL: video,
-            isVideo: video != nil,
-            placeholderURL: placeholder
-        )
+        let detail: HentaiHavenDetailDTO?
+        do {
+            detail = try await HentaiHavenSource.seriesDetail(for: post, http: context.http)
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            detail = nil
+        }
+        if let detail {
+            let match = HentaiHavenSource.episodeModels(from: detail)
+                .first { $0.id == episode.id || $0.number == episode.number }
+            if let stream = match?.streamURL {
+                return stream
+            }
+            let models = HentaiHavenSource.episodeModels(from: detail)
+            if !models.isEmpty, let slug = HentaiHavenSource.seriesSlug(for: post) {
+                await HentaiHavenEpisodeCache.shared.store(models, for: slug)
+            }
+        }
+        return post.previewVideoURL ?? post.sampleURL ?? post.previewURL
     }
 
     // MARK: - Detail resolution
@@ -572,8 +672,13 @@ struct HentaiHavenSource: BooruSource {
         if let mediaID = post.mediaId?.booruTrimmed, let numericID = Int(mediaID) {
             return numericID
         }
-        let rawID = String(post.id.dropFirst("hh_".count))
-        if post.id.hasPrefix("hh_"), let numericID = Int(rawID) {
+        var rawID = post.id.booruTrimmed
+        let lowered = rawID.lowercased()
+        for prefix in ["hentaihaven_", "hh_"] where lowered.hasPrefix(prefix) {
+            rawID = String(rawID.dropFirst(prefix.count)).booruTrimmed
+            break
+        }
+        if let numericID = Int(rawID) {
             return numericID
         }
         guard let link = post.sourceLink?.absoluteString, let slug = watchSlug(link) else { return nil }
@@ -601,6 +706,47 @@ struct HentaiHavenSource: BooruSource {
             return nil
         }
         return String(link[range])
+    }
+
+    /// Series id/slug used by the episode layer. `mediaId` wins; otherwise the `hentaihaven_` /
+    /// `hh_` prefix is stripped from `post.id` (case-insensitively, matching `resolveMedia`) and a
+    /// non-numeric leftover such as `hh_ep_11` falls back to the `/watch/{slug}/` source link.
+    static func seriesSlug(for post: BooruPost) -> String? {
+        if let mediaID = post.mediaId?.booruTrimmed, !mediaID.isEmpty {
+            return mediaID
+        }
+        var raw = post.id.booruTrimmed
+        let lowered = raw.lowercased()
+        for prefix in ["hentaihaven_", "hh_"] where lowered.hasPrefix(prefix) {
+            raw = String(raw.dropFirst(prefix.count)).booruTrimmed
+            break
+        }
+        if !raw.isEmpty, Int(raw) != nil {
+            return raw
+        }
+        if let slug = watchSlug(post.sourceLink?.absoluteString ?? "") {
+            return slug
+        }
+        return raw.isEmpty ? nil : raw
+    }
+
+    /// Series detail for the episode layer. Numeric ids hit `/v1/hentai/{id}` directly; slug-only
+    /// cards go through the same title-search resolution `resolveMedia` uses.
+    static func seriesDetail(
+        for post: BooruPost,
+        http: any HTTPClientProtocol
+    ) async throws -> HentaiHavenDetailDTO? {
+        guard let slug = seriesSlug(for: post) else { return nil }
+        guard Int(slug) != nil else {
+            return try await detail(for: post, http: http)
+        }
+        let data = try await apiData(path: "hentai/\(slug)", http: http)
+        let envelope = try? BooruJSONSupport.decode(
+            HentaiHavenEnvelope<HentaiHavenDetailDTO>.self,
+            from: data,
+            failure: "HentaiHaven detail did not return valid JSON."
+        )
+        return envelope?.data
     }
 
     /// One playable episode of a series (RN hentaihavens.ts:1300-1330).
@@ -640,6 +786,32 @@ struct HentaiHavenSource: BooruSource {
             return nil
         }
         return Int(value[range])
+    }
+
+    /// Maps `post_episodes` into the viewer-facing model, ascending by episode number.
+    /// `chapter_content` is the direct HLS stream; when it is missing the MP4 `preview` becomes the
+    /// playable URL so an episode is never dropped just because the HLS field is empty.
+    static func episodeModels(from detail: HentaiHavenDetailDTO) -> [HentaiHavenEpisode] {
+        let mapped = detail.episodes.enumerated().map { index, dto -> HentaiHavenEpisode in
+            let rawName = BooruJSONSupport.firstNonEmpty(dto.chapterName, dto.chapterSlug)
+            let number = firstNumber(in: rawName) ?? (index + 1)
+            let name = (dto.chapterName ?? "").booruTrimmed
+            let title = name.isEmpty ? "Episode \(number)" : name
+            let identifier = dto.chapterID ?? "\(detail.postID ?? 0)_\(number)"
+            let hls = BooruJSONSupport.absoluteURL(dto.chapterContent, baseURL: baseURL)
+            let mp4 = BooruJSONSupport.absoluteURL(dto.preview, baseURL: baseURL)
+            let thumbnail = BooruJSONSupport.firstNonEmpty(dto.chapterThumbnail, dto.postThumbnail)
+            return HentaiHavenEpisode(
+                id: identifier,
+                number: number,
+                title: title,
+                streamURL: hls ?? mp4,
+                thumbnailURL: BooruJSONSupport.absoluteURL(thumbnail, baseURL: baseURL)
+            )
+        }
+        return mapped.sorted { lhs, rhs in
+            lhs.number == rhs.number ? lhs.id < rhs.id : lhs.number < rhs.number
+        }
     }
 
     // MARK: - Section fetches

@@ -6,7 +6,8 @@ import SwiftUI
 /// (src/components/PostCard.tsx:253-372).
 ///
 /// The card keeps RN's presentation rules:
-/// - aspect ratio clamped to 0.6...1.4 with a 0.75 fallback (PostCard.tsx:84);
+/// - aspect ratio from the stored value, the loader-measured ratio, or a
+///   per-source default, clamped to 0.5...1.78 (PostCard.tsx:84);
 /// - a cheap static cover (`previewUrl`, then the poster/thumbnail/quality fallbacks);
 /// - inline motion only when grid previews are enabled: a muted looping listing clip
 ///   (`GridPreviewPolicy.videoCandidates`) or the 1200 ms frame slideshow
@@ -40,6 +41,8 @@ struct PostCardView: View {
     /// True once this press has become a long press: keeps `onLongPress` to one call
     /// per hold and suppresses the tap the `Button` would otherwise send on release.
     @State private var didLongPress = false
+    /// Aspect ratio updated when AsyncMediaImage loads.
+    @State private var dynamicAspectRatio: Double?
 
     init(
         post: BooruPost,
@@ -59,34 +62,80 @@ struct PostCardView: View {
 
     // MARK: Geometry
 
-    /// RN clamp (PostCard.tsx:84): `max(0.6, min(1.4, aspectRatio || 0.75))`.
+    /// Card fallback ratio per source: video sites render in a landscape player,
+    /// nhentai pages are portrait, everything else keeps `PostCard.tsx:84`'s 0.75.
+    private static func defaultAspectRatio(for post: BooruPost) -> Double {
+        switch post.sourceID {
+        case .xvideos, .xhamster, .pornhub: return 16.0 / 9.0
+        case .nhentai: return 0.71
+        default: return 0.75
+        }
+    }
+
+    /// Stored ratio first, then the ratio the loader measured for this post's
+    /// media, then the per-source default; clamped to `0.5...1.78`.
     private var aspectRatio: Double {
-        let raw = post.aspectRatio > 0 ? post.aspectRatio : 0.75
-        return min(1.4, max(0.6, raw))
+        let postRatio = post.aspectRatio > 0 ? post.aspectRatio : nil
+        let rawRatio = dynamicAspectRatio
+            ?? postRatio
+            ?? MediaAspectRatioCache.aspectRatio(for: post)
+            ?? Self.defaultAspectRatio(for: post)
+        return min(1.78, max(0.5, rawRatio))
     }
 
     // MARK: Cover
 
-    /// Static cover: preview first so no video container reaches the image loader
-    /// (PostCard.tsx:52-57, 96-99), then the requested quality's image URL.
-    private var coverURL: URL? {
-        ImageQualityResolver.placeholderURL(for: post)
-            ?? ImageQualityResolver.imageURL(for: post, quality: imageQuality)
-    }
-
-    /// Poster, thumbnail, then the quality image (PostCard.tsx:101-105).
-    private var coverFallbacks: [URL] {
-        var result: [URL] = []
-        let candidates: [URL?] = [
+    /// Cover chain: static images first (poster, thumbnail, requested quality),
+    /// video URLs last so `MediaImageLoader` can extract a poster frame when the
+    /// card has no still image at all (Cum.st, raw video links).
+    private var coverCandidates: [URL] {
+        let isMainMediaVideo = MediaImageLoader.isVideoURL(post.sampleURL) || MediaImageLoader.isVideoURL(post.originalURL)
+        var staticSources: [URL?] = []
+        if isMainMediaVideo, let preview = post.previewURL {
+            staticSources.append(preview)
+        }
+        staticSources.append(contentsOf: [
+            post.previewURL,
             post.previewFallbackURL,
             post.previewThumbURL,
-            ImageQualityResolver.imageURL(for: post, quality: imageQuality),
-        ]
-        for candidate in candidates {
-            guard let url = MediaURLNormalizer.normalize(candidate, sourceID: post.sourceID) else { continue }
-            if !result.contains(url) { result.append(url) }
+            ImageQualityResolver.placeholderURL(for: post),
+            ImageQualityResolver.imageURL(for: post, quality: imageQuality)
+        ])
+
+        var images: [URL] = []
+        for candidate in staticSources {
+            guard let candidate,
+                  let url = MediaURLNormalizer.normalize(candidate, sourceID: post.sourceID),
+                  !MediaImageLoader.isVideoURL(url),
+                  !images.contains(url) else { continue }
+            images.append(url)
         }
-        return result
+
+        let videoSources: [URL?] = [
+            post.previewVideoURL,
+            post.sampleURL,
+            post.originalURL
+        ]
+        var videos: [URL] = []
+        for candidate in videoSources {
+            guard let candidate,
+                  let url = MediaURLNormalizer.normalize(candidate, sourceID: post.sourceID),
+                  MediaImageLoader.isVideoURL(url),
+                  !videos.contains(url) else { continue }
+            videos.append(url)
+        }
+
+        return images + videos
+    }
+
+    /// Primary cover candidate.
+    private var coverURL: URL? {
+        coverCandidates.first
+    }
+
+    /// Remaining candidates tried after the primary fails.
+    private var coverFallbacks: [URL] {
+        Array(coverCandidates.dropFirst())
     }
 
     // MARK: Inline motion
@@ -173,7 +222,12 @@ struct PostCardView: View {
             }
             beginHoldPreview()
         }
-        .onAppear { isOnScreen = true }
+        .onAppear {
+            isOnScreen = true
+            if dynamicAspectRatio == nil, let cached = MediaAspectRatioCache.aspectRatio(for: post) {
+                dynamicAspectRatio = cached
+            }
+        }
         .onDisappear {
             isOnScreen = false
             isPressed = false
@@ -220,7 +274,20 @@ struct PostCardView: View {
     /// never negotiate the layout: the card keeps the geometry the grid measured.
     private var mediaFrame: some View {
         ZStack {
-            AsyncMediaImage(url: coverURL, fallbackURLs: coverFallbacks, contentMode: .fill)
+            AsyncMediaImage(
+                url: coverURL,
+                fallbackURLs: coverFallbacks,
+                contentMode: .fill,
+                onImageLoaded: { loadedImage in
+                    guard loadedImage.size.height > 0 else { return }
+                    let ratio = Double(loadedImage.size.width / loadedImage.size.height)
+                    if dynamicAspectRatio != ratio {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            dynamicAspectRatio = ratio
+                        }
+                    }
+                }
+            )
 
             if let videoURL {
                 MutedLoopingVideo(url: videoURL)

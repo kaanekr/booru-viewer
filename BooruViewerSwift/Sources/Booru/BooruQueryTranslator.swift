@@ -137,6 +137,7 @@ enum BooruQueryTranslator {
     // MARK: Gelbooru lower-bound walk (RN booruApi.ts:677-734)
 
     /// Window in days for the id-bound walk. Only score sorting with a time range uses the walk (booruApi.ts:675-676).
+    /// `.all` returns 0, so All Time sends `sort:score:desc` alone and the server ranks every post.
     static func gelbooruWindowDays(for filter: SearchFilterConfig) -> Int {
         filter.sortBy == .score ? timeRangeDays(filter.timeRange) : 0
     }

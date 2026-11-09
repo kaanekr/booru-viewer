@@ -24,23 +24,40 @@ enum MediaURLNormalizer {
         // filename lives directly under /images/ on the active CDN (media.ts:182-185).
         value = replacing(hiimgCoverPattern, in: value, with: "https://img.hentaihaven.xxx/images/$1$2")
 
-        // Gelbooru: img4 is the only CDN with valid DNS/TLS (media.ts:190-196).
+        // Gelbooru: img4 is the only CDN with valid DNS/TLS for images/samples
+        // (media.ts:190-196) — but thumbnails often live on img3/assets and 404
+        // on img4, so those hosts are preserved for thumbnail paths.
         if value.lowercased().contains("gelbooru.com") {
-            value = replacing(
-                #"^https?://[a-z0-9.-]*gelbooru\.com/(images|thumbnails|samples)/"#,
-                in: value,
-                with: "https://img4.gelbooru.com/$1/"
-            )
-            value = replacing(
-                #"^https?://[a-z0-9-]+\.gelbooru\.com/"#,
-                in: value,
-                with: "https://img4.gelbooru.com/"
-            )
-            value = replacing(
-                #"^https?://gelbooru\.com/"#,
-                in: value,
-                with: "https://img4.gelbooru.com/"
-            )
+            let loweredValue = value.lowercased()
+            let isThumbnail = loweredValue.contains("/thumbnails/") || loweredValue.contains("thumbnail_")
+            if isThumbnail {
+                // Do NOT rewrite assets.gelbooru.com or img3.gelbooru.com for thumbnails.
+                // Only rewrite img1, img2, cdn, video-cdn to img4.gelbooru.com.
+                value = replacing(
+                    #"^https?://(?:img[12]|cdn|video-cdn)\.gelbooru\.com/"#,
+                    in: value,
+                    with: "https://img4.gelbooru.com/"
+                )
+                if value.hasPrefix("http://") {
+                    value = "https://" + String(value.dropFirst("http://".count))
+                }
+            } else {
+                value = replacing(
+                    #"^https?://[a-z0-9.-]*gelbooru\.com/(images|thumbnails|samples)/"#,
+                    in: value,
+                    with: "https://img4.gelbooru.com/$1/"
+                )
+                value = replacing(
+                    #"^https?://[a-z0-9-]+\.gelbooru\.com/"#,
+                    in: value,
+                    with: "https://img4.gelbooru.com/"
+                )
+                value = replacing(
+                    #"^https?://gelbooru\.com/"#,
+                    in: value,
+                    with: "https://img4.gelbooru.com/"
+                )
+            }
         } else if value.hasPrefix("http://") {
             value = "https://" + String(value.dropFirst("http://".count)) // media.ts:194-195
         }

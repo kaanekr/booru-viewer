@@ -228,12 +228,21 @@ struct RealbooruSource: BooruSource {
         case .explicit: derived.append("rating:explicit")
         }
         // Gelbooru-engine sort tokens; the unsupported orders send nothing (booruApi.ts:316-380).
-        switch filter.sortBy {
-        case .score: derived.append("sort:score:desc")
-        case .id: derived.append("sort:id:desc")
-        case .height: derived.append("sort:height:desc")
-        case .width: derived.append("sort:width:desc")
-        default: break
+        // The listing has no date-window parameter, so a timed top falls back to
+        // the all-time score order (`sort:score:desc`).
+        var sortToken: String?
+        if filter.sortBy == .score || filter.timeRange != .all {
+            sortToken = "sort:score:desc"
+        } else {
+            switch filter.sortBy {
+            case .id: sortToken = "sort:id:desc"
+            case .height: sortToken = "sort:height:desc"
+            case .width: sortToken = "sort:width:desc"
+            default: break
+            }
+        }
+        if let sortToken {
+            derived.append(sortToken)
         }
         return HTMLScanner.searchTokens(for: query, extra: derived).joined(separator: " ")
     }

@@ -206,50 +206,105 @@ struct NHentaiSource: BooruSource {
         } catch {
             pages = []
         }
-        guard let first = pages.first else {
-            return ResolvedMedia(imageURL: post.previewURL, videoURL: nil, isVideo: false, placeholderURL: placeholder)
-        }
-        return ResolvedMedia(imageURL: first, videoURL: nil, isVideo: false, placeholderURL: placeholder)
+        // Never hand the viewer a nil display URL: the first page, the post's own cover chain,
+        // and finally the listing thumbnail are all valid targets. A nil imageURL is what rendered
+        // the "Media unavailable" state on every nhentai card when the gallery detail call failed.
+        let imageURL = pages.first
+            ?? ImageQualityResolver.imageURL(for: post, quality: context.imageQuality)
+            ?? post.sampleURL
+            ?? post.previewURL
+        return ResolvedMedia(imageURL: imageURL, videoURL: nil, isVideo: false, placeholderURL: placeholder)
     }
 
     // MARK: - Gallery pages
 
     /// Every page URL of one gallery, for the manga reader (RN nhentai.ts:373-435).
+    ///
+    /// The v2 detail body is tried first (with the v1 `images.pages` shape decoded from the same
+    /// payload). When the call fails, is challenged, or carries no usable pages, the cover chain
+    /// supplies a displayable page so the viewer never ends up with nothing to show.
     func galleryPages(for post: BooruPost, context: SourceContext) async throws -> [URL] {
         let galleryID = NHentaiSource.galleryID(for: post)
-        let fallback = NHentaiSource.syntheticPageURLs(
-            mediaID: post.mediaId ?? "",
-            pageCount: post.pageCount ?? 0,
-            fileExt: post.fileExt
-        )
+        let fallback = NHentaiSource.fallbackPageURLs(for: post)
         guard !galleryID.isEmpty,
               let url = NHentaiSource.url("galleries/\(BooruJSONSupport.encode(galleryID))") else {
             return fallback
         }
 
-        let data = try await NHentaiSource.fetchData(url: url, http: context.http)
+        let data: Data
+        do {
+            data = try await NHentaiSource.fetchData(url: url, http: context.http)
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            return fallback
+        }
         guard !NHentaiSource.isChallenge(body: data) else { return fallback }
 
-        let detail = try BooruJSONSupport.decode(
+        guard let detail = try? BooruJSONSupport.decode(
             NHentaiGalleryDetailDTO.self,
             from: data,
             failure: "nhentai gallery detail did not return valid JSON."
-        )
+        ) else {
+            return fallback
+        }
         let pages = NHentaiSource.pageURLs(fromDetail: detail)
         if !pages.isEmpty {
             return pages
         }
-        return NHentaiSource.syntheticPageURLs(
+        let synthetic = NHentaiSource.syntheticPageURLs(
             mediaID: detail.mediaID ?? post.mediaId ?? "",
             pageCount: detail.numPages ?? post.pageCount ?? 0,
             fileExt: post.fileExt
         )
+        if !synthetic.isEmpty {
+            return synthetic
+        }
+        return fallback
     }
 
-    /// RN :391-397: the gallery id is the post id without the `nh_` prefix (`media_id` is a different value).
+    /// Page URLs assembled from the post itself when the gallery endpoints give nothing back.
+    /// `previewThumbs` wins; otherwise a cover that already lives under `/galleries/{mediaId}/`
+    /// yields the deterministic page 1 URL, and the bare cover chain is the last resort.
+    static func fallbackPageURLs(for post: BooruPost) -> [URL] {
+        if let thumbs = post.previewThumbs, !thumbs.isEmpty {
+            return thumbs
+        }
+        let mediaID = (post.mediaId ?? "").booruTrimmed
+        if !mediaID.isEmpty {
+            let marker = "/galleries/\(mediaID)/"
+            let containsMedia = [post.sampleURL, post.previewURL].compactMap { $0 }
+                .contains { $0.absoluteString.contains(marker) }
+            if containsMedia, let pageOne = URL(string: "\(imageBaseURL)/galleries/\(mediaID)/1.jpg") {
+                return [pageOne]
+            }
+        }
+        return [post.sampleURL ?? post.previewURL].compactMap { $0 }
+    }
+
+    /// RN :391-397: the gallery id is the post id without the `nh_` / `nhentai_` prefix.
+    /// The listing maps ids as `nh_<id>` while other layers persist `nhentai_<id>`, so both
+    /// prefixes are stripped (case-insensitively); a bare numeric id is also accepted, and any
+    /// leftover wrapper falls back to the first contiguous digit run (`nhentai_123456` -> `123456`).
     static func galleryID(for post: BooruPost) -> String {
-        let raw = post.id.booruTrimmed
-        return raw.hasPrefix("nh_") ? String(raw.dropFirst(3)) : raw
+        galleryID(from: post.id)
+    }
+
+    static func galleryID(from rawID: String) -> String {
+        var raw = rawID.booruTrimmed
+        guard !raw.isEmpty else { return "" }
+        let lowered = raw.lowercased()
+        for prefix in ["nhentai_", "nh_"] where lowered.hasPrefix(prefix) {
+            raw = String(raw.dropFirst(prefix.count)).booruTrimmed
+            break
+        }
+        if !raw.isEmpty, raw.allSatisfy({ $0.isNumber }) {
+            return raw
+        }
+        if let digits = raw.range(of: #"\d+"#, options: .regularExpression) {
+            return String(raw[digits])
+        }
+        return raw
     }
 
     /// RN `parseNHentaiGalleryPages` (nhentai.ts:286-336) plus the synthetic safety net (:437-465).
@@ -414,9 +469,14 @@ struct NHentaiSource: BooruSource {
         let cover = NHentaiSource.coverURL(thumbnail)
         let previewFallback = NHentaiSource.rotateThumbHost(thumbnail)
 
-        let width = BooruJSONSupport.orDefault(dto.thumbnailWidth, 250)
-        let height = BooruJSONSupport.orDefault(dto.thumbnailHeight, 350)
-        let aspectRatio = width > 0 && height > 0 ? Double(width) / Double(height) : 250.0 / 350.0
+        // nhentai covers are tall book pages; a missing/zero thumbnail size previously
+        // produced a 250:350 card. The 1280x1810 default keeps the masonry column proportions
+        // of real doujin thumbnails instead of squashing them toward landscape.
+        let rawWidth = dto.thumbnailWidth ?? 0
+        let rawHeight = dto.thumbnailHeight ?? 0
+        let width = rawWidth > 0 ? rawWidth : 1280
+        let height = rawHeight > 0 ? rawHeight : 1810
+        let aspectRatio = Double(width) / Double(height)
         let favorites = dto.numFavorites ?? 0
         let pageCount = dto.numPages ?? 0
 
