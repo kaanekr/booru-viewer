@@ -102,6 +102,7 @@ final class SourcesAPITests: XCTestCase {
         await RedGifsSource.RedGifsTokenCache.shared.clear()
         await HentaiHavenSource.HentaiHavenWardenCache.shared.clear()
         await HentaiHavenSource.HentaiHavenGenreCache.shared.clear()
+        await HentaiHavenSource.HentaiHavenEpisodeCache.shared.clear()
     }
 
     // MARK: - Cum.st (booruApi.ts:2097-2290)
