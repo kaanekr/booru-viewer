@@ -363,7 +363,7 @@ final class MediaTests: XCTestCase {
         // gridPreviewMedia.ts:46-49: sampleUrl aliased to the full attachment is not a
         // lightweight auto preview, but an explicit hold (allowOriginal) may still play it
         // and PostCard.tsx:125 counts those manualCandidates as "has a preview".
-        let aliased = makePost(originalURL: "https://example.com/v/full.mp4", sampleURL: "https://example.com/v/full.mp4")
+        let aliased = makePost(sampleURL: "https://example.com/v/full.mp4", originalURL: "https://example.com/v/full.mp4")
 
         XCTAssertTrue(GridPreviewPolicy.videoCandidates(for: aliased, quality: .auto).isEmpty)
         XCTAssertEqual(
@@ -412,8 +412,8 @@ final class MediaTests: XCTestCase {
     func testInlinePreviewPrefersListingClipOverOriginal() {
         let post = makePost(
             previewVideoURL: "https://example.com/v/listing.mp4",
-            originalURL: "https://example.com/v/full.webm",
-            sampleURL: "https://example.com/v/full.webm"
+            sampleURL: "https://example.com/v/full.webm",
+            originalURL: "https://example.com/v/full.webm"
         )
 
         XCTAssertEqual(GridPreviewPolicy.videoCandidates(for: post, quality: .auto).map(\.absoluteString),
