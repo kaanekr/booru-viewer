@@ -101,11 +101,9 @@ struct RootTabView: View {
 
     var body: some View {
         ZStack {
-            // Native `UITabBar` (restored). The bar's colours come from `UITabBarAppearance`
-            // in `BooruViewerApp`, the per-tab `.toolbarBackground` below, and the container
-            // theming in `themeContainers()`. Those layers are what keep the bar, its reserved
-            // container, and the home-indicator floor on `AppTheme.background` (#0B0D13)
-            // instead of a pure-black band.
+            // Plain SwiftUI `TabView`: styling is only `.tint` plus the root `.background`
+            // below, which sits behind the translucent system bar and keeps the bottom edge
+            // black-free.
             TabView(selection: $selectedTab) {
                 exploreTab
                     .tabItem { Label(Tab.explore.title, systemImage: Tab.explore.symbol) }
@@ -156,21 +154,14 @@ struct RootTabView: View {
             )
         }
         .onChange(of: selectedTab) { _, tab in
-            // Fires only on an actual tab change (not on first appearance). A tab switch may
-            // rebuild the tab controller's container, so re-run the theming pass.
+            // Fires only on an actual tab change (not on first appearance).
             Self.playTabSelectionHaptic()
-            Self.scheduleContainerTheming()
             Task { @MainActor in
                 await container.reloadSharedState()
                 if tab == .settings {
                     await settingsModel.load(force: true)
                 }
             }
-        }
-        .onAppear {
-            // SwiftUI's `.background` stops at the hosting view; every UIKit container between
-            // the content and the window is themed explicitly.
-            Self.scheduleContainerTheming()
         }
     }
 
@@ -197,8 +188,6 @@ struct RootTabView: View {
             }
         }
         .background(AppTheme.background.ignoresSafeArea())
-        .toolbarBackground(AppTheme.background, for: .tabBar)
-        .toolbarBackground(.visible, for: .tabBar)
     }
 
     private var searchTab: some View {
@@ -223,8 +212,6 @@ struct RootTabView: View {
             .id(searchToken)
         }
         .background(AppTheme.background.ignoresSafeArea())
-        .toolbarBackground(AppTheme.background, for: .tabBar)
-        .toolbarBackground(.visible, for: .tabBar)
     }
 
     private var favoritesTab: some View {
@@ -242,8 +229,6 @@ struct RootTabView: View {
             )
         }
         .background(AppTheme.background.ignoresSafeArea())
-        .toolbarBackground(AppTheme.background, for: .tabBar)
-        .toolbarBackground(.visible, for: .tabBar)
     }
 
     private var settingsTab: some View {
@@ -251,8 +236,6 @@ struct RootTabView: View {
             SettingsScreen(viewModel: settingsModel)
         }
         .background(AppTheme.background.ignoresSafeArea())
-        .toolbarBackground(AppTheme.background, for: .tabBar)
-        .toolbarBackground(.visible, for: .tabBar)
     }
 
     // MARK: - Haptics
@@ -265,93 +248,6 @@ struct RootTabView: View {
         generator.selectionChanged()
         #endif
     }
-
-    // MARK: - Window theming
-
-    /// Themes every UIKit surface that composites over the window with `AppTheme.background`.
-    ///
-    /// SwiftUI's `.background` stops at the hosting view. The system tab bar's container reserves
-    /// a larger area than the bar itself paints (iOS 26 floating bar), and that container - like
-    /// each navigation container - sits directly on the `UIWindow`, which defaults to pure black.
-    /// Painting the window and every container view #0B0D13 means a transparent system surface can
-    /// only blend towards the theme colour, so no #000000 band can remain.
-    ///
-    /// Idempotent: it only reassigns colours, so it is safe to run on first layout, after the
-    /// 0.35 s rebuild, and again on every appearance.
-    @MainActor
-    static func themeContainers() {
-        #if canImport(UIKit)
-        let color = UIColor(AppTheme.background)
-        for case let scene as UIWindowScene in UIApplication.shared.connectedScenes {
-            for window in scene.windows {
-                window.backgroundColor = color
-                guard let root = window.rootViewController else { continue }
-                var visited: Set<ObjectIdentifier> = []
-                theme(controller: root, color: color, visited: &visited)
-            }
-        }
-        #endif
-    }
-
-    /// Runs the container pass on the next main-queue turn and again after the first layout.
-    private static func scheduleContainerTheming() {
-        DispatchQueue.main.async {
-            Self.themeContainers()
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            Self.themeContainers()
-        }
-    }
-
-    /// Depth-first walk of one controller tree, theming the container each node owns.
-    ///
-    /// `children` already yields a `UITabBarController`'s tabs and a `UINavigationController`'s
-    /// stack, so the whole tree is reached from the window's root. `visited` guards against
-    /// re-entering a node (cheap and keeps the pass non-recursive on cycles).
-    #if canImport(UIKit)
-    private static func theme(
-        controller: UIViewController,
-        color: UIColor,
-        visited: inout Set<ObjectIdentifier>
-    ) {
-        guard visited.insert(ObjectIdentifier(controller)).inserted else { return }
-
-        // Containers that are not on screen yet keep a `nil` (transparent) background, which is
-        // already correct once their parent is themed, so their views are not force-loaded.
-        if controller.isViewLoaded {
-            controller.view.backgroundColor = color
-        }
-
-        if let tabBarController = controller as? UITabBarController {
-            tabBarController.tabBar.backgroundColor = color
-            tabBarController.tabBar.isTranslucent = false
-        }
-
-        if let navigationController = controller as? UINavigationController {
-            let navigationBar = navigationController.navigationBar
-            // A pushed screen must not introduce another surface: both the standard and the
-            // scroll-edge appearance get the flat theme colour, with the blur and hairline off.
-            let standard = navigationBar.standardAppearance
-            standard.backgroundColor = color
-            standard.backgroundEffect = nil
-            standard.shadowColor = .clear
-            navigationBar.standardAppearance = standard
-            if let scrollEdge = navigationBar.scrollEdgeAppearance {
-                scrollEdge.backgroundColor = color
-                scrollEdge.backgroundEffect = nil
-                scrollEdge.shadowColor = .clear
-                navigationBar.scrollEdgeAppearance = scrollEdge
-            }
-        }
-
-        for child in controller.children {
-            theme(controller: child, color: color, visited: &visited)
-        }
-        if let presented = controller.presentedViewController {
-            theme(controller: presented, color: color, visited: &visited)
-        }
-    }
-    #endif
 
     // MARK: - Navigation
 
@@ -367,8 +263,6 @@ struct RootTabView: View {
             sourceProvider: container.sourceProvider,
             onOpenPost: { posts, index in openViewer(posts, index) }
         )
-        .toolbarBackground(AppTheme.background, for: .tabBar)
-        .toolbarBackground(.visible, for: .tabBar)
     }
 
     private func openViewer(_ posts: [BooruPost], _ index: Int) {
