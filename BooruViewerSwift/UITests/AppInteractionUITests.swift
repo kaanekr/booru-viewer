@@ -125,7 +125,120 @@ final class AppInteractionUITests: XCTestCase {
         )
     }
 
+    // MARK: - Viewer polish
+
+    /// The viewer chrome must expose exactly one actionable info control (the top
+    /// bar one) and the close control must still dismiss it.
+    func testViewerHasExactlyOneInfoButtonAndCloseWorks() throws {
+        openViewer()
+
+        XCTAssertTrue(
+            waitUntil(timeout: 20, { self.app.buttons["viewer.infoButton"].exists }),
+            "The viewer never showed its info control (identifier viewer.infoButton)"
+        )
+        XCTAssertEqual(
+            app.buttons.matching(identifier: "viewer.infoButton").count,
+            1,
+            "The viewer chrome shows more than one info control"
+        )
+        XCTAssertEqual(
+            app.buttons.matching(NSPredicate(format: "label == %@", "Post info")).count,
+            1,
+            "Only the top-bar info button should be labelled \"Post info\""
+        )
+
+        XCTAssertTrue(
+            app.buttons["viewer.closeButton"].exists,
+            "The viewer close control is missing (identifier viewer.closeButton)"
+        )
+        app.buttons["viewer.closeButton"].tap()
+        XCTAssertTrue(
+            waitUntil(timeout: 15, { self.exploreTabBarButton.exists }),
+            "Tapping the viewer's close control did not dismiss it"
+        )
+    }
+
+    /// The info sheet's `•••` menu must still be reachable from the tag chip and
+    /// still offer all seven RN tag actions.
+    ///
+    /// This runs on image demo posts: it proves the tag chrome, not video playback
+    /// or looping, and makes no claim about the transport centring.
+    func testInfoSheetTagMenuOffersAllActions() throws {
+        openViewer()
+
+        let infoButton = app.buttons["viewer.infoButton"]
+        XCTAssertTrue(
+            infoButton.waitForExistence(timeout: 20),
+            "The viewer never showed its info control"
+        )
+        infoButton.tap()
+
+        let tagMenus = app.buttons.matching(identifier: "info.tagMenu")
+        XCTAssertTrue(
+            waitUntil(timeout: 20, { tagMenus.firstMatch.exists }),
+            "The info sheet never rendered a tag menu control"
+        )
+
+        // The Tags section can sit below the fold in a short sheet; scroll until the
+        // first menu control is actually hittable instead of tapping a hidden element.
+        var scrollAttempts = 0
+        while !tagMenus.firstMatch.isHittable && scrollAttempts < 4 {
+            app.swipeUp()
+            scrollAttempts += 1
+            _ = waitUntil(timeout: 2, { tagMenus.firstMatch.isHittable })
+        }
+        XCTAssertTrue(
+            tagMenus.firstMatch.isHittable,
+            "The tag menu control never became hittable inside the info sheet"
+        )
+        tagMenus.firstMatch.tap()
+
+        // The two state-dependent labels are asserted as either/or, matching the
+        // pinned/blacklisted variants the menu renders.
+        for label in ["Search Tag", "Add to Search (+tag)", "Exclude from Search (-tag)"] {
+            XCTAssertTrue(
+                app.buttons[label].waitForExistence(timeout: 10),
+                "Tag menu action \"\(label)\" is missing"
+            )
+        }
+        XCTAssertTrue(
+            app.buttons["Pin to Favorite Tags"].exists || app.buttons["Unpin Favorite Tag"].exists,
+            "The tag menu lost its pin/unpin action"
+        )
+        XCTAssertTrue(
+            app.buttons["Add to Blacklist"].exists || app.buttons["Remove from Blacklist"].exists,
+            "The tag menu lost its blacklist action"
+        )
+        for label in ["Save to Search History", "Copy Tag"] {
+            XCTAssertTrue(
+                app.buttons[label].exists,
+                "Tag menu action \"\(label)\" is missing"
+            )
+        }
+    }
+
     // MARK: - Elements
+
+    /// Opens the viewer on the first demo post, reusing the same real-gesture path
+    /// as `testGridScrollsAndTapOpensViewer`.
+    private func openViewer() {
+        XCTAssertTrue(
+            exploreHeaderButton.waitForExistence(timeout: 30),
+            "The Explore feed did not appear (launch arguments: -demoMode -initialTab feed)"
+        )
+        XCTAssertTrue(
+            waitUntil(timeout: 30, { self.firstVisibleCard() != nil }),
+            "The demo grid never rendered a tappable post card"
+        )
+        guard let card = firstVisibleCard() else {
+            return XCTFail("The demo grid never rendered a tappable post card")
+        }
+        card.tap()
+        XCTAssertTrue(
+            waitUntil(timeout: 20, { self.viewerIsPresented }),
+            "Tapping a post card did not open the viewer"
+        )
+    }
 
     private var exploreTabBarButton: XCUIElement {
         app.tabBars.buttons["Explore"]

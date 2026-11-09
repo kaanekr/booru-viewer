@@ -315,9 +315,14 @@ struct ViewerScreen: View {
         }
     }
 
+    /// The only info control in the viewer chrome: `bottomBar` keeps just the
+    /// manga and favorite actions, so exactly one actionable info button is
+    /// visible at a time (`showControls` gates the whole chrome).
     private var topBar: some View {
         HStack(spacing: 12) {
             circleButton(system: "xmark") { onClose() }
+                .accessibilityLabel("Close")
+                .accessibilityIdentifier("viewer.closeButton")
 
             Spacer(minLength: 0)
 
@@ -331,6 +336,8 @@ struct ViewerScreen: View {
             ) {
                 showInfo = true
             }
+            .accessibilityLabel("Post info")
+            .accessibilityIdentifier("viewer.infoButton")
         }
     }
 
@@ -357,26 +364,22 @@ struct ViewerScreen: View {
                 ) {
                     viewModel.isMangaMode.toggle()
                 }
+                .accessibilityLabel(viewModel.isMangaMode ? "Exit manga mode" : "Manga mode")
             }
 
             Spacer(minLength: 0)
 
             if let post = viewModel.currentPost {
                 let isFavorite = viewModel.isFavorite(post)
+                // No info button here: the top bar owns the single info control.
                 circleButton(
                     system: isFavorite ? "heart.fill" : "heart",
                     tint: isFavorite ? AppTheme.danger : AppTheme.textPrimary
                 ) {
                     Task { await viewModel.toggleFavorite() }
                 }
+                .accessibilityLabel(isFavorite ? "Remove favorite" : "Add favorite")
                 .disabled(viewModel.savingFavorite)
-
-                circleButton(
-                    system: "info.circle",
-                    tint: showInfo ? AppTheme.primary : AppTheme.textPrimary
-                ) {
-                    showInfo = true
-                }
             }
         }
     }

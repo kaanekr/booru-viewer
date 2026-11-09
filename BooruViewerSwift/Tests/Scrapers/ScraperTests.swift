@@ -97,10 +97,23 @@ final class ScraperTests: XCTestCase {
         XCTAssertEqual(post.score, 17)
         XCTAssertEqual(post.tags.general, ["1girl", "video", "webm"])
         XCTAssertEqual(post.tags.meta, ["video"])
-        XCTAssertEqual(post.fileExt, "mp4")
-        XCTAssertEqual(post.originalURL?.absoluteString, "https://realbooru.com/images/ab/cd/abcd42.mp4")
+        // The tags say `webm`, so the listing reports — and points at — WebM, not a made-up .mp4.
+        XCTAssertEqual(post.fileExt, "webm")
+        XCTAssertEqual(post.originalURL?.absoluteString, "https://realbooru.com/images/ab/cd/abcd42.webm")
         XCTAssertEqual(post.previewURL?.absoluteString, "https://realbooru.com/thumbnails/ab/cd/thumbnail_abcd42.jpg")
         XCTAssertEqual(post.sourceLink?.absoluteString, "https://realbooru.com/index.php?page=post&s=view&id=42")
+    }
+
+    func testRealbooruVideoCardWithoutAContainerTagInventsNoExtension() {
+        // `video`/`animated`/`sound` alone never name a container, so no `.mp4` is assumed
+        // and no `/images/` guess is attached to the card.
+        let html = #"""
+        <div class="col thumb" id="s43"><a href="https://realbooru.com/index.php?page=post&amp;s=view&amp;id=43"><img src="https://realbooru.com/thumbnails/ab/cd/thumbnail_abcd43.jpg" title="video, sound, solo" alt="Image: 43" /></a></div>
+        """#
+        let post = RealbooruSource.parseListing(html: html).first
+        XCTAssertEqual(post?.tags.meta, ["video"])
+        XCTAssertNil(post?.fileExt)
+        XCTAssertNil(post?.originalURL)
     }
 
     func testRealbooruGifCardStaysOutOfTheVideoPath() {

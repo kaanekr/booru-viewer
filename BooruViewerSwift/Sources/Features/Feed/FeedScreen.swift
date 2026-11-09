@@ -22,6 +22,8 @@ enum FeedTagSearchAction: Sendable {
 /// Mirrors RN `FeedScreen` (src/screens/FeedScreen.tsx:332-577). The header is an
 /// opaque overlay that slides away with the scroll (see `ScrollAwayHeaderView`) and is
 /// pinned while refreshing or while the source sheet is open (FeedScreen.tsx:100-104).
+/// The slide is continuous: it tracks the content offset through
+/// `ScrollAwayHeaderState` instead of waiting for a full header height.
 @MainActor
 struct FeedScreen: View {
     private let settings: AppSettings
@@ -45,9 +47,7 @@ struct FeedScreen: View {
     @State private var isSourceSheetOpen = false
     /// Measured height of the overlaid header; the grid reserves exactly this much space.
     @State private var headerHeight: CGFloat = 132
-    /// Vertical slide of the header; `-headerHeight` means fully scrolled away.
-    @State private var headerSlide: CGFloat = 0
-    /// Directional show/hide accumulator for the header (RN `advanceScrollHeader`).
+    /// Continuous collapse of the header, driven by the scroll offset.
     @State private var headerState = ScrollAwayHeaderState()
     /// Memoized masonry split: rebuilt only when the page or the column width changes,
     /// never on plain body evaluation.
@@ -56,7 +56,6 @@ struct FeedScreen: View {
     @State private var scrollToTopSignal = 0
 
     private static let columnSpacing: CGFloat = 12
-    private static let horizontalPadding: CGFloat = 12
     /// Bottom breathing room inside the scroll content; the tab-bar clearance is
     /// handled by the host, not here.
     private static let bottomPadding: CGFloat = 12
@@ -64,8 +63,6 @@ struct FeedScreen: View {
     private static let scrollSpace = "feedScroll"
     /// Anchor for "tap the header to jump to the top" (FeedScreen.tsx:340).
     private static let topAnchor = "feedTopAnchor"
-    /// RN slide duration for the header (scrollAwayHeader.ts:66).
-    private static let headerAnimationDuration: Double = 0.18
     /// Duration of the header-tap scroll back to the top.
     private static let scrollToTopDuration: Double = 0.25
 
@@ -153,8 +150,9 @@ struct FeedScreen: View {
             feedContent
 
             ScrollAwayHeaderView(
-                slideOffset: headerSlide,
-                isPinned: isHeaderPinned
+                slideOffset: isHeaderPinned ? 0 : headerState.slide,
+                isPinned: isHeaderPinned,
+                isHidden: !isHeaderPinned && headerState.isFullyCollapsed
             ) {
                 header
             }
@@ -169,6 +167,18 @@ struct FeedScreen: View {
         }
         .onChange(of: isHeaderPinned) { _, _ in
             resetHeaderSlide()
+        }
+        .onChange(of: model.sourceID) { _, _ in
+            // A new source rebuilds the quick filters, so the header reveals again.
+            resetHeaderSlide()
+        }
+        .onChange(of: model.filter) { _, _ in
+            // A quick-filter pick reloads the grid; a shown header keeps the chips usable.
+            resetHeaderSlide()
+        }
+        .onChange(of: model.posts.isEmpty) { _, isEmpty in
+            // Error, empty, and retry states have no scroll view to restore the bar.
+            if isEmpty { resetHeaderSlide() }
         }
         .sheet(isPresented: $isSourceSheetOpen) {
             SourceSheetView(selectedSource: model.sourceID) { id in
@@ -241,16 +251,9 @@ struct FeedScreen: View {
 
                         footer
                     }
-                    .padding(.horizontal, Self.horizontalPadding)
+                    .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
                     .padding(.bottom, Self.bottomPadding)
-                    .background {
-                        GeometryReader { proxy in
-                            Color.clear.preference(
-                                key: FeedScrollOffsetKey.self,
-                                value: -proxy.frame(in: .named(Self.scrollSpace)).minY
-                            )
-                        }
-                    }
+                    .scrollAwayOffsetReader(space: Self.scrollSpace)
                 }
                 .scrollIndicators(.hidden)
                 .coordinateSpace(name: Self.scrollSpace)
@@ -268,7 +271,7 @@ struct FeedScreen: View {
                         scrollProxy.scrollTo(Self.topAnchor, anchor: .top)
                     }
                 }
-                .onPreferenceChange(FeedScrollOffsetKey.self) { offset in
+                .onPreferenceChange(ScrollAwayOffsetKey.self) { offset in
                     updateHeader(for: offset)
                 }
                 .refreshable {
@@ -279,7 +282,7 @@ struct FeedScreen: View {
     }
 
     /// Memoized masonry split. Recomputed only when a page lands, the column width
-    /// changes, or the grid first appears — never on plain body evaluation.
+    /// changes, or the grid first appears â€” never on plain body evaluation.
     private func rebuildColumns(width: CGFloat) {
         let posts = model.posts
         guard !posts.isEmpty else {
@@ -302,7 +305,7 @@ struct FeedScreen: View {
     /// Equal column width that fits the measured grid exactly; the sub-point
     /// remainder is dropped rather than letterboxing the cards.
     private static func columnWidth(for totalWidth: CGFloat) -> CGFloat {
-        let usable = totalWidth - Self.horizontalPadding * 2 - Self.columnSpacing
+        let usable = totalWidth - AppTheme.Spacing.screenHorizontal * 2 - Self.columnSpacing
         guard usable > 0 else { return 0 }
         return (usable / CGFloat(MasonryColumns.defaultColumnCount)).rounded(.down)
     }
@@ -368,29 +371,21 @@ struct FeedScreen: View {
 
     // MARK: Header
 
-    /// Directional header reveal/hide. RN hides it once the grid has moved down
-    /// 12pt and reveals it again after 12pt back up, no matter the absolute offset
-    /// (src/utils/scrollAwayHeader.ts:14-27).
+    /// Continuous header collapse. Every scrolled point pulls the bar along, so it
+    /// starts sliding on the first downward delta and reappears on the first upward
+    /// delta anywhere in the list; jitter and the pull-to-refresh rubber band are
+    /// filtered inside `ScrollAwayHeaderState`.
     private func updateHeader(for offset: CGFloat) {
-        guard !isHeaderPinned else {
-            resetHeaderSlide()
-            return
-        }
-        let hidden = headerState.advance(to: offset, height: headerHeight)
-        setHeaderSlide(hidden ? -max(headerHeight, 0) : 0)
+        // Pinned (refresh, sheet, editing): the `.onChange(of: isHeaderPinned)` reset
+        // already revealed the bar and dropped the baseline, so ignore scroll samples.
+        guard !isHeaderPinned else { return }
+        headerState.update(offset: offset, height: headerHeight)
     }
 
-    private func setHeaderSlide(_ slide: CGFloat) {
-        guard abs(slide - headerSlide) > 0.5 else { return }
-        withAnimation(.easeOut(duration: Self.headerAnimationDuration)) {
-            headerSlide = slide
-        }
-    }
-
-    /// Pinned refreshes, header remeasurement, and the source sheet put it back.
+    /// Pinned refreshes, header remeasurement, source switches, and the source sheet put it back.
     private func resetHeaderSlide() {
+        headerState.syncHeight(headerHeight)
         headerState.reset()
-        setHeaderSlide(0)
     }
 
     /// RN scrolls the grid to y: 0 when the "Explore" title is tapped
@@ -400,27 +395,29 @@ struct FeedScreen: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 12) {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.item) {
+            HStack(alignment: .center, spacing: AppTheme.Spacing.item) {
                 Button(action: scrollGridToTop) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Explore")
-                            .font(.system(size: 26, weight: .heavy))
+                            .font(AppTheme.Typography.screenTitle)
                             .foregroundStyle(AppTheme.textPrimary)
                         Text(subtitle)
-                            .font(.system(size: 12))
+                            .font(AppTheme.Typography.secondary)
                             .foregroundStyle(AppTheme.textMuted)
+                            .lineLimit(1)
                     }
+                    .frame(minHeight: AppTheme.Spacing.minimumHitTarget, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Explore. Scroll to top")
 
-                Spacer(minLength: 8)
+                Spacer(minLength: AppTheme.Spacing.item)
 
                 sourcePill
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
 
             // A single Discover choice is not a filter (FeedScreen.tsx:369).
             if model.quickFilters.count > 1 {
@@ -431,8 +428,8 @@ struct FeedScreen: View {
                 trendingBar
             }
         }
-        .padding(.top, 8)
-        .padding(.bottom, 10)
+        .padding(.top, AppTheme.Spacing.rowVertical)
+        .padding(.bottom, AppTheme.Spacing.item)
     }
 
     /// RN subtitle (FeedScreen.tsx:344-346).
@@ -452,20 +449,23 @@ struct FeedScreen: View {
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: "square.stack.3d.up.fill")
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: AppTheme.Icon.small, weight: .semibold))
                     .foregroundStyle(AppTheme.primaryLight)
                 Text(sourceEntry.shortName)
-                    .font(.system(size: 11, weight: .bold))
+                    .font(AppTheme.Typography.caption)
                     .foregroundStyle(AppTheme.textPrimary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
+            .padding(.horizontal, AppTheme.Spacing.chipHorizontal)
+            .padding(.vertical, AppTheme.Spacing.chipVertical)
             .background(AppTheme.surface, in: Capsule())
             .overlay {
                 Capsule().stroke(AppTheme.border, lineWidth: 1)
             }
-            .contentShape(Capsule())
+            // Compact visual, full-size tap target.
+            .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Current source: \(sourceEntry.name). Change source")
@@ -473,17 +473,19 @@ struct FeedScreen: View {
 
     private var quickFilterBar: some View {
         ScrollView(.horizontal) {
-            HStack(spacing: 8) {
+            HStack(spacing: AppTheme.Spacing.item) {
                 ForEach(model.quickFilters) { option in
                     let selected = model.isActive(option)
                     Button {
                         Task { await model.applyQuickFilter(option) }
                     } label: {
                         Text(option.label)
-                            .font(.system(size: 12, weight: selected ? .bold : .semibold))
+                            .font(AppTheme.Typography.secondary)
+                            .fontWeight(selected ? .bold : .semibold)
                             .foregroundStyle(selected ? AppTheme.goldAccentText : AppTheme.textSecondary)
-                            .padding(.horizontal, 13)
-                            .padding(.vertical, 7)
+                            .lineLimit(1)
+                            .padding(.horizontal, AppTheme.Spacing.chipHorizontal)
+                            .padding(.vertical, AppTheme.Spacing.chipVertical)
                             .background(selected ? AppTheme.goldAccent : AppTheme.chip, in: Capsule())
                             .overlay {
                                 Capsule().stroke(
@@ -491,13 +493,15 @@ struct FeedScreen: View {
                                     lineWidth: 1
                                 )
                             }
-                            .contentShape(Capsule())
+                            // Compact chip, 44pt minimum tap target.
+                            .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel(option.label)
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
         }
         .scrollIndicators(.hidden)
     }
@@ -505,38 +509,60 @@ struct FeedScreen: View {
     /// RN rendered RedGifs trending tags here (FeedScreen.tsx:397-423); the cards are the
     /// same `TagChipView` chips, seeded from the loaded posts instead.
     private var trendingBar: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 5) {
                 Image(systemName: "flame.fill")
-                    .font(.system(size: 11))
+                    .font(.system(size: AppTheme.Icon.small))
                     .foregroundStyle(AppTheme.goldAccent)
                 Text("Trending Tags")
-                    .font(.system(size: 11, weight: .bold))
+                    .font(AppTheme.Typography.caption)
                     .kerning(0.5)
                     .textCase(.uppercase)
                     .foregroundStyle(AppTheme.textSecondary)
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
 
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {
                     ForEach(model.trendingTags) { tag in
-                        TagChipView(
-                            text: tag.name,
-                            category: tag.category,
-                            count: tag.count,
-                            onTap: tagTap(tag.name)
-                        )
-                        .contextMenu {
-                            trendingTagMenu(tag.name)
-                        }
+                        trendingChip(tag)
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 2)
+                .padding(.horizontal, AppTheme.Spacing.screenHorizontal)
             }
             .scrollIndicators(.hidden)
         }
+    }
+
+    /// One trending chip: compact shared pill wrapped in a 44pt tap target, so the
+    /// strip does not need tall pills. The pill is not interactive itself, so the
+    /// button owns the action and the context menu.
+    @ViewBuilder
+    private func trendingChip(_ tag: FeedViewModel.TrendingTag) -> some View {
+        let chip = TagChipView(
+            text: tag.name,
+            category: tag.category,
+            count: tag.count
+        )
+        .frame(minHeight: AppTheme.Spacing.minimumHitTarget)
+        .contentShape(Rectangle())
+
+        if let tap = tagTap(tag.name) {
+            Button(action: tap) { chip.accessibilityHidden(true) }
+                .buttonStyle(.plain)
+                .accessibilityLabel(trendingChipLabel(tag))
+                .contextMenu { trendingTagMenu(tag.name) }
+        } else {
+            chip
+                .accessibilityLabel(trendingChipLabel(tag))
+                .contextMenu { trendingTagMenu(tag.name) }
+        }
+    }
+
+    /// Spoken label for a trending chip, including its abbreviated post count.
+    private func trendingChipLabel(_ tag: FeedViewModel.TrendingTag) -> String {
+        let name = tag.name.replacingOccurrences(of: "_", with: " ")
+        return "\(name), \(TagChipView.abbreviated(tag.count)) posts"
     }
 
     /// Long press on a trending chip: search, include/exclude, pin, blacklist, or copy it.
@@ -703,60 +729,5 @@ struct FeedScreen: View {
             return "Could not reach the \(sourceEntry.name) source due to ISP or SSL blocking."
         }
         return raw
-    }
-}
-
-/// Scroll offset of the feed grid, measured from the top of the scroll content.
-private struct FeedScrollOffsetKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-/// Directional show/hide accumulator for the Explore header, mirroring RN
-/// `advanceScrollHeader` (src/utils/scrollAwayHeader.ts:14-27).
-///
-/// Rubber-band movement is ignored, the header cannot hide until the grid has
-/// scrolled past it, and a deliberate 12pt move in one direction flips the state.
-/// The per-event travel is clamped so a fast fling still needs a real reversal.
-private struct ScrollAwayHeaderState {
-    /// Previous clamped offset; nil until the first scroll event.
-    private var offset: CGFloat?
-    /// Accumulated movement in the current direction, clamped to ±12.
-    private var travel: CGFloat = 0
-    private(set) var hidden = false
-
-    mutating func advance(to rawOffset: CGFloat, height: CGFloat) -> Bool {
-        guard height > 0 else { return hidden }
-        let offset = max(rawOffset, 0)
-        if offset <= 0 {
-            reset()
-            return hidden
-        }
-        guard let previous = self.offset else {
-            self.offset = offset
-            return hidden
-        }
-
-        let delta = offset - previous
-        if delta != 0 {
-            travel = delta.sign == travel.sign ? travel + delta : delta
-        }
-        if offset < height || travel <= -12 {
-            hidden = false
-        } else if travel >= 12 {
-            hidden = true
-        }
-        travel = min(12, max(-12, travel))
-        self.offset = offset
-        return hidden
-    }
-
-    mutating func reset() {
-        offset = nil
-        travel = 0
-        hidden = false
     }
 }

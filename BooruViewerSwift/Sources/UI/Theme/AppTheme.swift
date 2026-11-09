@@ -91,6 +91,77 @@ enum AppTheme {
         }
     }
 
+    // MARK: Type ramp
+
+    /// Compact type ramp shared by every screen.
+    ///
+    /// The screens were asked to get smaller overall ("genel olarak herşey küçülsün
+    /// yazılar vb"), so the base sizes are deliberately modest. Each token is a
+    /// *semantic* SwiftUI style (`Font.system(_:weight:)`) instead of
+    /// `Font.system(size:)`: a fixed point size never follows the user's Dynamic Type
+    /// setting, while a semantic style scales with it automatically. Nothing here
+    /// forces `\.sizeCategory`, applies `scaleEffect`, or sets `minimumScaleFactor`.
+    ///
+    /// Nominal target -> resolved default size at the Large content size category:
+    /// `screenTitle` 24 -> 22 (`.title2`), `sectionTitle` 14 -> 13 (`.footnote`),
+    /// `body` 14 -> 13 (`.footnote`), `secondary` 12 -> 12 (`.caption`),
+    /// `caption` 10 -> 11 (`.caption2`, the smallest system style).
+    /// Weights ride on the style so callers do not re-declare them.
+    enum Typography {
+        /// Screen headline, e.g. "Explore" or a viewer title. (24 nominal, `.title2` = 22.)
+        static let screenTitle: Font = .system(.title2, weight: .heavy)
+
+        /// Group/section header above a block of rows. (14 nominal, `.footnote` = 13.)
+        static let sectionTitle: Font = .system(.footnote, weight: .semibold)
+
+        /// Default readable copy: rows, fields, body text. (14 nominal, `.footnote` = 13.)
+        static let body: Font = .system(.footnote)
+
+        /// Supporting copy: subtitles, source hosts, hints. (12 nominal, `.caption` = 12.)
+        static let secondary: Font = .system(.caption)
+
+        /// Smallest labels: counts, badges, "ACTIVE". (10 nominal, `.caption2` = 11.)
+        static let caption: Font = .system(.caption2, weight: .semibold)
+    }
+
+    // MARK: Spacing ramp
+
+    /// Compact spacing ramp; screens keep using it instead of literal paddings so the
+    /// density stays consistent across headers, rows, and chips.
+    enum Spacing {
+        /// Leading/trailing screen gutter (screens used 16 before the compaction pass).
+        static let screenHorizontal: CGFloat = 12
+
+        /// Gap between stacked sections inside a screen.
+        static let section: CGFloat = 12
+
+        /// Vertical padding inside a row.
+        static let rowVertical: CGFloat = 8
+
+        /// Horizontal padding inside a chip/pill.
+        static let chipHorizontal: CGFloat = 8
+
+        /// Vertical padding inside a chip/pill.
+        static let chipVertical: CGFloat = 4
+
+        /// Gap between adjacent items in a row, stack, or chip strip.
+        static let item: CGFloat = 8
+
+        /// Apple's minimum comfortable tap target; keep interactive rows at least this tall.
+        static let minimumHitTarget: CGFloat = 44
+    }
+
+    // MARK: Icons
+
+    /// Point sizes for SF Symbols so glyphs match the compact type ramp.
+    enum Icon {
+        /// Symbol size for primary controls.
+        static let standard: CGFloat = 18
+
+        /// Symbol size for inline/secondary glyphs.
+        static let small: CGFloat = 14
+    }
+
     // MARK: Hex helper
 
     /// 0xRRGGBB literal, the same notation the RN theme uses.
