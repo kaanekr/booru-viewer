@@ -139,8 +139,11 @@ struct XVideosSource: BooruSource {
             let html = HTMLScanner.text(from: data)
             let posts = Self.parseListing(html: html)
             if !posts.isEmpty {
-                if keyword.isEmpty, let month = Self.extractBestMonth(in: html) {
-                    await Self.bestMonthCache.store(month)
+                if keyword.isEmpty {
+                    let month = Self.extractBestMonth(in: html)
+                    if !month.isEmpty {
+                        await Self.bestMonthCache.store(month)
+                    }
                 }
                 return PostPage(posts: posts, nextPage: pageNumber + 1, hasMore: true)
             }

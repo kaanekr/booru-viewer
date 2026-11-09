@@ -278,15 +278,18 @@ final class FeedViewModel {
             }
         }
 
-        let minimum = posts.count >= 2 ? 2 : 1
-        trendingTags = counts
-            .filter { $0.value.count >= minimum }
-            .map { TrendingTag(name: $0.key, category: $0.value.category, count: $0.value.count) }
-            .sorted { lhs, rhs in
-                lhs.count == rhs.count ? lhs.name < rhs.name : lhs.count > rhs.count
-            }
-            .prefix(Self.trendingTagLimit)
-            .map { $0 }
+        let minimum: Int = posts.count >= 2 ? 2 : 1
+        var candidates: [TrendingTag] = []
+        candidates.reserveCapacity(counts.count)
+        for (name, entry) in counts where entry.count >= minimum {
+            candidates.append(TrendingTag(name: name, category: entry.category, count: entry.count))
+        }
+        let sorted: [TrendingTag] = candidates.sorted { lhs, rhs in
+            lhs.count == rhs.count ? lhs.name < rhs.name : lhs.count > rhs.count
+        }
+        let limited: ArraySlice<TrendingTag> = sorted.prefix(Self.trendingTagLimit)
+        let tags: [TrendingTag] = Array(limited)
+        trendingTags = tags
     }
 
     private func groupedTags(_ tags: BooruTagGroups) -> [(TagCategory, [String])] {

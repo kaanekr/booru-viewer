@@ -124,7 +124,8 @@ struct SecurityService: Sendable {
 
     /// RN `isPasscodeEnabled` (securityService.ts:65-68): enabled *and* a hash exists.
     func isPasscodeEnabled(config: SecurityConfig) throws -> Bool {
-        config.enabled && (try storedPasscodeHash(config: config)) != nil
+        guard config.enabled else { return false }
+        return try storedPasscodeHash(config: config) != nil
     }
 
     // MARK: - Passcode lifecycle
