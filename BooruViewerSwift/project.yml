@@ -52,12 +52,29 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/BooruViewer.app/BooruViewer"
         BUNDLE_LOADER: "$(TEST_HOST)"
+  # Real gestures in the simulator: scrolls the Explore grid and taps a card, so a
+  # "the grid stopped scrolling / cards stopped opening" regression fails CI.
+  BooruViewerUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: UITests
+    dependencies:
+      - target: BooruViewer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.booru.viewer.swift.uitests
+        TEST_TARGET_NAME: BooruViewer
+        GENERATE_INFOPLIST_FILE: YES
 schemes:
   BooruViewer:
     build:
       targets:
         BooruViewer: all
         BooruViewerTests: [test]
+        BooruViewerUITests: [test]
     test:
       targets:
         - BooruViewerTests
+        - BooruViewerUITests
