@@ -42,9 +42,9 @@ struct ViewerScreen: View {
         favoriteTags: (any TagListStoring)? = nil,
         blacklistedTags: (any TagListStoring)? = nil,
         searchHistory: (any SearchHistoryStoring)? = nil,
-        onModifySearch: (@Sendable (TagSearchModification) -> Void)? = nil,
         hentaiHavenLastEpisodes: [String: Int] = [:],
         onSaveHentaiHavenEpisode: (@Sendable (String, Int) -> Void)? = nil,
+        onModifySearch: (@Sendable (TagSearchModification) -> Void)? = nil,
         onSelectTag: @escaping (String) -> Void,
         onClose: @escaping () -> Void = {}
     ) {
@@ -61,9 +61,9 @@ struct ViewerScreen: View {
             favoriteTags: favoriteTags,
             blacklistedTags: blacklistedTags,
             searchHistory: searchHistory,
-            onModifySearch: onModifySearch,
             hentaiHavenLastEpisodes: hentaiHavenLastEpisodes,
-            onSaveHentaiHavenEpisode: onSaveHentaiHavenEpisode
+            onSaveHentaiHavenEpisode: onSaveHentaiHavenEpisode,
+            onModifySearch: onModifySearch
         ))
     }
 

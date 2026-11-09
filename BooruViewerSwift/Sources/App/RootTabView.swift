@@ -147,13 +147,17 @@ struct RootTabView: View {
                 favoriteTags: container.favoriteTagsStore,
                 blacklistedTags: container.blacklistedTagsStore,
                 searchHistory: container.searchHistoryStore,
-                onModifySearch: { modification in
-                    viewer = nil
-                    applySearchModification(modification)
-                },
                 hentaiHavenLastEpisodes: container.settings.hentaiHavenLastEpisodes,
                 onSaveHentaiHavenEpisode: { postID, episode in
-                    saveHentaiHavenEpisode(postID, episode)
+                    Task { @MainActor in
+                        saveHentaiHavenEpisode(postID, episode)
+                    }
+                },
+                onModifySearch: { modification in
+                    Task { @MainActor in
+                        viewer = nil
+                        applySearchModification(modification)
+                    }
                 },
                 onSelectTag: { tag in
                     viewer = nil
@@ -347,7 +351,6 @@ struct RootTabView: View {
             guard var updated = try? await container.settingsStore.load() else { return }
             updated.hentaiHavenLastEpisodes[postID] = episode
             try? await container.settingsStore.save(updated)
-            container.settings.hentaiHavenLastEpisodes[postID] = episode
             await container.reloadSharedState()
         }
     }
