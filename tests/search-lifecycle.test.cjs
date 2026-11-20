@@ -20,6 +20,7 @@ function setup(sourceOverride = {}) {
     'react-native': {
       Platform: { OS: 'ios' },
       Dimensions: { get: () => ({ width: 390, height: 844 }) },
+      useWindowDimensions: () => ({ width: 390, height: 844 }),
       StyleSheet: { create: (value) => value }, Keyboard: { dismiss() {} },
       ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'ScrollView', 'Text', 'TextInput', 'TouchableOpacity', 'View'].map((name) => [name, name])),
     },
@@ -136,7 +137,7 @@ test('search preview focus subtracts the measured filter banner and uses actual 
   await act(async () => requests[0].resolve([{ ...post('clip'), sampleUrl: 'https://cdn.test/sample.mp4' }]));
   const scroll = () => root.root.findAllByType('ScrollView').find((node) => node.props.onScroll);
   await act(async () => scroll().props.onLayout({ nativeEvent: { layout: { height: 500 } } }));
-  await act(async () => root.root.findAllByType('View').find((node) => node.props.onLayout).props.onLayout({ nativeEvent: { layout: { y: 100 } } }));
+  await act(async () => root.root.findAllByType('View').filter((node) => node.props.onLayout).at(-1).props.onLayout({ nativeEvent: { layout: { y: 100 } } }));
   assert.deepEqual(viewport.visible, { offset: -100, height: 500 });
   assert.deepEqual([...viewport.focused.playable], ['clip']);
   await act(async () => scroll().props.onScroll({
@@ -167,24 +168,88 @@ test('search header and quick chip open the same in-place source sheet', async (
 });
 
 test('results header collapses, reverses, and is forced visible when the search input receives focus', async () => {
-  const { Screen, defaults, requests, viewport, headerAnimations } = setup();
+  const { Screen, defaults, requests, viewport } = setup();
   await act(async () => { root = create(React.createElement(Screen)); });
   await apply(defaults, 'landscape');
   await act(async () => requests[0].resolve([post('one')]));
   await act(async () => root.root.findByProps({ testID: 'scroll-away-header' }).props.onLayout({ nativeEvent: { layout: { height: 100 } } }));
   const scroll = () => root.root.findAllByType('ScrollView').find((n) => n.props.onScroll);
+  const translateY = () => root.root.findByProps({ testID: 'scroll-away-header' }).props.style.find((s) => s && s.transform)?.transform?.[0]?.translateY?.value;
   assert.equal(scroll().props.contentContainerStyle.at(-1).paddingTop, 112);
   const move = (y) => act(async () => scroll().props.onScroll({ nativeEvent: {
     contentOffset: { y }, layoutMeasurement: { height: 500 }, contentSize: { height: 5000 },
   } }));
   await move(0); await move(250);
-  assert.equal(headerAnimations.at(-1).value.value, -100);
-  await move(220);
-  assert.equal(headerAnimations.at(-1).value.value, 0);
+  assert.equal(translateY(), -100);
+  await move(150);
+  assert.equal(translateY(), 0);
   assert.equal(viewport.visible.height, 400);
   await move(260);
   await act(async () => root.root.findByType('TextInput').props.onFocus());
-  assert.equal(headerAnimations.at(-1).value.value, 0);
+  assert.equal(translateY(), 0);
   await move(400);
-  assert.equal(headerAnimations.at(-1).value.value, 0);
+  assert.equal(translateY(), 0);
+});
+
+test('SearchScreen keeps PostCard onPress reference stable across pagination', async () => {
+  const { Screen, defaults, requests } = setup();
+  await act(async () => { root = create(React.createElement(Screen)); });
+  await apply(defaults, 'sky');
+  await act(async () => requests[0].resolve([post('s1')]));
+  const firstOnPress = root.root.findByType('PostCard').props.onPress;
+  await act(() => bottom());
+  await act(async () => requests[1].resolve([post('s2')]));
+  const cards = root.root.findAllByType('PostCard');
+  assert.equal(cards.length, 2);
+  assert.equal(cards[0].props.onPress, firstOnPress);
+  assert.equal(cards[1].props.onPress, firstOnPress);
+});
+
+test('SearchDetail bottom padding includes safe-area bottom inset and suggestions offset follows searchBar layout', async () => {
+  const scrollHeader = require('./helpers/scroll-away-header.cjs').loadScrollAwayHeader();
+  const load = createLoader({
+    react: React,
+    'react-native': {
+      Platform: { OS: 'ios' },
+      Dimensions: { get: () => ({ width: 390, height: 844 }) },
+      useWindowDimensions: () => ({ width: 390, height: 844 }),
+      StyleSheet: { create: (value) => value }, Keyboard: { dismiss() {} },
+      ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'ScrollView', 'Text', 'TextInput', 'TouchableOpacity', 'View'].map((name) => [name, name])),
+    },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 44, bottom: 34 }) },
+    'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
+    'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
+    'expo-image': { Image: { prefetch: async () => {} } },
+    '../services/booruApi': { booruApi: {
+      fetchPostsWithFilter: async () => [post('one')],
+      fetchRedGifsNiches: async () => [],
+      searchTags: async () => [{ name: 'sky', postCount: 10, category: 'general' }],
+    } },
+    '../services/nhentai': {}, '../services/hentaihavens': {},
+    '@react-navigation/native': { useNavigation: () => ({ setParams() {}, navigate() {} }), useIsFocused: () => true },
+    '../services/storage': { StorageService: {
+      getFavorites: async () => [], getSearchHistory: async () => [], getFavoriteTags: async () => [], addSearchHistory: async () => {},
+    } },
+    '../components/PostCard': { PostCard: 'PostCard' }, '../components/TagChip': { TagChip: 'TagChip' },
+    '../components/SearchFilterModal': { SearchFilterModal: 'SearchFilterModal' },
+    '../components/SourceSheet': { SourceSheet: 'SourceSheet' },
+    '../navigation/rootNavigation': { pushViewer() {} }, '../theme/colors': { Colors: { dark: {} } },
+    '../utils/media': { getMediaUrl: (url) => url, getMediaHeaders: () => ({}), isVideoPost: () => false, isImageMediaUrl: () => true },
+    '../utils/gridVisibility': {
+      useVisibleIds: () => [new Set(), () => {}],
+      useMountedIds: () => [null, () => {}],
+      useFocusedCardIds: () => [new Set(), () => {}],
+    },
+    '../context/MediaPlaybackContext': { useMediaPlaybackAllowed: () => true },
+    '../context/SourceContext': { useSource: () => ({ activeSource: { id: 'a', type: 'danbooru', name: 'A' } }) },
+    '../utils/scrollAwayHeader': scrollHeader.hook,
+    '../components/ScrollAwayHeader': scrollHeader.component,
+  }, { console: { ...console, warn() {} } });
+  const Screen = load(path.resolve(__dirname, '../src/screens/SearchScreen.tsx')).SearchScreen;
+  const defaults = load(path.resolve(__dirname, '../src/types/booru.ts')).DEFAULT_FILTER_CONFIG;
+  await act(async () => { root = create(React.createElement(Screen, { onBackPress: () => {} })); });
+  await act(async () => { root.root.findByType('SearchFilterModal').props.onApply({ ...defaults, tags: ['sky'] }); });
+  const resultsScroll = root.root.findAllByType('ScrollView').find((n) => n.props.onScroll);
+  const bottomStyle = resultsScroll.props.contentContainerStyle.filter((s) => s && typeof s.paddingBottom === 'number').at(-1);
+  assert.equal(bottomStyle.paddingBottom, 64);
 });

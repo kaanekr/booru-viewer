@@ -28,18 +28,23 @@ async function setup(options = {}) {
   };
 }
 
-test('scrolling down hides and reversing reveals with native transforms, without per-scroll React renders', async () => {
+test('scrolling down collapses and reversing reveals smoothly 1:1 with native transforms, without per-scroll React renders', async () => {
   const s = await setup();
   const renders = s.renders;
-  s.scroll(0); s.scroll(80); s.scroll(150);
+  s.scroll(0);
+  s.scroll(60);
+  assert.equal(s.controller.translateY.value, -60);
+  assert.equal(s.controller.occlusionRef.current, 60);
+  s.scroll(200);
   assert.equal(s.controller.translateY.value, -120);
   assert.equal(s.controller.occlusionRef.current, 0);
-  s.scroll(145); // jitter below the direction threshold
+  s.scroll(160); // reverse by 40px -> smooth continuous reveal
+  assert.equal(s.controller.translateY.value, -80);
+  assert.equal(s.controller.occlusionRef.current, 40);
+  // Settle snaps smoothly to the nearest edge with native driver
+  s.controller.settle();
   assert.equal(s.controller.translateY.value, -120);
-  s.scroll(135);
-  assert.equal(s.controller.translateY.value, 0);
-  assert.equal(s.controller.occlusionRef.current, 120);
-  assert.equal(s.animations.length, 2);
+  assert.equal(s.animations.length, 1);
   assert.equal(s.renders, renders);
   assert.ok(s.animations.every((a) => a.config.useNativeDriver && a.config.isInteraction === false));
 });
@@ -48,7 +53,7 @@ test('pull-to-refresh and bottom rubber-band rebound cannot toggle the header sp
   const s = await setup();
   s.scroll(0); s.scroll(200); s.scroll(1900);
   const count = s.animations.length;
-  s.scroll(2100); s.scroll(2050); s.scroll(2000); s.scroll(1999);
+  s.scroll(2100); s.scroll(2050); s.scroll(2000);
   assert.equal(s.animations.length, count);
   assert.equal(s.controller.translateY.value, -120);
   s.scroll(0); s.scroll(-70); s.scroll(-20); s.scroll(0);
@@ -59,6 +64,7 @@ test('short lists, empty states and pinned search/filter controls cannot be hidd
   const s = await setup();
   s.scroll(0, 400); s.scroll(150, 400);
   assert.equal(s.animations.length, 0);
+  assert.equal(s.controller.translateY.value, 0);
   await s.update({ pinned: true });
   s.scroll(0); s.scroll(800);
   assert.equal(s.controller.translateY.value, 0);
@@ -69,7 +75,8 @@ test('short lists, empty states and pinned search/filter controls cannot be hidd
 
 test('changing query/source or header measurement resets hidden state and stops old animations', async () => {
   const s = await setup();
-  s.scroll(0); s.scroll(250);
+  s.scroll(0); s.scroll(60);
+  s.controller.settle();
   const animation = s.animations.at(-1);
   await s.update({ resetKey: 'feed-b' });
   assert.equal(s.controller.translateY.value, 0);
@@ -82,7 +89,8 @@ test('changing query/source or header measurement resets hidden state and stops 
 
 test('unmount stops the native animation and leaves no timers/listeners behind', async () => {
   const s = await setup();
-  s.scroll(0); s.scroll(250);
+  s.scroll(0); s.scroll(50);
+  s.controller.settle();
   const animation = s.animations.at(-1);
   await act(async () => root.unmount()); root = undefined;
   assert.equal(animation.stopped, true);

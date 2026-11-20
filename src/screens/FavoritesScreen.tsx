@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
-  Dimensions,
   FlatList,
   Keyboard,
   Modal,
@@ -13,6 +12,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -50,7 +50,6 @@ import { useScrollAwayHeader } from '../utils/scrollAwayHeader';
 import { ScrollAwayHeader } from '../components/ScrollAwayHeader';
 import { useMountedIds, type CardLayout } from '../utils/gridVisibility';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
 
 interface FavoritesScreenProps {
@@ -79,6 +78,10 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
   };
 
   const insets = useSafeAreaInsets();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const columnWidth = (windowWidth - 36) / 2;
+  const historyCardHeight = Math.round(columnWidth / 0.78);
+  const historyRowHeight = historyCardHeight + 12;
   const [activeSegment, setActiveSegment] = useState<'posts' | 'tags' | 'history'>('posts');
   const [favorites, setFavorites] = useState<BooruPost[]>([]);
   const [favoriteTags, setFavoriteTags] = useState<string[]>([]);
@@ -97,10 +100,10 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
   const [displayLimit, setDisplayLimit] = useState(40);
   const [historyLimit, setHistoryLimit] = useState(40);
   const repairPromiseRef = useRef<Promise<number> | null>(null);
-  const [mountedIds, updateMounted] = useMountedIds();
   const favoritesOffsetRef = useRef(0);
   const gridTopRef = useRef(0);
-  const viewportHeightRef = useRef(Dimensions.get('window').height);
+  const viewportHeightRef = useRef(windowHeight);
+  const lastViewportUpdateRef = useRef(0);
 
   const loadRecentViews = useCallback(async () => {
     try {
@@ -443,15 +446,14 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     ratingFilter !== 'all' ||
     sortBy !== 'fav_date';
 
-  // 2-column masonry distribution with pagination limit
+  // Height-balanced 2-column masonry distribution with pagination limit
   const { leftColumn, rightColumn, layoutMap } = useMemo(() => {
     const leftColumn: BooruPost[] = [];
     const rightColumn: BooruPost[] = [];
     const layoutMap = new Map<string, CardLayout>();
     const heights = [0, 0];
-    const columnWidth = (SCREEN_WIDTH - 36) / 2;
-    filteredFavorites.slice(0, displayLimit).forEach((post, index) => {
-      const column = index % 2;
+    filteredFavorites.slice(0, displayLimit).forEach((post) => {
+      const column = heights[0] <= heights[1] ? 0 : 1;
       const aspectRatio = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75));
       const height = columnWidth / aspectRatio + 12;
       layoutMap.set(getPostKey(post), { y: heights[column], h: height });
@@ -459,23 +461,33 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
       (column === 0 ? leftColumn : rightColumn).push(post);
     });
     return { leftColumn, rightColumn, layoutMap };
-  }, [filteredFavorites, displayLimit]);
+  }, [filteredFavorites, displayLimit, columnWidth]);
   const layoutMapRef = useRef(layoutMap);
   layoutMapRef.current = layoutMap;
+  const [mountedIds, updateMounted] = useMountedIds(1200, layoutMap, windowHeight);
+
+  const filteredFavoritesRef = useRef(filteredFavorites);
+  filteredFavoritesRef.current = filteredFavorites;
+  const recentViewsRef = useRef(recentViews);
+  recentViewsRef.current = recentViews;
 
   const handleCardPress = useCallback((post: BooruPost) => {
-    const idx = filteredFavorites.findIndex((p) => getPostKey(p) === getPostKey(post));
+    const list = filteredFavoritesRef.current;
+    const targetKey = getPostKey(post);
+    const idx = list.findIndex((p) => getPostKey(p) === targetKey);
     if (idx >= 0) {
-      pushViewer(filteredFavorites, idx, [], undefined);
+      pushViewer(list, idx, [], undefined);
     }
-  }, [filteredFavorites]);
+  }, []);
 
   const handleHistoryCardPress = useCallback((post: BooruPost) => {
-    const idx = recentViews.findIndex((p) => getPostKey(p) === getPostKey(post));
+    const list = recentViewsRef.current;
+    const targetKey = getPostKey(post);
+    const idx = list.findIndex((p) => getPostKey(p) === targetKey);
     if (idx >= 0) {
-      pushViewer(recentViews, idx, [], undefined);
+      pushViewer(list, idx, [], undefined);
     }
-  }, [recentViews]);
+  }, []);
 
   // Paginated visible history slice
   const visibleRecentViews = useMemo(
@@ -494,11 +506,22 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
       <PostCard
         post={item}
         onPress={handleHistoryCardPress}
+        columnWidth={columnWidth}
+        fixedHeight={historyCardHeight}
         screenActive={isFocused && mediaAllowed}
-        favoriteIds={favoriteIdSet}
+        isFavorite={favoriteIdSet.has(getPostKey(item))}
       />
     ),
-    [handleHistoryCardPress, favoriteIdSet, isFocused, mediaAllowed]
+    [handleHistoryCardPress, favoriteIdSet, isFocused, mediaAllowed, columnWidth, historyCardHeight]
+  );
+
+  const getHistoryItemLayout = useCallback(
+    (_data: ArrayLike<BooruPost> | null | undefined, index: number) => ({
+      length: historyRowHeight,
+      offset: historyRowHeight * index,
+      index,
+    }),
+    [historyRowHeight]
   );
 
   const historyKeyExtractor = useCallback(
@@ -508,7 +531,8 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
 
   const header = useScrollAwayHeader({
     enabled: !loading && ((activeSegment === 'posts' && filteredFavorites.length > 0) || (activeSegment === 'history' && recentViews.length > 0)),
-    resetKey: JSON.stringify([activeSegment, selectedSource, selectedTags, searchQuery, mediaTypeFilter, ratingFilter, sortBy, tagMatchMode]),
+    // Exclude searchQuery so typing in the search bar does not bounce/reset the header.
+    resetKey: `${activeSegment}|${selectedSource}|${selectedTags.join(',')}|${mediaTypeFilter}|${ratingFilter}|${sortBy}|${tagMatchMode}`,
     pinned: !effectiveIsActive || refreshing || isInputFocused || showFilterSheet,
   });
   const lastLoadMoreRef = useRef(0);
@@ -968,8 +992,11 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
             columnWrapperStyle={styles.columnWrapper}
             contentContainerStyle={[styles.scrollContent, header.enabled && { paddingTop: header.height + 10 }]}
             onScroll={header.onScroll}
-            scrollEventThrottle={32}
+            onScrollEndDrag={() => header.settle?.()}
+            onMomentumScrollEnd={() => header.settle?.()}
+            scrollEventThrottle={16}
             renderItem={renderHistoryItem}
+            getItemLayout={getHistoryItemLayout}
             initialNumToRender={8}
             maxToRenderPerBatch={8}
             windowSize={5}
@@ -1031,31 +1058,42 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
               />
             }
             onScroll={(event) => {
-              header.onScroll(event);
+              const changed = header.onScroll(event);
               const { nativeEvent } = event;
               const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
               favoritesOffsetRef.current = contentOffset.y;
               viewportHeightRef.current = layoutMeasurement.height;
-              updateFavoritesViewport();
+              const now = Date.now();
+              if (changed || now - lastViewportUpdateRef.current >= 80) {
+                lastViewportUpdateRef.current = now;
+                updateFavoritesViewport();
+              }
               if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 400) {
-                const now = Date.now();
                 if (displayLimit < filteredFavorites.length && now - lastLoadMoreRef.current >= 300) {
                   lastLoadMoreRef.current = now;
                   setDisplayLimit((prev) => prev + 40);
                 }
               }
             }}
+            onMomentumScrollEnd={() => {
+              header.settle?.();
+              updateFavoritesViewport();
+            }}
+            onScrollEndDrag={() => {
+              header.settle?.();
+              updateFavoritesViewport();
+            }}
             onLayout={({ nativeEvent }) => {
               viewportHeightRef.current = nativeEvent.layout.height;
               updateFavoritesViewport();
             }}
-            scrollEventThrottle={32}
+            scrollEventThrottle={16}
           >
             <View style={styles.gridContainer} onLayout={({ nativeEvent }) => {
               gridTopRef.current = nativeEvent.layout.y;
               updateFavoritesViewport();
             }}>
-              <View style={styles.column}>
+              <View style={{ width: columnWidth }}>
                 {leftColumn.map((post) => mountedIds && !mountedIds.has(getPostKey(post)) ? (
                   <View key={getPostKey(post)} style={{ height: layoutMap.get(getPostKey(post))?.h ?? 320 }} />
                 ) : (
@@ -1063,13 +1101,14 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                     key={getPostKey(post)}
                     screenActive={effectiveIsActive && mediaAllowed && !showFilterSheet}
                     column="left"
+                    columnWidth={columnWidth}
                     post={post}
                     onPress={handleCardPress}
                     showFavoriteBadge={false}
                   />
                 ))}
               </View>
-              <View style={styles.column}>
+              <View style={{ width: columnWidth }}>
                 {rightColumn.map((post) => mountedIds && !mountedIds.has(getPostKey(post)) ? (
                   <View key={getPostKey(post)} style={{ height: layoutMap.get(getPostKey(post))?.h ?? 320 }} />
                 ) : (
@@ -1077,6 +1116,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                     key={getPostKey(post)}
                     screenActive={effectiveIsActive && mediaAllowed && !showFilterSheet}
                     column="right"
+                    columnWidth={columnWidth}
                     post={post}
                     onPress={handleCardPress}
                     showFavoriteBadge={false}
@@ -1407,9 +1447,6 @@ const styles = StyleSheet.create({
   },
   columnWrapper: {
     justifyContent: 'space-between',
-  },
-  column: {
-    width: (SCREEN_WIDTH - 36) / 2,
   },
   centerContainer: {
     flex: 1,

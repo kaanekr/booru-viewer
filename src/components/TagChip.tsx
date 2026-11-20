@@ -11,7 +11,13 @@ interface TagChipProps {
   size?: 'sm' | 'md';
 }
 
-export const TagChip: React.FC<TagChipProps> = ({
+const formatCount = (n: number) => {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}m`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+};
+
+export const TagChip: React.FC<TagChipProps> = React.memo(({
   name,
   category = 'general',
   count,
@@ -19,19 +25,16 @@ export const TagChip: React.FC<TagChipProps> = ({
   size = 'md',
 }) => {
   const color = TagColors[category] || TagColors.general;
-  const displayName = name.replace(/_/g, ' ');
-
-  const formatCount = (n: number) => {
-    if (n >= 1000000) return `${(n / 1000000).toFixed(1)}m`;
-    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-    return String(n);
-  };
+  const displayName = React.useMemo(() => name.replace(/_/g, ' '), [name]);
+  const handlePress = React.useCallback(() => {
+    onPress?.(name);
+  }, [onPress, name]);
 
   return (
     <TouchableOpacity
       activeOpacity={0.7}
       disabled={!onPress}
-      onPress={() => onPress && onPress(name)}
+      onPress={handlePress}
       style={[
         styles.chip,
         { backgroundColor: color.bg, borderColor: color.border },
@@ -58,7 +61,7 @@ export const TagChip: React.FC<TagChipProps> = ({
       )}
     </TouchableOpacity>
   );
-};
+});
 
 const styles = StyleSheet.create({
   chip: {

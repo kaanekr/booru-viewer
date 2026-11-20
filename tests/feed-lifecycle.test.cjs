@@ -20,6 +20,7 @@ function loadFeed(sourceOverride = {}) {
     'react-native': {
       Platform: { OS: 'ios' },
       Dimensions: { get: () => ({ width: 390, height: 844 }) },
+      useWindowDimensions: () => ({ width: 390, height: 844 }),
       StyleSheet: { create: (v) => v },
       ...Object.fromEntries(['ActivityIndicator', 'RefreshControl', 'ScrollView', 'Text', 'TouchableOpacity', 'View'].map((n) => [n, n])),
     },
@@ -249,21 +250,75 @@ test('feed preview focus uses measured viewport/grid origin and excludes unsuppo
 });
 
 test('Explore header frees the full viewport when hidden and restores covered-area video accounting on reveal', async () => {
-  const { FeedScreen, requests, viewport, headerAnimations } = loadFeed();
+  const { FeedScreen, requests, viewport } = loadFeed();
   await act(async () => { root = create(React.createElement(FeedScreen)); });
   await act(async () => requests[0].resolve([post('one')]));
   await act(async () => root.root.findByProps({ testID: 'scroll-away-header' }).props.onLayout({ nativeEvent: { layout: { height: 120 } } }));
   const scroll = () => root.root.findAllByType('ScrollView').find((n) => n.props.onScroll);
+  const translateY = () => root.root.findByProps({ testID: 'scroll-away-header' }).props.style.find((s) => s && s.transform)?.transform?.[0]?.translateY?.value;
   assert.equal(scroll().props.contentContainerStyle.at(-1).paddingTop, 132);
   const move = (y) => act(async () => scroll().props.onScroll({ nativeEvent: {
     contentOffset: { y }, layoutMeasurement: { height: 500 }, contentSize: { height: 5000 },
   } }));
   await move(0); await move(300);
-  assert.equal(headerAnimations.at(-1).config.toValue, -120);
+  assert.equal(translateY(), -120);
   assert.equal(viewport.visible.height, 500);
-  await move(270);
-  assert.equal(headerAnimations.at(-1).config.toValue, 0);
+  await move(180);
+  assert.equal(translateY(), 0);
   assert.equal(viewport.visible.height, 380);
+});
+
+test('FeedScreen keeps PostCard onPress reference stable across pagination', async () => {
+  const { FeedScreen, requests } = loadFeed();
+  await act(async () => { root = create(React.createElement(FeedScreen)); });
+  await act(async () => requests[0].resolve([post('p1')]));
+  const firstOnPress = root.root.findByType('PostCard').props.onPress;
+  await act(async () => scrollBottom());
+  await act(async () => requests[1].resolve([post('p2')]));
+  const cards = root.root.findAllByType('PostCard');
+  assert.equal(cards.length, 2);
+  assert.equal(cards[0].props.onPress, firstOnPress);
+  assert.equal(cards[1].props.onPress, firstOnPress);
+});
+
+test('useMountedIds seeds top-viewport cards on first paint without mounting 100 cards at once', async () => {
+  const { useMountedIds } = loadVisibility();
+  const layouts = new Map();
+  let y = 0;
+  for (let i = 0; i < 100; i++) {
+    layouts.set(`p${i}`, { y, h: 300 });
+    if (i % 2 === 1) y += 300;
+  }
+  let mounted;
+  function Harness() {
+    [mounted] = useMountedIds(1200, layouts, 844);
+    return null;
+  }
+  await act(async () => { root = create(React.createElement(Harness)); });
+  assert.ok(mounted && typeof mounted.has === 'function');
+  assert.ok(mounted.size > 0 && mounted.size < 20, `mounted=${mounted.size}`);
+  assert.equal(mounted.has('p0'), true);
+  assert.equal(mounted.has('p99'), false);
+});
+
+test('useLoadGate opens immediately on first render when concurrent slots are available', async () => {
+  const gate = createLoader({ react: React })(path.resolve(__dirname, '../src/utils/imageLoadGate.ts'));
+  const renders = [];
+  function Card({ col }) {
+    const [open, release] = gate.useLoadGate(col);
+    renders.push({ col, open });
+    React.useEffect(() => () => release(), [release]);
+    return null;
+  }
+  await act(async () => {
+    root = create(React.createElement(React.Fragment, null,
+      React.createElement(Card, { col: 'left' }),
+      React.createElement(Card, { col: 'right' }),
+    ));
+  });
+  assert.equal(renders[0].open, true);
+  assert.equal(renders[1].open, true);
+  assert.equal(renders.length, 2);
 });
 
 test('explore header opens the in-place source sheet and manage leaves for Settings', async () => {

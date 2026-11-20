@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 export interface CardLayout {
   y: number;
@@ -74,7 +74,11 @@ export function computeWindowIds(
  * fill up and the touch queue can't keep up. The window keeps mounts at
  * ~20 while placeholders preserve scroll height.
  */
-export function useMountedIds(overscan: number = 1500) {
+export function useMountedIds(
+  overscan: number = 1200,
+  initialLayouts?: Map<string, CardLayout>,
+  initialViewportH: number = 844
+) {
   const [mountedIds, setMountedIds] = useState<Set<string> | null>(null);
   const keyRef = useRef('');
 
@@ -98,7 +102,20 @@ export function useMountedIds(overscan: number = 1500) {
     [overscan]
   );
 
-  return [mountedIds, updateMounted] as const;
+  // Seed top-viewport mounted IDs synchronously on first paint / disjoint dataset
+  // so 24-100 cards never mount all at once on frame 1 before useEffect prunes them.
+  const effectiveMountedIds = useMemo(() => {
+    if (!initialLayouts) return mountedIds;
+    if (initialLayouts.size === 0) return new Set<string>();
+    if (mountedIds && mountedIds.size > 0) {
+      for (const id of mountedIds) {
+        if (initialLayouts.has(id)) return mountedIds;
+      }
+    }
+    return computeWindowIds(initialLayouts, 0, initialViewportH, overscan);
+  }, [mountedIds, initialLayouts, initialViewportH, overscan]);
+
+  return [effectiveMountedIds, updateMounted] as const;
 }
 
 /**
@@ -150,12 +167,12 @@ export function computeFocusedCardId(
 }
 
 /**
- * Focused-card-set hook (2-4 active-player streaming model):
- * Picks the `maxActive` cards nearest the center among on-screen cards.
- * Debounces during scrolling (80ms) so fast scrolls don't needlessly
- * open and close video players.
+ * Focused-card-set hook:
+ * Picks the `maxActive` (default 1) card nearest the center among on-screen cards.
+ * Debounces during scrolling (default 350ms) so fast scrolls don't needlessly
+ * open and close native video players.
  */
-export function useFocusedCardIds(debounceMs: number = 80, maxActive: number = 4) {
+export function useFocusedCardIds(debounceMs: number = 350, maxActive: number = 1) {
   const [focusedIds, setFocusedIds] = useState<Set<string>>(new Set());
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const keyRef = useRef('');

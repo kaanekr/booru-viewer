@@ -1,5 +1,5 @@
 import React from 'react';
-import { Dimensions, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Platform, StyleSheet, Text, TouchableOpacity, useWindowDimensions, View } from 'react-native';
 import { Image } from 'expo-image';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { useEventListener } from 'expo';
@@ -16,17 +16,20 @@ import { trackGridPlayer, recordFreezeEvent } from '../utils/freezeProbe';
 import { useGridPreviewsEnabled, markPreviewFailure, isPreviewBlocked, clearPreviewFailure } from '../utils/gridPreviews';
 import { getGridPreviewVideoCandidates, getGridPreviewFrames } from '../utils/gridPreviewMedia';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const COLUMN_WIDTH = (SCREEN_WIDTH - 36) / 2;
-
 interface PostCardProps {
   post: BooruPost;
   onPress: (post: BooruPost) => void;
   showFavoriteBadge?: boolean;
+  /** Pre-computed favorite flag avoids scanning Sets inside the memo comparator. */
+  isFavorite?: boolean;
   /** Source-qualified keys from getPostKey; no per-card storage reads. */
   favoriteIds?: Set<string>;
   /** For fair loading across the two ScrollView columns: the gate hands out slots left/right in turn */
   column?: GridColumn;
+  /** Responsive column width from parent useWindowDimensions(). */
+  columnWidth?: number;
+  /** Uniform row height for fixed-row layouts like History FlatList. */
+  fixedHeight?: number;
   /** Only the focused/active card opens video; other cards stay in slide/cover mode */
   videoActive?: boolean;
   /** Is the card on screen? (For the slide/frame loop) */
@@ -59,16 +62,24 @@ const isCandidateSafe = (u: string | undefined) => {
 const isStaticImageCandidate = (u: string | undefined) =>
   isCandidateSafe(u) && !urlEndsWith(u, '.mp4', '.webm', '.mov', '.m4v', '.m3u8', '.mpd', '.zip');
 
+const coverVisibleStyle = { opacity: 1 };
+const coverHiddenStyle = { opacity: 0 };
+
 const PostCardComponent: React.FC<PostCardProps> = ({
   post,
   onPress,
   showFavoriteBadge = true,
+  isFavorite,
   favoriteIds,
   column,
+  columnWidth,
+  fixedHeight,
   videoActive = false,
   onScreen,
   screenActive = true,
 }) => {
+  const { width: windowWidth } = useWindowDimensions();
+  const resolvedColumnWidth = columnWidth ?? (windowWidth - 36) / 2;
   // Image never mounts before the gate opens: both columns share connection slots fairly
   const [canLoad, releaseSlot] = useLoadGate(column);
   // Safety: if the gate opens but onLoadEnd/onError never fires (stuck
@@ -82,7 +93,8 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   }, [canLoad, releaseSlot]);
   // Clamp aspect ratio between 0.6 and 1.4 for balanced masonry presentation
   const safeAspectRatio = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75));
-  const cardHeight = COLUMN_WIDTH / safeAspectRatio;
+  const cardHeight = fixedHeight ?? resolvedColumnWidth / safeAspectRatio;
+  const postKey = React.useMemo(() => getPostKey(post), [post.sourceId, post.id]);
 
   const isWebm = React.useMemo(
     () =>
@@ -120,13 +132,16 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     [post.previewThumbs, post.previewThumbUrl, post.sampleUrl, post.previewUrl]);
   const [failedFrames, setFailedFrames] = React.useState<Set<string>>(new Set());
   React.useEffect(() => { setFailedFrames(new Set()); }, [rawFrames, post.id, post.sourceId]);
-  const previewThumbs = React.useMemo(() => rawFrames.filter((url) => !failedFrames.has(url)), [rawFrames, failedFrames]);
+  const previewThumbs = React.useMemo(
+    () => rawFrames.filter((url) => !failedFrames.has(url) && !urlEndsWith(url, '.gif')),
+    [rawFrames, failedFrames]
+  );
   const currentFrame = previewThumbs.length ? previewThumbs[activeThumbIndex % previewThumbs.length] : undefined;
   const hasPreview = Boolean(manualCandidates.length || previewThumbs.length);
-  // When the card is on screen, a light slide/frame loop (zero native players); only the focused card opens video
-  const isCardVisible = onScreen ?? videoActive ?? false;
+  // Only the focused/held card cycles slideshow frames or opens native video — prevents
+  // concurrent 1200ms timer churn across every visible card during scroll.
   const isPreviewActive = previewsEnabled && canLoad && screenActive && onScreen !== false
-    && ((isCardVisible && hasPreview) || touchPreviewActive);
+    && ((videoActive && hasPreview) || touchPreviewActive);
 
   // The slide timer is set up below (once the video path is known).
 
@@ -172,24 +187,15 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   }, [motionUrl, releaseSlot]);
 
   React.useEffect(() => {
-    // An off-screen video cover must not hold the image queue for 8 seconds.
-    if (canLoad && useVideoCover && !showVideo) releaseSlot();
-  }, [canLoad, useVideoCover, showVideo, releaseSlot]);
-
-  React.useEffect(() => {
     if (!screenActive || onScreen === false) {
       setTouchPreviewActive(false);
     }
   }, [screenActive, onScreen]);
 
   React.useEffect(() => {
-    // The slide timer doesn't run while the video path is active: it would cause both
-    // wasteful re-renders (every 1200ms) and invisible frame changes under the cover.
-    if (showVideo) {
-      setActiveThumbIndex(0);
-      return;
-    }
-    if (!isPreviewActive || !previewThumbs || previewThumbs.length <= 1) {
+    // The slide timer doesn't run while the video path is active or unfocused: it would
+    // cause wasteful 1200ms re-renders across scrolling cards.
+    if (showVideo || !isPreviewActive || previewThumbs.length <= 1) {
       setActiveThumbIndex(0);
       return;
     }
@@ -197,7 +203,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
       setActiveThumbIndex((prev) => (prev + 1) % previewThumbs.length);
     }, 1200);
     return () => clearInterval(timer);
-  }, [isPreviewActive, previewThumbs, showVideo]);
+  }, [isPreviewActive, previewThumbs.length, showVideo]);
 
   // At most four image attempts: thumbnail, poster, and one proxy leg each.
   // Video sample URLs must never reach expo-image as error fallbacks.
@@ -244,29 +250,56 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     };
   }, [currentUri]);
 
-  // isFav performs no storage read of its own: it comes synchronously from the parent's favoriteIds set.
-  // Without a set the badge counts as off (delayed/single reads caused crashes and lag).
-  const isFav = showFavoriteBadge && !!favoriteIds && favoriteIds.has(getPostKey(post));
+  const needsLoadSlot = (hasRenderableImage && !useVideoCover && !!imageSource) || showVideo;
+  React.useEffect(() => {
+    // Unrenderable covers or off-screen video covers must not hold a load slot.
+    if (canLoad && !needsLoadSlot) releaseSlot();
+  }, [canLoad, needsLoadSlot, releaseSlot]);
+
+  const frameUri = currentFrame ? (getMediaUrl(currentFrame) || currentFrame) : '';
+  const frameSource = React.useMemo(
+    () => (frameUri ? { uri: frameUri, headers: getMediaHeaders(frameUri) } : undefined),
+    [frameUri]
+  );
+  const handleFrameError = React.useCallback(() => {
+    if (!currentFrame) return;
+    setFailedFrames((previous) => {
+      if (previous.has(currentFrame)) return previous;
+      const next = new Set(previous);
+      next.add(currentFrame);
+      return next;
+    });
+  }, [currentFrame]);
+
+  // isFav performs no storage read of its own: it comes synchronously from the parent.
+  const isFav = showFavoriteBadge && (isFavorite ?? (!!favoriteIds && favoriteIds.has(postKey)));
 
   const ratingColor = React.useMemo(() => getRatingColor(post.rating), [post.rating]);
+  const containerStyle = React.useMemo(
+    () => [styles.container, { width: resolvedColumnWidth, height: cardHeight }],
+    [resolvedColumnWidth, cardHeight]
+  );
+  const handlePress = React.useCallback(() => {
+    setTouchPreviewActive(false);
+    onPress(post);
+  }, [onPress, post]);
+  const handleLongPress = React.useCallback(() => {
+    // Normal taps and scrolling must not start downloading full originals.
+    if (previewsEnabled && screenActive && onScreen !== false && (hasPreview || useVideoCover)) {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      setTouchPreviewActive(true);
+    }
+  }, [previewsEnabled, screenActive, onScreen, hasPreview, useVideoCover]);
+  const handlePressOut = React.useCallback(() => setTouchPreviewActive(false), []);
 
   return (
     <TouchableOpacity
       activeOpacity={0.88}
-      onPress={() => {
-        setTouchPreviewActive(false);
-        onPress(post);
-      }}
+      onPress={handlePress}
       delayLongPress={350}
-      onLongPress={() => {
-        // Normal taps and scrolling must not start downloading full originals.
-        if (previewsEnabled && screenActive && onScreen !== false && (hasPreview || useVideoCover)) {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-          setTouchPreviewActive(true);
-        }
-      }}
-      onPressOut={() => setTouchPreviewActive(false)}
-      style={[styles.container, { width: COLUMN_WIDTH, height: cardHeight }]}
+      onLongPress={handleLongPress}
+      onPressOut={handlePressOut}
+      style={containerStyle}
     >
       {showVideo && motionUrl ? (
         <CardVideoPreview key={motionUrl} url={motionUrl} onReady={releaseSlot} onFirstFrame={handleFirstFrame} onError={handleMotionError} />
@@ -279,11 +312,11 @@ const PostCardComponent: React.FC<PostCardProps> = ({
       {canLoad && hasRenderableImage && !useVideoCover && imageSource ? (
         <Image
           source={imageSource}
-          style={[styles.image, { opacity: motionReady ? 0 : 1 }]}
+          style={[styles.image, motionReady ? coverHiddenStyle : coverVisibleStyle]}
           contentFit="cover"
-          recyclingKey={`${getPostKey(post)}:${currentUri}`}
-          priority="low"
-          transition={100}
+          recyclingKey={`${postKey}:${currentUri}`}
+          priority="normal"
+          autoplay={false}
           cachePolicy="memory-disk"
           allowDownscaling={true}
           onLoadEnd={releaseSlot}
@@ -296,18 +329,19 @@ const PostCardComponent: React.FC<PostCardProps> = ({
         </View>
       )}
 
-      {!showVideo && isPreviewActive && currentFrame ? (
+      {!showVideo && isPreviewActive && currentFrame && frameSource ? (
         <Image
-          source={{
-            uri: getMediaUrl(currentFrame) || currentFrame,
-            headers: getMediaHeaders(currentFrame),
-          }}
-          recyclingKey={`frame:${getPostKey(post)}:${currentFrame}`}
-          onError={() => setFailedFrames((previous) => new Set([...previous, currentFrame]))}
+          source={frameSource}
+          recyclingKey={`frame:${postKey}:${currentFrame}`}
+          onError={handleFrameError}
           onLoadEnd={releaseSlot}
           style={StyleSheet.absoluteFill}
           contentFit="cover"
-          transition={250}
+          priority="normal"
+          autoplay={false}
+          cachePolicy="memory-disk"
+          allowDownscaling={true}
+          transition={200}
         />
       ) : null}
 
@@ -398,6 +432,7 @@ const CardVideoPreview: React.FC<{
   // Waiting on Hermes GC let 400+ players pile up and caused 0x8BADF00D hangs.
   React.useEffect(() => {
     return () => {
+      onReady();
       try {
         player.pause();
         (player as { release?: () => void }).release?.();
@@ -405,7 +440,7 @@ const CardVideoPreview: React.FC<{
         // Silently pass if already released
       }
     };
-  }, [player]);
+  }, [player, onReady]);
 
   // One-shot selective proxy fallback on TLS drop (this preview only).
   const proxyTriedRef = React.useRef(false);
@@ -457,24 +492,29 @@ export const PostCard = React.memo<PostCardProps>(
   PostCardComponent,
   (prevProps, nextProps) => {
     if (prevProps.post.id !== nextProps.post.id) return false;
+    if (prevProps.post.sourceId !== nextProps.post.sourceId) return false;
     if (prevProps.post !== nextProps.post) return false;
-    if (prevProps.showFavoriteBadge !== nextProps.showFavoriteBadge) return false;
+    if ((prevProps.showFavoriteBadge ?? true) !== (nextProps.showFavoriteBadge ?? true)) return false;
     if (prevProps.onPress !== nextProps.onPress) return false;
     if (prevProps.column !== nextProps.column) return false;
+    if (prevProps.columnWidth !== nextProps.columnWidth) return false;
+    if (prevProps.fixedHeight !== nextProps.fixedHeight) return false;
     if ((prevProps.videoActive ?? false) !== (nextProps.videoActive ?? false)) return false;
     if (prevProps.onScreen !== nextProps.onScreen) return false;
     if ((prevProps.screenActive ?? true) !== (nextProps.screenActive ?? true)) return false;
+    if (prevProps.isFavorite !== nextProps.isFavorite) return false;
 
-    const prevFav =
-      (prevProps.showFavoriteBadge ?? true) &&
-      !!prevProps.favoriteIds &&
-      prevProps.favoriteIds.has(getPostKey(prevProps.post));
-    const nextFav =
+    if (
+      prevProps.isFavorite === undefined &&
+      nextProps.isFavorite === undefined &&
       (nextProps.showFavoriteBadge ?? true) &&
-      !!nextProps.favoriteIds &&
-      nextProps.favoriteIds.has(getPostKey(nextProps.post));
-
-    if (prevFav !== nextFav) return false;
+      prevProps.favoriteIds !== nextProps.favoriteIds
+    ) {
+      const key = getPostKey(nextProps.post);
+      const prevFav = !!prevProps.favoriteIds && prevProps.favoriteIds.has(key);
+      const nextFav = !!nextProps.favoriteIds && nextProps.favoriteIds.has(key);
+      if (prevFav !== nextFav) return false;
+    }
 
     return true;
   }
