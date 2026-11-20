@@ -63,7 +63,12 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
 
   useFocusEffect(useCallback(() => {
     let alive = true;
-    StorageService.getBlacklistedTags().then((tags) => { if (alive) setBlacklistedTags(tags); });
+    StorageService.getBlacklistedTags().then((tags) => {
+      if (!alive) return;
+      setBlacklistedTags((prev) =>
+        prev.length === tags.length && prev.every((tag, idx) => tag === tags[idx]) ? prev : tags
+      );
+    });
     return () => { alive = false; };
   }, []));
 

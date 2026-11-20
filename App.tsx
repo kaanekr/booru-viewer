@@ -1,9 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   StyleSheet,
   View,
   Platform,
-  StatusBar as RNStatusBar,
   AppState,
   AppStateStatus,
 } from 'react-native';
@@ -40,12 +39,103 @@ import { startFreezeProbe, updateFreezeProbe, recordFreezeEvent, recordRootTouch
 const RootStack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<TabParamList>();
 
+const DEV_TOUCH_HANDLERS =
+  typeof __DEV__ !== 'undefined' && __DEV__
+    ? {
+        onTouchStart: () => recordRootTouch('start'),
+        onTouchEnd: () => recordRootTouch('end'),
+        onTouchCancel: () => recordRootTouch('end'),
+      }
+    : undefined;
+
+const STACK_SCREEN_OPTIONS = {
+  headerShown: false,
+  animation: 'slide_from_right' as const,
+  gestureEnabled: true,
+  contentStyle: { backgroundColor: Colors.dark.background },
+};
+
+const VIEWER_SCREEN_OPTIONS = {
+  headerShown: false,
+  animation: 'slide_from_right' as const,
+};
+
+const SEARCH_DETAIL_SCREEN_OPTIONS = {
+  headerShown: false,
+  animation: 'slide_from_right' as const,
+  gestureEnabled: true,
+};
+
+function SourceReadyGate({ children }: { children: React.ReactNode }) {
+  const { isReady } = useSource();
+  if (!isReady) {
+    return <View style={styles.container} />;
+  }
+  return <>{children}</>;
+}
+
+function SourceWarmupProbe() {
+  const { isReady, activeSource } = useSource();
+
+  useEffect(() => {
+    updateFreezeProbe({ source: activeSource.id });
+    recordFreezeEvent(`source=${activeSource.id}`);
+  }, [activeSource.id]);
+
+  useEffect(() => {
+    // The saved source is restored asynchronously, after the launch effect.
+    if (isReady && activeSource.type === 'redgifs') {
+      void booruApi.warmupRedGifs();
+    }
+  }, [isReady, activeSource.type]);
+
+  return null;
+}
+
+function AppMediaPlaybackProvider({
+  isLocked,
+  checkingBackgroundLock,
+  children,
+}: {
+  isLocked: boolean;
+  checkingBackgroundLock: boolean;
+  children: React.ReactNode;
+}) {
+  const isForeground = useAppForeground();
+  return (
+    <MediaPlaybackContext.Provider value={isForeground && !isLocked && !checkingBackgroundLock}>
+      {children}
+    </MediaPlaybackContext.Provider>
+  );
+}
+
+function PrivacyCover({
+  isLocked,
+  checkingBackgroundLock,
+}: {
+  isLocked: boolean;
+  checkingBackgroundLock: boolean;
+}) {
+  const isForeground = useAppForeground();
+
+  useEffect(() => {
+    updateFreezeProbe({ appState: AppState.currentState ?? 'unknown', locked: isLocked });
+    recordFreezeEvent(`app=${AppState.currentState} locked=${isLocked}`);
+  }, [isForeground, isLocked]);
+
+  if (!isLocked && (!isForeground || checkingBackgroundLock)) {
+    return <View style={styles.lockOverlay} testID="app-privacy-cover" accessibilityViewIsModal />;
+  }
+  return null;
+}
+
 export default function App() {
+  const mainApp = useMemo(() => <MainApp />, []);
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
       <SourceProvider>
-        <MainApp />
+        <SourceReadyGate>{mainApp}</SourceReadyGate>
       </SourceProvider>
     </SafeAreaProvider>
   );
@@ -54,32 +144,42 @@ export default function App() {
 function MainTabsNavigator() {
   const insets = useSafeAreaInsets();
 
+  const screenListeners = useCallback(
+    ({ navigation }: { navigation: { isFocused: () => boolean } }) => ({
+      tabPress: () => {
+        if (!navigation.isFocused() && Platform.OS !== 'web') {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        }
+      },
+    }),
+    []
+  );
+
+  const screenOptions = useMemo(
+    () => ({
+      headerShown: false,
+      tabBarActiveTintColor: Colors.dark.primaryLight,
+      tabBarInactiveTintColor: Colors.dark.textMuted,
+      tabBarStyle: {
+        backgroundColor: Colors.dark.tabBar,
+        borderTopWidth: 1,
+        borderTopColor: Colors.dark.divider,
+        paddingTop: 8,
+        paddingBottom: Math.max(insets.bottom, 10),
+        height: 56 + Math.max(insets.bottom, 10),
+      },
+      tabBarLabelStyle: {
+        fontSize: 11,
+        fontWeight: '600' as const,
+      },
+    }),
+    [insets.bottom]
+  );
+
   return (
     <Tab.Navigator
-      screenListeners={{
-        tabPress: () => {
-          if (Platform.OS !== 'web') {
-            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-          }
-        },
-      }}
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: Colors.dark.primaryLight,
-        tabBarInactiveTintColor: Colors.dark.textMuted,
-        tabBarStyle: {
-          backgroundColor: Colors.dark.tabBar,
-          borderTopWidth: 1,
-          borderTopColor: Colors.dark.divider,
-          paddingTop: 8,
-          paddingBottom: Math.max(insets.bottom, 10),
-          height: 56 + Math.max(insets.bottom, 10),
-        },
-        tabBarLabelStyle: {
-          fontSize: 11,
-          fontWeight: '600',
-        },
-      }}
+      screenListeners={screenListeners}
+      screenOptions={screenOptions}
     >
       <Tab.Screen
         name="Feed"
@@ -125,21 +225,14 @@ function MainTabsNavigator() {
 }
 
 function MainApp() {
-  const { isReady: isSourceReady, activeSource } = useSource();
   const [isAppReady, setIsAppReady] = useState(false);
   const [isLocked, setIsLocked] = useState(false);
   const [checkingBackgroundLock, setCheckingBackgroundLock] = useState(false);
-  const isForeground = useAppForeground();
 
   useEffect(() => startFreezeProbe(), []);
-  useEffect(() => {
-    updateFreezeProbe({ appState: AppState.currentState ?? 'unknown', locked: isLocked, source: activeSource.id });
-    recordFreezeEvent(`app=${AppState.currentState} locked=${isLocked} source=${activeSource.id}`);
-  }, [isForeground, isLocked, activeSource.id]);
 
   // Initialize proxy & security lock synchronously before rendering
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     if (Platform.OS !== 'web') {
       ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP).catch(() => {});
     }
@@ -161,13 +254,6 @@ function MainApp() {
     }
     initApp();
   }, []);
-
-  useEffect(() => {
-    // The saved source is restored asynchronously, after the launch effect.
-    if (isSourceReady && activeSource.type === 'redgifs') {
-      void booruApi.warmupRedGifs();
-    }
-  }, [isSourceReady, activeSource.type]);
 
   // Listen to AppState transitions for instant auto-lock
   useEffect(() => {
@@ -196,75 +282,66 @@ function MainApp() {
     };
   }, []);
 
-  if (!isSourceReady || !isAppReady) {
-    return (
-      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
-        <RNStatusBar barStyle="light-content" />
-      </View>
-    );
+  const handleUnlockSuccess = useCallback(() => {
+    setIsLocked(false);
+  }, []);
+
+  const handleNavReady = useCallback(() => {
+    updateFreezeProbe({ route: navigationRef.getCurrentRoute()?.name || 'unknown' });
+  }, []);
+
+  const handleNavStateChange = useCallback(() => {
+    const route = navigationRef.getCurrentRoute()?.name || 'unknown';
+    updateFreezeProbe({ route });
+    recordFreezeEvent(`route=${route}`);
+  }, []);
+
+  const navigationTree = useMemo(
+    () => (
+      <NavigationContainer
+        ref={navigationRef}
+        onReady={handleNavReady}
+        onStateChange={handleNavStateChange}
+      >
+        <RootStack.Navigator screenOptions={STACK_SCREEN_OPTIONS}>
+          <RootStack.Screen name="MainTabs" component={MainTabsNavigator} />
+          <RootStack.Screen
+            name="Viewer"
+            component={ViewerScreen}
+            options={VIEWER_SCREEN_OPTIONS}
+          />
+          <RootStack.Screen
+            name="SearchDetail"
+            component={SearchDetailScreen}
+            options={SEARCH_DETAIL_SCREEN_OPTIONS}
+          />
+        </RootStack.Navigator>
+      </NavigationContainer>
+    ),
+    [handleNavReady, handleNavStateChange]
+  );
+
+  if (!isAppReady) {
+    return <View style={styles.container} />;
   }
 
   return (
-    <View
-      style={styles.container}
-      onTouchStart={() => recordRootTouch('start')}
-      onTouchEnd={() => recordRootTouch('end')}
-      onTouchCancel={() => recordRootTouch('end')}
-    >
-      <MediaPlaybackContext.Provider value={isForeground && !isLocked && !checkingBackgroundLock}>
-        <NavigationContainer
-          ref={navigationRef}
-          onReady={() => updateFreezeProbe({ route: navigationRef.getCurrentRoute()?.name || 'unknown' })}
-          onStateChange={() => {
-            const route = navigationRef.getCurrentRoute()?.name || 'unknown';
-            updateFreezeProbe({ route });
-            recordFreezeEvent(`route=${route}`);
-          }}
-        >
-          <RootStack.Navigator
-            screenOptions={{
-              headerShown: false,
-              animation: 'slide_from_right',
-              gestureEnabled: true,
-              contentStyle: { backgroundColor: Colors.dark.background },
-            }}
-          >
-            <RootStack.Screen name="MainTabs" component={MainTabsNavigator} />
-            <RootStack.Screen
-              name="Viewer"
-              component={ViewerScreen}
-              options={{
-                headerShown: false,
-                animation: 'slide_from_right',
-              }}
-            />
-            <RootStack.Screen
-              name="SearchDetail"
-              component={SearchDetailScreen}
-              options={{
-                headerShown: false,
-                animation: 'slide_from_right',
-                gestureEnabled: true,
-              }}
-            />
-          </RootStack.Navigator>
-        </NavigationContainer>
-      </MediaPlaybackContext.Provider>
+    <View style={styles.container} {...DEV_TOUCH_HANDLERS}>
+      <SourceWarmupProbe />
+      <AppMediaPlaybackProvider isLocked={isLocked} checkingBackgroundLock={checkingBackgroundLock}>
+        {navigationTree}
+      </AppMediaPlaybackProvider>
 
       {/* App Lock Screen Overlay */}
       {isLocked && (
         <View style={styles.lockOverlay}>
           <LockScreen
             mode="unlock"
-            onSuccess={() => {
-              setIsLocked(false);
-            }}
+            onSuccess={handleUnlockSuccess}
           />
         </View>
       )}
-      {(!isForeground || checkingBackgroundLock) && (
-        <View style={styles.lockOverlay} testID="app-privacy-cover" accessibilityViewIsModal />
-      )}
+      <PrivacyCover isLocked={isLocked} checkingBackgroundLock={checkingBackgroundLock} />
     </View>
   );
 }

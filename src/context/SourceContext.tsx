@@ -1,4 +1,4 @@
-import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { BooruSource } from '../types/booru';
 import { AVAILABLE_SOURCES, DEFAULT_SOURCE } from '../services/sources';
 import { booruApi } from '../services/booruApi';
@@ -52,8 +52,13 @@ export const SourceProvider: React.FC<{
     await StorageService.setActiveSourceId(source.id);
   }, []);
 
+  const value = useMemo(
+    () => ({ activeSource, selectSource, isReady, init }),
+    [activeSource, selectSource, isReady, init]
+  );
+
   return (
-    <SourceContext.Provider value={{ activeSource, selectSource, isReady, init }}>
+    <SourceContext.Provider value={value}>
       {children}
     </SourceContext.Provider>
   );
