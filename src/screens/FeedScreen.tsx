@@ -1,7 +1,6 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Dimensions,
   Platform,
   RefreshControl,
   ScrollView,
@@ -9,6 +8,7 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -31,11 +31,10 @@ import { StorageService, FeedOrder } from '../services/storage';
 import { getSourceQuickFilters, isQuickFilterActive, normalizeFeedQuickFilter } from '../utils/sourceQuickFilters';
 import { updateFreezeProbe } from '../utils/freezeProbe';
 import { getPostKey } from '../utils/postIdentity';
-import { getGridPreviewVideoCandidates } from '../utils/gridPreviewMedia';
+import { getGridPreviewFrames, getGridPreviewVideoCandidates } from '../utils/gridPreviewMedia';
 import { useScrollAwayHeader } from '../utils/scrollAwayHeader';
 import { ScrollAwayHeader } from '../components/ScrollAwayHeader';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
 
 function feedOrderKey(order: FeedOrder): string {
@@ -75,7 +74,11 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const showSourcePicker = true;
   const { activeSource: contextSource } = useSource();
   const activeSource = propSource ?? contextSource;
+  const activeSourceRef = useRef(activeSource);
+  activeSourceRef.current = activeSource;
   const insets = useSafeAreaInsets();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const columnWidth = (windowWidth - 36) / 2;
   const [posts, setPosts] = useState<BooruPost[]>([]);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
@@ -89,6 +92,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const isFocused = useIsFocused();
   const mediaAllowed = useMediaPlaybackAllowed();
   const isRedGifs = activeSource.type === 'redgifs';
+  const [trendingLoading, setTrendingLoading] = useState(isRedGifs);
   const feedOptions = getSourceQuickFilters(activeSource, 'feed');
   // A global saved RedGifs/HH preset must not leak into another provider.
   const normalizedOrder = normalizeFeedQuickFilter(activeSource, feedOrder);
@@ -113,24 +117,58 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   useEffect(() => {
     if (!isRedGifs) {
       setTrendingTags([]);
+      setTrendingLoading(false);
       return;
     }
     let cancelled = false;
-    booruApi.fetchRedGifsTrendingTags(20).then((tags) => {
-      if (!cancelled) setTrendingTags(tags);
-    });
+    setTrendingLoading(true);
+    booruApi
+      .fetchRedGifsTrendingTags(20)
+      .then((tags) => {
+        if (!cancelled) setTrendingTags(tags);
+      })
+      .catch(() => {
+        if (!cancelled) setTrendingTags([]);
+      })
+      .finally(() => {
+        if (!cancelled) setTrendingLoading(false);
+      });
     return () => {
       cancelled = true;
     };
   }, [isRedGifs, activeSource.id]);
 
+  // Height-balanced masonry: memoized so scroll/focus/favorite updates don't re-partition.
+  const { leftColumn, rightColumn, layoutMap } = useMemo(() => {
+    const left: BooruPost[] = [];
+    const right: BooruPost[] = [];
+    const map = new Map<string, CardLayout>();
+    let leftH = 0;
+    let rightH = 0;
+    posts.forEach((post) => {
+      const ar = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75));
+      const h = columnWidth / ar + 12;
+      if (leftH <= rightH) {
+        map.set(post.id, { y: leftH, h });
+        left.push(post);
+        leftH += h;
+      } else {
+        map.set(post.id, { y: rightH, h });
+        right.push(post);
+        rightH += h;
+      }
+    });
+    return { leftColumn: left, rightColumn: right, layoutMap: map };
+  }, [posts, columnWidth]);
+  const layoutMapRef = useRef(layoutMap);
+  layoutMapRef.current = layoutMap;
+
   // Video covers play only while on screen (prevents stutter)
   const [visibleIds, updateVisible] = useVisibleIds();
-  // Focused-player architecture: the 2-4 cards nearest the on-screen center play video
-  const [focusedIds, updateFocused] = useFocusedCardIds(80, 4);
-  // Mount window: distant cards fall back to placeholders, releasing player/timer/image.
-  // null = not computed yet (first paint), all cards render.
-  const [mountedIds, updateMounted] = useMountedIds();
+  // Focused-player architecture: single card nearest center plays after a 350ms dwell
+  const [focusedIds, updateFocused] = useFocusedCardIds(350, 1);
+  // Mount window: seeded for the top viewport on first paint so 24+ cards don't mount at once.
+  const [mountedIds, updateMounted] = useMountedIds(1200, layoutMap, windowHeight);
 
   // Refresh the fav set when returning to the cover — faved items badge instantly in viewer
   useEffect(() => {
@@ -212,7 +250,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const scrollViewRef = useRef<ScrollViewInstance>(null);
   const scrollOffsetRef = useRef(0);
   const gridTopRef = useRef(0);
-  const viewportHeightRef = useRef(SCREEN_HEIGHT);
+  const viewportHeightRef = useRef(windowHeight);
   // Reload from scratch when the source or order changes. The stored order is read
   // async, so no first request fires before it is "ready" (otherwise every launch
   // would load Trending and the user preference would arrive on the second round).
@@ -267,38 +305,13 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
     return layoutMeasurement.height + contentOffset.y >= contentSize.height - 900;
   };
 
-  // Height-balanced masonry: each card goes to the currently shorter column.
-  // Both columns end level; no dead space remains under the short column,
-  // so the user never scrolls through emptiness waiting for the bottom.
-  // (Greedy is deterministic: adding a new page never reshuffles old assignments.)
-  const leftColumn: BooruPost[] = [];
-  const rightColumn: BooruPost[] = [];
-  const layoutMap = new Map<string, CardLayout>();
-  {
-    const colW = (SCREEN_WIDTH - 36) / 2; // same width as PostCard
-    let leftH = 0;
-    let rightH = 0;
-    posts.forEach((post) => {
-      const ar = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75)); // PostCard clamp'i
-      const h = colW / ar + 12; // + kart marginBottom
-      if (leftH <= rightH) {
-        layoutMap.set(post.id, { y: leftH, h });
-        leftColumn.push(post);
-        leftH += h;
-      } else {
-        layoutMap.set(post.id, { y: rightH, h });
-        rightColumn.push(post);
-        rightH += h;
-      }
-    });
-  }
-  const layoutMapRef = useRef(layoutMap);
-  layoutMapRef.current = layoutMap;
-
-  const playableIds = React.useMemo(() => {
+  const playableIds = useMemo(() => {
     const set = new Set<string>();
     posts.forEach((p) => {
-      if (getGridPreviewVideoCandidates(p, Platform.OS).length > 0) {
+      if (
+        getGridPreviewVideoCandidates(p, Platform.OS).length > 0 ||
+        getGridPreviewFrames(p).some((u) => !/\.gif(?:$|[?#])/i.test(u))
+      ) {
         set.add(p.id);
       }
     });
@@ -323,11 +336,17 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   }, [posts, header.height, header.enabled]);
 
   const handleCardPress = useCallback((post: BooruPost) => {
-    const idx = posts.findIndex((p) => p.id === post.id);
+    const currentPosts = postsRef.current;
+    const idx = currentPosts.findIndex((p) => p.id === post.id);
     if (idx >= 0) {
-      pushViewer(posts, idx, [], undefined, activeSource);
+      pushViewer(currentPosts, idx, [], undefined, activeSourceRef.current);
     }
-  }, [posts, activeSource]);
+  }, []);
+
+  const handleTrendingTagPress = useCallback((name: string) => {
+    Haptics.selectionAsync();
+    pushSearchDetail([name], undefined, activeSourceRef.current);
+  }, []);
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
@@ -394,31 +413,32 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           </ScrollView>
         </View>
       )}
-      {/* Trending tags: daily hot searches, one tap to feed */}
-      {isRedGifs && trendingTags.length > 0 && (
+      {/* Trending tags: reserve bar height while RedGifs tags load so ScrollAwayHeader doesn't jump */}
+      {isRedGifs && (trendingLoading || trendingTags.length > 0) && (
         <View style={styles.trendingBar}>
           <View style={styles.trendingHeaderRow}>
             <Flame size={13} color={GOLD_ACCENT} />
             <Text style={styles.trendingHeaderText}>Trending Tags</Text>
           </View>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.trendingContent}
-          >
-            {trendingTags.map((t) => (
-              <TagChip
-                key={`rg-trend-${t.name}`}
-                name={t.name}
-                count={t.count || undefined}
-                size="sm"
-                onPress={(name) => {
-                  Haptics.selectionAsync();
-                  pushSearchDetail([name], undefined, activeSource);
-                }}
-              />
-            ))}
-          </ScrollView>
+          {trendingTags.length > 0 ? (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.trendingContent}
+            >
+              {trendingTags.map((t) => (
+                <TagChip
+                  key={`rg-trend-${t.name}`}
+                  name={t.name}
+                  count={t.count || undefined}
+                  size="sm"
+                  onPress={handleTrendingTagPress}
+                />
+              ))}
+            </ScrollView>
+          ) : (
+            <View style={styles.trendingPlaceholderRow} />
+          )}
         </View>
       )}
       </ScrollAwayHeader>
@@ -481,9 +501,6 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           style={styles.scrollView}
           contentContainerStyle={[styles.scrollContent, header.enabled && { paddingTop: header.height + 12 }]}
           showsVerticalScrollIndicator={false}
-          maintainVisibleContentPosition={{
-            minIndexForVisible: 0,
-          }}
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -497,22 +514,28 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
             scrollOffsetRef.current = nativeEvent.contentOffset.y;
             viewportHeightRef.current = nativeEvent.layoutMeasurement.height;
             const now = Date.now();
-            if (changed || now - lastGridUpdateRef.current >= 100) {
+            if (changed || now - lastGridUpdateRef.current >= 80) {
               lastGridUpdateRef.current = now;
-              updateGridViewport(changed);
+              updateGridViewport(false);
             }
             if (isCloseToBottom(nativeEvent)) {
               handleLoadMore();
             }
           }}
-          onMomentumScrollEnd={() => updateGridViewport(true)}
-          onScrollEndDrag={() => updateGridViewport(true)}
+          onMomentumScrollEnd={() => {
+            header.settle?.();
+            updateGridViewport(true);
+          }}
+          onScrollEndDrag={() => {
+            header.settle?.();
+            updateGridViewport(false);
+          }}
           onLayout={({ nativeEvent }) => { viewportHeightRef.current = nativeEvent.layout.height; updateGridViewport(true); }}
-          scrollEventThrottle={32}
+          scrollEventThrottle={16}
         >
           {/* 2-Column Masonry Grid */}
           <View style={styles.gridContainer} onLayout={({ nativeEvent }) => { gridTopRef.current = nativeEvent.layout.y; updateGridViewport(true); }}>
-            <View style={styles.column}>
+            <View style={{ width: columnWidth }}>
               {leftColumn.map((post) =>
                 mountedIds && !mountedIds.has(post.id) ? (
                   <View
@@ -524,8 +547,9 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                     key={`feed-${post.id}`}
                     post={post}
                     onPress={handleCardPress}
-                    favoriteIds={favoriteIds}
+                    isFavorite={favoriteIds.has(getPostKey(post))}
                     column="left"
+                    columnWidth={columnWidth}
                     screenActive={isFocused && mediaAllowed && !isSourceSheetOpen}
                     videoActive={focusedIds.has(post.id)}
                     onScreen={visibleIds.has(post.id)}
@@ -533,7 +557,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                 )
               )}
             </View>
-            <View style={styles.column}>
+            <View style={{ width: columnWidth }}>
               {rightColumn.map((post) =>
                 mountedIds && !mountedIds.has(post.id) ? (
                   <View
@@ -545,8 +569,9 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
                     key={`feed-${post.id}`}
                     post={post}
                     onPress={handleCardPress}
-                    favoriteIds={favoriteIds}
+                    isFavorite={favoriteIds.has(getPostKey(post))}
                     column="right"
+                    columnWidth={columnWidth}
                     screenActive={isFocused && mediaAllowed && !isSourceSheetOpen}
                     videoActive={focusedIds.has(post.id)}
                     onScreen={visibleIds.has(post.id)}
@@ -671,6 +696,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 2,
   },
+  trendingPlaceholderRow: {
+    height: 33,
+  },
   scrollView: {
     flex: 1,
   },
@@ -682,9 +710,6 @@ const styles = StyleSheet.create({
   gridContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-  },
-  column: {
-    width: (SCREEN_WIDTH - 36) / 2,
   },
   centerContainer: {
     flex: 1,

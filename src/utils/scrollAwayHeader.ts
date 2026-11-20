@@ -3,31 +3,28 @@ import { Animated, LayoutChangeEvent, NativeScrollEvent, NativeSyntheticEvent } 
 
 export interface ScrollHeaderState {
   offset: number | null;
-  travel: number;
-  hidden: boolean;
+  headerOffset: number;
 }
 
-export const initialScrollHeaderState = (): ScrollHeaderState => ({ offset: null, travel: 0, hidden: false });
+export const initialScrollHeaderState = (): ScrollHeaderState => ({ offset: null, headerOffset: 0 });
 
-/** Ignore rubber-band movement and require a deliberate direction change.
- * The initial header space must have scrolled away before hiding it. */
+/** Ignore rubber-band movement and track scroll offset continuously inside [-height, 0]. */
 export function advanceScrollHeader(state: ScrollHeaderState, event: NativeScrollEvent, height: number): ScrollHeaderState {
   const raw = event.contentOffset.y;
   if (!Number.isFinite(raw) || height <= 0) return state;
   const max = Math.max(0, event.contentSize.height - event.layoutMeasurement.height);
   const offset = Math.max(0, Math.min(raw, max));
-  if (offset <= 0 || max === 0) return { offset, travel: 0, hidden: false };
-  if (raw > max) return { ...state, offset, travel: 0 };
-  if (state.offset === null) return { ...state, offset };
+  if (offset <= 0 || max === 0) return { offset, headerOffset: 0 };
+  if (raw > max) return { ...state, offset };
+  if (state.offset === null) return { offset, headerOffset: 0 };
   const delta = offset - state.offset;
   if (delta === 0) return state;
-  const travel = Math.sign(delta) === Math.sign(state.travel) ? state.travel + delta : delta;
-  const hidden = offset < height || travel <= -12 ? false : travel >= 12 ? true : state.hidden;
-  return { offset, travel: Math.max(-12, Math.min(12, travel)), hidden };
+  const headerOffset = Math.max(-height, Math.min(0, state.headerOffset - delta));
+  return { offset, headerOffset };
 }
 
-/** No React updates or layout animations during scrolling. Only direction
- * transitions launch a short native-driver transform; card layout stays fixed. */
+/** No React updates or layout animations during scrolling. Translates smoothly 1:1
+ * with scroll offset and settles with a short native-driver animation on release. */
 export function useScrollAwayHeader({ enabled, resetKey, pinned = false }: {
   enabled: boolean;
   resetKey: string;
@@ -58,19 +55,36 @@ export function useScrollAwayHeader({ enabled, resetKey, pinned = false }: {
   const onScroll = useCallback(({ nativeEvent }: NativeSyntheticEvent<NativeScrollEvent>) => {
     if (!enabled || pinned) return false;
     const next = advanceScrollHeader(state.current, nativeEvent, height);
-    const changed = next.hidden !== state.current.hidden;
+    const changed = next.headerOffset !== state.current.headerOffset;
     if (changed) {
-      occlusionRef.current = next.hidden ? 0 : height;
       animation.current?.stop();
-      animation.current = Animated.timing(translateY, {
-        toValue: next.hidden ? -height : 0, duration: 180,
-        useNativeDriver: true, isInteraction: false,
-      });
-      animation.current.start();
+      occlusionRef.current = Math.max(0, height + next.headerOffset);
+      translateY.setValue(next.headerOffset);
     }
     state.current = next;
     return changed;
   }, [enabled, pinned, height, translateY]);
 
-  return { enabled, height, translateY, occlusionRef, onHeaderLayout, onScroll, reset };
+  const settle = useCallback(() => {
+    if (!enabled || pinned || height <= 0) return;
+    const current = state.current.headerOffset;
+    if (current === 0 || current === -height) return;
+    const target = state.current.offset !== null && state.current.offset < height
+      ? 0
+      : current <= -height / 2
+        ? -height
+        : 0;
+    state.current = { ...state.current, headerOffset: target };
+    occlusionRef.current = Math.max(0, height + target);
+    animation.current?.stop();
+    animation.current = Animated.timing(translateY, {
+      toValue: target,
+      duration: 140,
+      useNativeDriver: true,
+      isInteraction: false,
+    });
+    animation.current.start();
+  }, [enabled, pinned, height, translateY]);
+
+  return { enabled, height, translateY, occlusionRef, onHeaderLayout, onScroll, settle, reset };
 }

@@ -74,12 +74,14 @@ export const SourceSheet: React.FC<SourceSheetProps> = ({ visible, activeSource:
       onRequestClose={onClose}
     >
       <KeyboardAvoidingView
-        style={[styles.container, { paddingTop: Platform.OS === 'ios' ? 8 : insets.top }]}
+        style={[styles.container, { paddingTop: Platform.OS === 'ios' ? 8 : insets.top + 8 }]}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.dragHandleContainer}>
-          <View style={styles.dragHandle} />
-        </View>
+        {Platform.OS === 'ios' && (
+          <View style={styles.dragHandleContainer}>
+            <View style={styles.dragHandle} />
+          </View>
+        )}
 
         <View style={styles.header}>
           <TouchableOpacity

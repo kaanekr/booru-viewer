@@ -28,6 +28,7 @@ function loadCard(options = {}) {
     react: React,
     'react-native': {
       Dimensions: { get: () => ({ width: 390, height: 844 }) },
+      useWindowDimensions: () => ({ width: 390, height: 844 }),
       Platform: { OS: options.platform || 'ios' },
       StyleSheet: { create: (v) => v, absoluteFill: {} },
       Text: 'Text', TouchableOpacity: 'TouchableOpacity', View: 'View',
@@ -156,7 +157,7 @@ test('tab blur releases a touched preview and does not resurrect it on focus', a
   const { PostCard, stats } = loadCard();
   const props = { post: videoPost(), onPress, videoActive: false, screenActive: true };
   await act(() => { root = create(React.createElement(PostCard, props)); });
-  await act(() => root.root.findByType('TouchableOpacity').props.onPressIn());
+  await act(() => root.root.findByType('TouchableOpacity').props.onLongPress());
   assert.equal(stats.live.size, 1);
   await act(() => root.update(React.createElement(PostCard, { ...props, screenActive: false })));
   assert.equal(stats.live.size, 0);
@@ -180,10 +181,12 @@ test('frame slideshow is fallback only when no playable video exists', async () 
   assert.equal(root.root.findAllByType('Image').length, 2);
 });
 
-test('frame slideshow advances with a relaxed 1200ms interval', async () => {
+test('frame slideshow advances with a relaxed 1200ms interval when focused and stays idle when unfocused', async () => {
   const { PostCard, stats } = loadCard();
   const post = { ...imagePost(), previewThumbs: ['https://cdn.test/1.jpg', 'https://cdn.test/2.jpg'] };
   await act(() => { root = create(React.createElement(PostCard, { post, onPress, onScreen: true, videoActive: false })); });
+  assert.equal(stats.lastInterval, undefined);
+  await act(() => root.update(React.createElement(PostCard, { post, onPress, onScreen: true, videoActive: true })));
   assert.equal(stats.lastInterval, 1200);
 });
 
@@ -214,7 +217,7 @@ test('previews disabled in settings: no player, static cover only', async () => 
   assert.equal(stats.created, 0);
   assert.equal(root.root.findAllByType('VideoView').length, 0);
   // Static cover stays: touch preview is not triggered either.
-  await act(() => root.root.findByType('TouchableOpacity').props.onPressIn());
+  await act(() => root.root.findByType('TouchableOpacity').props.onLongPress());
   assert.equal(stats.created, 0);
   assert.equal(root.root.findAllByType('VideoView').length, 0);
 });
@@ -331,7 +334,7 @@ test('full-original-only video starts on hold, not automatic focus', async () =>
   const post = { ...imagePost(), originalUrl: 'https://cdn.test/full.mp4', fileExt: 'mp4' };
   await act(async () => { root = create(React.createElement(PostCard, { post, onPress, videoActive: true })); });
   assert.equal(stats.created, 0);
-  await act(async () => root.root.findByType('TouchableOpacity').props.onPressIn());
+  await act(async () => root.root.findByType('TouchableOpacity').props.onLongPress());
   assert.deepEqual(stats.sources, [post.originalUrl]);
 });
 
@@ -347,7 +350,7 @@ test('explicit off-screen visibility releases a still-focused player immediately
 test('failed slideshow frames are skipped; all failures return to the static cover', async () => {
   const { PostCard, stats } = loadCard();
   const post = { ...imagePost(), previewThumbs: ['https://cdn.test/1.jpg', 'https://cdn.test/2.jpg'] };
-  await act(async () => { root = create(React.createElement(PostCard, { post, onPress, onScreen: true })); });
+  await act(async () => { root = create(React.createElement(PostCard, { post, onPress, onScreen: true, videoActive: true })); });
   const frame = () => root.root.findAllByType('Image').find((node) => node.props.recyclingKey?.startsWith('frame:'));
   assert.equal(frame().props.source.uri, post.previewThumbs[0]);
   await act(async () => frame().props.onError());
@@ -360,7 +363,7 @@ test('failed slideshow frames are skipped; all failures return to the static cov
 test('frame previews cannot bypass the image load gate', async () => {
   const { PostCard, stats } = loadCard({ canLoad: false });
   const post = { ...imagePost(), previewThumbs: ['https://cdn.test/1.jpg', 'https://cdn.test/2.jpg'] };
-  await act(async () => { root = create(React.createElement(PostCard, { post, onPress, onScreen: true })); });
+  await act(async () => { root = create(React.createElement(PostCard, { post, onPress, onScreen: true, videoActive: true })); });
   assert.equal(root.root.findAllByType('Image').length, 0);
   assert.equal(stats.created, 0);
 });
@@ -393,4 +396,23 @@ test('memo distinguishes unspecified visibility from explicit off-screen suppres
   assert.equal(stats.live.size, 1);
   await act(async () => root.update(React.createElement(PostCard, { ...props, onScreen: false })));
   assert.equal(stats.live.size, 0);
+});
+
+test('grid cover images disable GIF autoplay, use normal priority, and skip GIF slideshow frames', async () => {
+  const { PostCard } = loadCard();
+  const post = { ...imagePost(), sampleUrl: 'https://cdn.test/sample.gif' };
+  await act(async () => { root = create(React.createElement(PostCard, { post, onPress, videoActive: true })); });
+  const images = root.root.findAllByType('Image');
+  assert.equal(images.length, 1);
+  assert.equal(images[0].props.autoplay, false);
+  assert.equal(images[0].props.priority, 'normal');
+});
+
+test('isFavorite boolean prop controls favorite badge cleanly without Set scans', async () => {
+  const { PostCard } = loadCard();
+  const post = imagePost('77');
+  await act(async () => { root = create(React.createElement(PostCard, { post, onPress, isFavorite: false })); });
+  assert.equal(root.root.findAllByType('Heart').length, 0);
+  await act(async () => root.update(React.createElement(PostCard, { post, onPress, isFavorite: true })));
+  assert.equal(root.root.findAllByType('Heart').length, 1);
 });

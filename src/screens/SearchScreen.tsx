@@ -1,7 +1,6 @@
-import React, { useCallback, useEffect, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import {
   ActivityIndicator,
-  Dimensions,
   Platform,
   FlatList,
   Keyboard,
@@ -11,6 +10,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -51,7 +51,7 @@ import { useScrollAwayHeader } from '../utils/scrollAwayHeader';
 import { ScrollAwayHeader } from '../components/ScrollAwayHeader';
 import { pushViewer } from '../navigation/rootNavigation';
 import { getPostKey } from '../utils/postIdentity';
-import { getGridPreviewVideoCandidates } from '../utils/gridPreviewMedia';
+import { getGridPreviewFrames, getGridPreviewVideoCandidates } from '../utils/gridPreviewMedia';
 import { SearchFilterModal } from '../components/SearchFilterModal';
 import { SourceSheet } from '../components/SourceSheet';
 import { Colors } from '../theme/colors';
@@ -60,7 +60,6 @@ import { useVisibleIds, useMountedIds, useFocusedCardIds, CardLayout } from '../
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { useSource } from '../context/SourceContext';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
 
 const POPULAR_TAGS = [
@@ -104,6 +103,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const { activeSource: contextSource, selectSource } = useSource();
   const [localSource, setLocalSource] = useState<BooruSource | null>(null);
   const activeSource = localSource ?? propSource ?? contextSource;
+  const activeSourceRef = useRef(activeSource);
+  activeSourceRef.current = activeSource;
   useEffect(() => { setLocalSource(null); }, [propSource]);
   const handleSelectSource = useCallback(async (source: BooruSource) => {
     // A search opened from a post owns its source; don't change unrelated screens.
@@ -127,6 +128,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
   const showSourcePicker = true;
   const insets = useSafeAreaInsets();
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const columnWidth = (windowWidth - 36) / 2;
+  const [searchBarBottom, setSearchBarBottom] = useState(124);
   const [query, setQuery] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [favoriteTags, setFavoriteTags] = useState<string[]>([]);
@@ -145,15 +149,39 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const [loadingMore, setLoadingMore] = useState(false);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const [searchError, setSearchError] = useState<string | null>(null);
+  // Height-balanced masonry: memoized so scroll/focus/favorite updates don't re-partition.
+  const { leftColumn, rightColumn, layoutMap } = useMemo(() => {
+    const left: BooruPost[] = [];
+    const right: BooruPost[] = [];
+    const map = new Map<string, CardLayout>();
+    let leftH = 0;
+    let rightH = 0;
+    results.forEach((post) => {
+      const ar = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75));
+      const h = columnWidth / ar + 12;
+      if (leftH <= rightH) {
+        map.set(post.id, { y: leftH, h });
+        left.push(post);
+        leftH += h;
+      } else {
+        map.set(post.id, { y: rightH, h });
+        right.push(post);
+        rightH += h;
+      }
+    });
+    return { leftColumn: left, rightColumn: right, layoutMap: map };
+  }, [results, columnWidth]);
+  const layoutMapRef = useRef(layoutMap);
+  layoutMapRef.current = layoutMap;
   // Video covers play only while on screen (prevents stutter)
   const [visibleIds, updateVisible] = useVisibleIds();
-  // Focused-player architecture: the 2-4 cards nearest the center play video
-  const [focusedIds, updateFocused] = useFocusedCardIds(80, 4);
-  // Mount window: distant results fall back to placeholders (see FeedScreen).
-  const [mountedIds, updateMounted] = useMountedIds();
+  // Focused-player architecture: single card nearest center plays after a 350ms dwell
+  const [focusedIds, updateFocused] = useFocusedCardIds(350, 1);
+  // Mount window: seeded for the top viewport on first paint (prevents 100-card jumpToPage spike).
+  const [mountedIds, updateMounted] = useMountedIds(1200, layoutMap, windowHeight);
   const searchOffsetRef = useRef(0);
   const gridTopRef = useRef(0);
-  const viewportHeightRef = useRef(SCREEN_HEIGHT);
+  const viewportHeightRef = useRef(windowHeight);
   // RedGifs niches (kategoriler)
   const [niches, setNiches] = useState<RedGifsNiche[]>([]);
   const [nichesLoading, setNichesLoading] = useState(false);
@@ -482,9 +510,14 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   };
 
   const handleCardPress = useCallback((post: BooruPost) => {
-    const index = results.findIndex((item) => getPostKey(item) === getPostKey(post));
-    if (index >= 0) pushViewer(results, index, filterConfig.tags, filterConfig, activeSource);
-  }, [results, filterConfig, activeSource]);
+    const currentResults = resultsRef.current;
+    const targetKey = getPostKey(post);
+    const index = currentResults.findIndex((item) => getPostKey(item) === targetKey);
+    if (index >= 0) {
+      const cfg = filterConfigRef.current;
+      pushViewer(currentResults, index, cfg.tags, cfg, activeSourceRef.current);
+    }
+  }, []);
 
   const loadMoreResults = async () => {
     if (!isFocused || !isSearchActive || loadingMore || loading || paginationPendingRef.current !== null || !hasMoreRef.current) return;
@@ -592,36 +625,13 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     (filterConfig.cumstMediaType && filterConfig.cumstMediaType !== 'all') ||
     filterConfig.jumpToPage > 1;
 
-  // Height-balanced masonry: each card goes to the currently shorter column.
-  // Both columns end level; no dead space remains under the short column.
-  const leftColumn: BooruPost[] = [];
-  const rightColumn: BooruPost[] = [];
-  const layoutMap = new Map<string, CardLayout>();
-  {
-    const colW = (SCREEN_WIDTH - 36) / 2; // same width as PostCard
-    let leftH = 0;
-    let rightH = 0;
-    results.forEach((post) => {
-      const ar = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75)); // PostCard clamp'i
-      const h = colW / ar + 12; // + kart marginBottom
-      if (leftH <= rightH) {
-        layoutMap.set(post.id, { y: leftH, h });
-        leftColumn.push(post);
-        leftH += h;
-      } else {
-        layoutMap.set(post.id, { y: rightH, h });
-        rightColumn.push(post);
-        rightH += h;
-      }
-    });
-  }
-  const layoutMapRef = useRef(layoutMap);
-  layoutMapRef.current = layoutMap;
-
-  const playableIds = React.useMemo(() => {
+  const playableIds = useMemo(() => {
     const set = new Set<string>();
     results.forEach((p) => {
-      if (getGridPreviewVideoCandidates(p, Platform.OS).length > 0) {
+      if (
+        getGridPreviewVideoCandidates(p, Platform.OS).length > 0 ||
+        getGridPreviewFrames(p).some((u) => !/\.gif(?:$|[?#])/i.test(u))
+      ) {
         set.add(p.id);
       }
     });
@@ -690,7 +700,13 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         )}
 
         {/* Search Bar & Filter Header */}
-        <View style={styles.searchBarWrapper}>
+        <View
+          style={styles.searchBarWrapper}
+          onLayout={({ nativeEvent }) => {
+            const bottom = Math.ceil(nativeEvent.layout.y + nativeEvent.layout.height);
+            if (bottom > 0) setSearchBarBottom(bottom);
+          }}
+        >
           {(isSearchActive || Boolean(onBackPress)) && (
             <TouchableOpacity
               style={styles.backButton}
@@ -857,7 +873,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
         {/* Autocomplete Dropdown overlay - only when search input is focused */}
         {isInputFocused && suggestions.length > 0 && (
-          <View style={styles.suggestionsContainer}>
+          <View style={[styles.suggestionsContainer, { top: insets.top + searchBarBottom }]}>
             <FlatList
               data={suggestions}
               keyExtractor={(item, index) => `search-sug-${item.name}-${index}`}
@@ -916,7 +932,11 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             <ScrollView
               ref={resultsScrollRef}
               style={styles.resultsScroll}
-              contentContainerStyle={[styles.resultsContent, header.enabled && { paddingTop: header.height + 12 }]}
+              contentContainerStyle={[
+                styles.resultsContent,
+                { paddingBottom: 30 + (insets.bottom ?? 0) },
+                header.enabled && { paddingTop: header.height + 12 },
+              ]}
               showsVerticalScrollIndicator={false}
               onScroll={(event) => {
                 const changed = header.onScroll(event);
@@ -925,18 +945,24 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                 searchOffsetRef.current = contentOffset.y;
                 viewportHeightRef.current = layoutMeasurement.height;
                 const now = Date.now();
-                if (changed || now - lastGridUpdateRef.current >= 150) {
+                if (changed || now - lastGridUpdateRef.current >= 80) {
                   lastGridUpdateRef.current = now;
-                  updateGridViewport(changed);
+                  updateGridViewport(false);
                 }
                 if (layoutMeasurement.height + contentOffset.y >= contentSize.height - 900) {
                   loadMoreResults();
                 }
               }}
-              onMomentumScrollEnd={() => updateGridViewport(true)}
-              onScrollEndDrag={() => updateGridViewport(true)}
+              onMomentumScrollEnd={() => {
+                header.settle?.();
+                updateGridViewport(true);
+              }}
+              onScrollEndDrag={() => {
+                header.settle?.();
+                updateGridViewport(false);
+              }}
               onLayout={({ nativeEvent }) => { viewportHeightRef.current = nativeEvent.layout.height; updateGridViewport(true); }}
-              scrollEventThrottle={32}
+              scrollEventThrottle={16}
             >
               {/* Active Filter Info Banner */}
               <View style={styles.activeTagBanner}>
@@ -989,7 +1015,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
               {/* 2-Column Masonry Grid */}
               <View style={styles.gridContainer} onLayout={({ nativeEvent }) => { gridTopRef.current = nativeEvent.layout.y; updateGridViewport(true); }}>
-                <View style={styles.column}>
+                <View style={{ width: columnWidth }}>
                   {leftColumn.map((post) =>
                     mountedIds && !mountedIds.has(post.id) ? (
                       <View
@@ -1000,8 +1026,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       <PostCard
                         key={`search-${post.id}`}
                         post={post}
-                        favoriteIds={favoriteIds}
+                        isFavorite={favoriteIds.has(getPostKey(post))}
                         column="left"
+                        columnWidth={columnWidth}
                         screenActive={isFocused && mediaAllowed && !isFilterModalOpen && !isSourceSheetOpen}
                         videoActive={focusedIds.has(post.id)}
                         onScreen={visibleIds.has(post.id)}
@@ -1010,7 +1037,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                     )
                   )}
                 </View>
-                <View style={styles.column}>
+                <View style={{ width: columnWidth }}>
                   {rightColumn.map((post) =>
                     mountedIds && !mountedIds.has(post.id) ? (
                       <View
@@ -1021,8 +1048,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       <PostCard
                         key={`search-${post.id}`}
                         post={post}
-                        favoriteIds={favoriteIds}
+                        isFavorite={favoriteIds.has(getPostKey(post))}
                         column="right"
+                        columnWidth={columnWidth}
                         screenActive={isFocused && mediaAllowed && !isFilterModalOpen && !isSourceSheetOpen}
                         videoActive={focusedIds.has(post.id)}
                         onScreen={visibleIds.has(post.id)}
@@ -1044,7 +1072,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         ) : (
           <ScrollView
             style={styles.exploreScroll}
-            contentContainerStyle={styles.exploreContent}
+            contentContainerStyle={[styles.exploreContent, { paddingBottom: 16 + (insets.bottom ?? 0) }]}
             keyboardShouldPersistTaps="handled"
           >
             {/* Recent History */}
@@ -1286,7 +1314,6 @@ const styles = StyleSheet.create({
   },
   suggestionsContainer: {
     position: 'absolute',
-    top: 110,
     left: 16,
     right: 16,
     maxHeight: 250,
@@ -1388,9 +1415,6 @@ const styles = StyleSheet.create({
   gridContainer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-  },
-  column: {
-    width: (SCREEN_WIDTH - 36) / 2,
   },
   centerContainer: {
     flex: 1,

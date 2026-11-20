@@ -5,16 +5,14 @@ import {
   Text,
   TouchableOpacity,
   View,
-  Dimensions,
-  StatusBar as RNStatusBar,
 } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Lock, Delete, ScanFace, Fingerprint, ShieldCheck, X } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { SecurityService, BiometryType } from '../services/securityService';
 import { Colors } from '../theme/colors';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
 const PIN_LENGTH = 4;
 
@@ -72,13 +70,58 @@ export const LockScreen: React.FC<LockScreenProps> = ({
 
   const shakeAnim = useRef(new Animated.Value(0)).current;
   const dotsScaleAnim = useRef(new Animated.Value(1)).current;
+  const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef(true);
+  const isSubmittingRef = useRef(false);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (errorTimerRef.current) {
+        clearTimeout(errorTimerRef.current);
+        errorTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const triggerErrorAnimation = useCallback((msg: string = 'Incorrect Passcode') => {
+    if (errorTimerRef.current) {
+      clearTimeout(errorTimerRef.current);
+      errorTimerRef.current = null;
+    }
+    setErrorMsg(msg);
+    setIsErrorState(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+
+    Animated.sequence([
+      Animated.timing(shakeAnim, { toValue: -14, duration: 45, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 14, duration: 45, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: -10, duration: 45, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 10, duration: 45, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: -5, duration: 45, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 5, duration: 45, useNativeDriver: true }),
+      Animated.timing(shakeAnim, { toValue: 0, duration: 45, useNativeDriver: true }),
+    ]).start(() => {
+      // Clear PIN after shake
+      errorTimerRef.current = setTimeout(() => {
+        errorTimerRef.current = null;
+        if (!isMountedRef.current) return;
+        setPin('');
+        setIsErrorState(false);
+      }, 400);
+    });
+  }, [shakeAnim]);
 
   // Sync external error text if provided
   useEffect(() => {
     if (externalError) {
       triggerErrorAnimation(externalError);
+    } else {
+      setErrorMsg(null);
+      setIsErrorState(false);
     }
-  }, [externalError]);
+  }, [externalError, triggerErrorAnimation]);
 
   // Check biometrics availability on mount
   useEffect(() => {
@@ -107,28 +150,6 @@ export const LockScreen: React.FC<LockScreenProps> = ({
     };
   }, [mode]);
 
-  const triggerErrorAnimation = useCallback((msg: string = 'Incorrect Passcode') => {
-    setErrorMsg(msg);
-    setIsErrorState(true);
-    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-
-    Animated.sequence([
-      Animated.timing(shakeAnim, { toValue: -14, duration: 45, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 14, duration: 45, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -10, duration: 45, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 10, duration: 45, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: -5, duration: 45, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 5, duration: 45, useNativeDriver: true }),
-      Animated.timing(shakeAnim, { toValue: 0, duration: 45, useNativeDriver: true }),
-    ]).start(() => {
-      // Clear PIN after shake
-      setTimeout(() => {
-        setPin('');
-        setIsErrorState(false);
-      }, 400);
-    });
-  }, [shakeAnim]);
-
   const triggerBiometricAuth = async () => {
     if (isAuthenticating) return;
     setIsAuthenticating(true);
@@ -136,17 +157,27 @@ export const LockScreen: React.FC<LockScreenProps> = ({
       const ok = await SecurityService.authenticateWithBiometrics(
         biometryType ? `Unlock with ${biometryType}` : 'Biometric Authentication'
       );
-      if (ok) {
+      if (ok && isMountedRef.current) {
+        setPin('');
+        setErrorMsg(null);
+        setIsErrorState(false);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
         onSuccess?.();
       }
     } finally {
-      setIsAuthenticating(false);
+      if (isMountedRef.current) {
+        setIsAuthenticating(false);
+      }
     }
   };
 
   const handleKeyPress = async (digit: string) => {
-    if (isErrorState || pin.length >= PIN_LENGTH) return;
+    if (isErrorState || isSubmittingRef.current || pin.length >= PIN_LENGTH) return;
+
+    if (errorTimerRef.current) {
+      clearTimeout(errorTimerRef.current);
+      errorTimerRef.current = null;
+    }
 
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     setErrorMsg(null);
@@ -161,37 +192,54 @@ export const LockScreen: React.FC<LockScreenProps> = ({
     ]).start();
 
     if (newPin.length === PIN_LENGTH) {
-      if (onPinSubmit) {
-        // Custom handler passed by parent
-        try {
-          const result = await onPinSubmit(newPin);
-          if (typeof result === 'boolean') {
-            if (result) {
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              onSuccess?.();
-            } else {
-              triggerErrorAnimation('Incorrect Passcode');
+      isSubmittingRef.current = true;
+      try {
+        if (onPinSubmit) {
+          // Custom handler passed by parent
+          try {
+            const result = await onPinSubmit(newPin);
+            if (!isMountedRef.current) return;
+            if (typeof result === 'boolean') {
+              if (result) {
+                setPin('');
+                setErrorMsg(null);
+                setIsErrorState(false);
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                onSuccess?.();
+              } else {
+                triggerErrorAnimation('Incorrect Passcode');
+              }
+            } else if (result && typeof result === 'object') {
+              if (result.success) {
+                setPin('');
+                setErrorMsg(null);
+                setIsErrorState(false);
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                onSuccess?.();
+              } else {
+                triggerErrorAnimation(result.error || 'Incorrect Passcode');
+              }
             }
-          } else if (result && typeof result === 'object') {
-            if (result.success) {
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-              onSuccess?.();
-            } else {
-              triggerErrorAnimation(result.error || 'Incorrect Passcode');
-            }
+          } catch (e: any) {
+            if (!isMountedRef.current) return;
+            triggerErrorAnimation(e?.message || 'Verification error');
           }
-        } catch (e: any) {
-          triggerErrorAnimation(e?.message || 'Verification error');
+        } else if (mode === 'unlock') {
+          // Default unlock check against stored hash
+          const isMatch = await SecurityService.verifyPasscode(newPin);
+          if (!isMountedRef.current) return;
+          if (isMatch) {
+            setPin('');
+            setErrorMsg(null);
+            setIsErrorState(false);
+            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            onSuccess?.();
+          } else {
+            triggerErrorAnimation('Incorrect Passcode');
+          }
         }
-      } else if (mode === 'unlock') {
-        // Default unlock check against stored hash
-        const isMatch = await SecurityService.verifyPasscode(newPin);
-        if (isMatch) {
-          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-          onSuccess?.();
-        } else {
-          triggerErrorAnimation('Incorrect Passcode');
-        }
+      } finally {
+        isSubmittingRef.current = false;
       }
     }
   };
@@ -214,7 +262,7 @@ export const LockScreen: React.FC<LockScreenProps> = ({
 
   return (
     <View style={[styles.container, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 20 }]}>
-      <RNStatusBar barStyle="light-content" />
+      <StatusBar style="light" />
 
       {/* Optional Cancel/Close Button */}
       {showCancelButton && onCancel && (
