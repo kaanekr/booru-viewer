@@ -74,6 +74,7 @@ import { resolveNHentaiPages, resolveNHentaiGalleryDetail, rotateNhentaiImageHos
 
 const { width: DEFAULT_SCREEN_WIDTH } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
+const viewerKeyExtractor = (item: BooruPost, index: number) => `${getPostKey(item)}-${index}`;
 
 /** '1.2 / 4.5 MB' text from bytes + total */
 function formatMediaBytes(loaded: number, total: number): string {
@@ -121,7 +122,15 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
   const isLandscape = windowWidth > windowHeight;
   const insets = useSafeAreaInsets();
+  const insetTop = insets.top ?? 0;
+  const insetBottom = insets.bottom ?? 0;
+  const insetLeft = insets.left ?? 0;
+  const insetRight = insets.right ?? 0;
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
+  const currentIndexRef = useRef(currentIndex);
+  currentIndexRef.current = currentIndex;
+  const postsLengthRef = useRef(posts.length);
+  postsLengthRef.current = posts.length;
   const [showControls, setShowControls] = useState(true);
   const [isPlayingSlideshow, setIsPlayingSlideshow] = useState(false);
   const [isFav, setIsFav] = useState(false);
@@ -132,7 +141,8 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   const [showPageJump, setShowPageJump] = useState(false);
   const [pageInput, setPageInput] = useState('');
   const [showDetailsSheet, setShowDetailsSheet] = useState(false);
-  const [isGalleryScrollEnabled, setIsGalleryScrollEnabled] = useState(true);
+  const [, setGalleryScrollFallback] = useState(true);
+  const galleryScrollEnabledRef = useRef(true);
   // One-shot full-preview request from the Original row in the info modal
   const [previewOriginalId, setPreviewOriginalId] = useState<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
@@ -154,12 +164,34 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     };
   }, []);
 
+  // Synchronous native lock: once scrub/zoom starts, the horizontal pager
+  // can grab the finger natively and swipe the page before a React state update
+  // crosses the bridge. Update native scrollEnabled directly without forcing a
+  // simultaneous JS re-render; only fall back to React state if setNativeProps
+  // is unavailable (e.g. web/mocks).
+  const setGalleryScrollSynchronously = useCallback((enabled: boolean) => {
+    if (galleryScrollEnabledRef.current === enabled) return;
+    galleryScrollEnabledRef.current = enabled;
+    let updatedNatively = false;
+    try {
+      const list: any = flatListRef.current as any;
+      const nativeRef = list?.getNativeScrollRef?.() ?? list;
+      if (typeof nativeRef?.setNativeProps === 'function') {
+        nativeRef.setNativeProps({ scrollEnabled: enabled });
+        updatedNatively = true;
+      }
+    } catch {}
+    if (!updatedNatively) {
+      setGalleryScrollFallback(enabled);
+    }
+  }, []);
+
   useEffect(() => {
     onIndexChange?.(currentIndex);
     // Reset the scroll lock on page change: a page unmounting mid
     // zoom/scrub could leave the lock stuck on.
-    setIsGalleryScrollEnabled(true);
-  }, [currentIndex, onIndexChange]);
+    setGalleryScrollSynchronously(true);
+  }, [currentIndex, onIndexChange, setGalleryScrollSynchronously]);
 
   // On rotation the page width changes — snap back to the active page
   useEffect(() => {
@@ -187,13 +219,13 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       setShowControls(true);
       setShowDetailsSheet(false);
       setIsPlayingSlideshow(false);
-      setIsGalleryScrollEnabled(true);
+      setGalleryScrollSynchronously(true);
       setPreviewOriginalId(null);
 
       // Stack route and modal alike start at rest position.
       translateX.setValue(0);
     }
-  }, [visible, initialIndex, enterAnimation, asScreen]);
+  }, [visible, initialIndex, enterAnimation, asScreen, setGalleryScrollSynchronously, translateX]);
 
   const currentPost = posts[currentIndex] || posts[0];
   const currentPostKey = currentPost ? getPostKey(currentPost) : '';
@@ -281,18 +313,22 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     });
   }, [isStackScreen, onClose, translateX, windowWidth]);
 
-  // Interactive edge swipe gesture. In modal mode the view follows the finger
-  // (transparent backdrop + real previous screen behind). In stack mode
-  // following would show black emptiness: wait for the threshold, then the
-  // animated native pop runs on release and the previous screen appears.
+  // Interactive edge swipe gesture (modal mode and asScreen video pages):
+  // tracks finger horizontal translation smoothly with Animated.Value
+  // (useNativeDriver: true) and either completes dismissal/goBack or springs back.
   const edgePanResponder = useMemo(
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => true,
         onMoveShouldSetPanResponder: (_, gesture) =>
           gesture.dx > 8 && Math.abs(gesture.dy) < 35,
+        onMoveShouldSetPanResponderCapture: (_, gesture) =>
+          gesture.dx > 8 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
+        onPanResponderGrant: () => {
+          (translateX as any).stopAnimation?.();
+        },
         onPanResponderMove: (_, gesture) => {
-          if (!asScreen && gesture.dx > 0) {
+          if (gesture.dx > 0) {
             translateX.setValue(gesture.dx);
           }
         },
@@ -310,7 +346,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             }).start(() => {
               onClose();
             });
-          } else if (!asScreen) {
+          } else {
             Animated.spring(translateX, {
               toValue: 0,
               damping: 24,
@@ -319,6 +355,15 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             }).start();
           }
         },
+        onPanResponderTerminate: () => {
+          Animated.spring(translateX, {
+            toValue: 0,
+            damping: 24,
+            stiffness: 260,
+            useNativeDriver: true,
+          }).start();
+        },
+        onPanResponderTerminationRequest: () => false,
       }),
     [translateX, onClose, asScreen, windowWidth]
   );
@@ -386,20 +431,6 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     setShowPageJump(false);
   };
 
-  // Stable callbacks: freshly minted identities each render were
-  // retriggering effects inside PostPageItem for nothing.
-  // Synchronous native lock: once scrub/zoom starts, the horizontal pager
-  // can grab the finger natively and swipe the page before the state update
-  // crosses the re-render bridge. setNativeProps stops the native scroller
-  // without waiting for the bridge; state stays as-is for consistency.
-  const setGalleryScrollSynchronously = useCallback((enabled: boolean) => {
-    setIsGalleryScrollEnabled(enabled);
-    try {
-      const list: any = flatListRef.current as any;
-      const nativeRef = list?.getNativeScrollRef?.() ?? list;
-      nativeRef?.setNativeProps?.({ scrollEnabled: enabled });
-    } catch {}
-  }, []);
   const handleZoomChange = useCallback(
     (isZoomed: boolean) => {
       setGalleryScrollSynchronously(!isZoomed);
@@ -412,6 +443,80 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       onScrubbingChange?.(isScrubbing);
     },
     [setGalleryScrollSynchronously, onScrubbingChange]
+  );
+  const handleOpenDetails = useCallback(() => {
+    setShowDetailsSheet(true);
+  }, []);
+  const handleTagsResolved = useCallback(
+    (
+      targetPost: BooruPost,
+      tags: BooruPost['tags'],
+      allTags: string[],
+      numFavorites?: number
+    ) => {
+      targetPost.tags = tags;
+      targetPost.allTags = allTags;
+      // Score = favorite count: absent from list HTML, arrives with detail
+      if (numFavorites) {
+        targetPost.score = numFavorites;
+        targetPost.favCount = numFavorites;
+      }
+    },
+    []
+  );
+  const getItemLayout = useCallback(
+    (_: ArrayLike<BooruPost> | null | undefined, index: number) => ({
+      length: windowWidth,
+      offset: windowWidth * index,
+      index,
+    }),
+    [windowWidth]
+  );
+  const handleMomentumScrollEnd = useCallback(
+    (e: any) => {
+      const newIndex = Math.round(e.nativeEvent.contentOffset.x / windowWidth);
+      if (newIndex !== currentIndexRef.current && newIndex >= 0 && newIndex < postsLengthRef.current) {
+        setCurrentIndex(newIndex);
+      }
+    },
+    [windowWidth]
+  );
+  const renderPostPageItem = useCallback(
+    ({ item, index }: { item: BooruPost; index: number }) => (
+      <PostPageItem
+        post={item}
+        isActive={index === currentIndex}
+        suspended={suspended || showPageJump}
+        forceFull={previewOriginalId === getPostKey(item)}
+        onTagsResolved={handleTagsResolved}
+        showControls={index === currentIndex ? showControls : false}
+        screenWidth={windowWidth}
+        screenHeight={windowHeight}
+        onToggleControls={handleToggleControls}
+        onSetControlsVisible={setShowControls}
+        onOpenDetails={handleOpenDetails}
+        onClose={handleDismissWithSlide}
+        onTagPress={onTagPress}
+        onZoomChange={handleZoomChange}
+        onScrubbingChange={handleScrubbingChange}
+      />
+    ),
+    [
+      currentIndex,
+      suspended,
+      showPageJump,
+      previewOriginalId,
+      showControls,
+      windowWidth,
+      windowHeight,
+      handleTagsResolved,
+      handleToggleControls,
+      handleOpenDetails,
+      handleDismissWithSlide,
+      onTagPress,
+      handleZoomChange,
+      handleScrubbingChange,
+    ]
   );
 
   // Keep every hook above the visibility guard: modal open/close must not
@@ -433,65 +538,49 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
               (while the native gesture is off). The bottom 150px video timeline
               strip is excluded: a finger starting on the strip seeks, never exits. */}
           {(!asScreen || currentIsVideo) && (
-            <View style={styles.leftEdgeGestureArea} {...edgePanResponder.panHandlers} />
+            <View
+              style={[
+                styles.leftEdgeGestureArea,
+                {
+                  width: 28 + Math.min(insetLeft, 32),
+                  bottom: 150 + insetBottom,
+                },
+              ]}
+              {...edgePanResponder.panHandlers}
+            />
           )}
 
           {/* 1. HORIZONTAL MEDIA PAGER */}
           <FlatList
             ref={flatListRef}
             data={posts}
-            keyExtractor={(item, index) => `${getPostKey(item)}-${index}`}
+            keyExtractor={viewerKeyExtractor}
             horizontal
             pagingEnabled
-            scrollEnabled={isGalleryScrollEnabled}
+            scrollEnabled={galleryScrollEnabledRef.current}
             showsHorizontalScrollIndicator={false}
             initialScrollIndex={Math.min(initialIndex, posts.length - 1)}
             windowSize={3}
             maxToRenderPerBatch={1}
             initialNumToRender={1}
             removeClippedSubviews
-            getItemLayout={(_, index) => ({
-              length: windowWidth,
-              offset: windowWidth * index,
-              index,
-            })}
-            onMomentumScrollEnd={(e) => {
-              const newIndex = Math.round(e.nativeEvent.contentOffset.x / windowWidth);
-              if (newIndex !== currentIndex && newIndex >= 0 && newIndex < posts.length) {
-                setCurrentIndex(newIndex);
-              }
-            }}
-            renderItem={({ item, index }) => (
-              <PostPageItem
-                post={item}
-                isActive={index === currentIndex}
-                suspended={suspended || showPageJump}
-                forceFull={previewOriginalId === getPostKey(item)}
-                onTagsResolved={(tags, allTags, numFavorites) => {
-                  item.tags = tags;
-                  item.allTags = allTags;
-                  // Score = favorite count: absent from list HTML, arrives with detail
-                  if (numFavorites) {
-                    item.score = numFavorites;
-                    item.favCount = numFavorites;
-                  }
-                }}
-                showControls={showControls}
-                screenWidth={windowWidth}
-                screenHeight={windowHeight}
-                onToggleControls={handleToggleControls}
-                onOpenDetails={() => setShowDetailsSheet(true)}
-                onClose={handleDismissWithSlide}
-                onTagPress={onTagPress}
-                onZoomChange={handleZoomChange}
-                onScrubbingChange={handleScrubbingChange}
-              />
-            )}
+            getItemLayout={getItemLayout}
+            onMomentumScrollEnd={handleMomentumScrollEnd}
+            renderItem={renderPostPageItem}
           />
 
           {/* 2. TOP FLOATING BAR */}
           {showControls && (
-            <View style={[styles.topBar, { top: Math.max(insets.top, 16) }]}>
+            <View
+              style={[
+                styles.topBar,
+                {
+                  top: Math.max(insetTop, 16),
+                  left: Math.max(insetLeft + 8, 16),
+                  right: Math.max(insetRight + 8, 16),
+                },
+              ]}
+            >
               <TouchableOpacity
                 style={styles.circleBtn}
                 onPress={handleDismissWithSlide}
@@ -529,7 +618,16 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 
           {/* 3. BOTTOM ACTION BAR (Left: Orientation, Right: Heart) */}
           {showControls && (
-            <View style={[styles.bottomActionBar, { bottom: Math.max(insets.bottom, 20) }]}>
+            <View
+              style={[
+                styles.bottomActionBar,
+                {
+                  bottom: Math.max(insetBottom, 20),
+                  left: Math.max(insetLeft + 8, 20),
+                  right: Math.max(insetRight + 8, 20),
+                },
+              ]}
+            >
               {/* Left Orientation Button */}
               <TouchableOpacity
                 style={styles.circleBtn}
@@ -659,20 +757,25 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
  */
 const MangaPageImage: React.FC<{
   uri: string;
+  pageIndex: number;
   pageLabel: string;
   width: number;
-  height: number;
-}> = React.memo(({ uri, pageLabel, width, height }) => {
+  defaultHeight: number;
+  onMeasuredHeight?: (index: number, height: number) => void;
+}> = React.memo(({ uri, pageIndex, pageLabel, width, defaultHeight, onMeasuredHeight }) => {
   const [src, setSrc] = React.useState(uri);
   const [failed, setFailed] = React.useState(false);
+  const [naturalAspect, setNaturalAspect] = React.useState<number | null>(null);
   const srcRef = React.useRef(src);
   srcRef.current = src;
   const loadedRef = React.useRef(false);
   React.useEffect(() => {
     setSrc(uri);
     setFailed(false);
+    setNaturalAspect(null);
     loadedRef.current = false;
   }, [uri]);
+  const height = naturalAspect ? Math.round(width / naturalAspect) : defaultHeight;
   const advance = React.useCallback(() => {
     const next = rotateNhentaiImageHost(srcRef.current);
     if (next) {
@@ -715,8 +818,18 @@ const MangaPageImage: React.FC<{
           contentPosition="center"
           cachePolicy="memory-disk"
           transition={150}
-          onLoad={() => {
+          onLoad={(e: any) => {
             loadedRef.current = true;
+            const imgW = e?.source?.width;
+            const imgH = e?.source?.height;
+            if (typeof imgW === 'number' && typeof imgH === 'number' && imgW > 0 && imgH > 0) {
+              const aspect = imgW / imgH;
+              if (aspect > 0.15 && aspect < 6) {
+                const measuredH = Math.round(width / aspect);
+                setNaturalAspect(aspect);
+                onMeasuredHeight?.(pageIndex, measuredH);
+              }
+            }
           }}
           onError={advance}
         />
@@ -739,11 +852,13 @@ interface PostPageItemProps {
   screenWidth: number;
   screenHeight: number;
   onTagsResolved?: (
+    post: BooruPost,
     tags: BooruPost['tags'],
     allTags: string[],
     numFavorites?: number
   ) => void;
   onToggleControls: () => void;
+  onSetControlsVisible?: (visible: boolean) => void;
   onOpenDetails: () => void;
   onClose: () => void;
   onTagPress: (tag: string) => void;
@@ -751,7 +866,7 @@ interface PostPageItemProps {
   onScrubbingChange?: (isScrubbing: boolean) => void;
 }
 
-const PostPageItem: React.FC<PostPageItemProps> = ({
+const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
   post,
   isActive,
   suspended = false,
@@ -761,12 +876,17 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   screenHeight,
   onTagsResolved,
   onToggleControls,
+  onSetControlsVisible,
   onOpenDetails,
   onClose,
   onZoomChange,
   onScrubbingChange,
 }) => {
   const insets = useSafeAreaInsets();
+  const insetTop = insets.top ?? 0;
+  const insetBottom = insets.bottom ?? 0;
+  const insetLeft = insets.left ?? 0;
+  const insetRight = insets.right ?? 0;
   const [sampleLoading, setSampleLoading] = useState(true);
   const [sampleLoaded, setSampleLoaded] = useState(false);
   const [fullLoading, setFullLoading] = useState(false);
@@ -781,8 +901,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const [gifError, setGifError] = useState('');
   const [gifProgress, setGifProgress] = useState<number | null>(null);
   const [gifProxyAttempt, setGifProxyAttempt] = useState(false);
-  const [isDismissing, setIsDismissing] = useState(false);
   const [isScrubbingActive, setIsScrubbingActive] = useState(false);
+  const isScrubbingRef = useRef(false);
   const [upgradedMp4Url, setUpgradedMp4Url] = useState<string | null>(null);
   const [isCheckingUpgrade, setIsCheckingUpgrade] = useState(false);
   const [quality, setQuality] = useState<ImageQuality>('auto');
@@ -805,6 +925,8 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const [mangaPages, setMangaPages] = useState<string[]>([]);
   const [mangaLoading, setMangaLoading] = useState(false);
   const [currentMangaPage, setCurrentMangaPage] = useState(1);
+  const lastMangaPageRef = useRef(1);
+  const mangaPageHeightsRef = useRef<Record<number, number>>({});
   const [isMangaZoomed, setIsMangaZoomed] = useState(false);
   const mangaScrollRef = useRef<ScrollViewInstance>(null);
   const isMangaZoomedRef = useRef(false);
@@ -819,6 +941,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
   const isZoomedRef = useRef<boolean>(false);
   const dismissingRef = useRef<boolean>(false);
   const singleTapTimerRef = useRef<any>(null);
+  const dragY = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
     return () => {
@@ -931,7 +1054,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                   StorageService.setLastWatchedEpisode(post.id, effectiveEp).catch(() => {});
                 }
                 if (files?.tags) {
-                  onTagsResolved?.(files.tags, files.allTags || [], files.views);
+                  onTagsResolved?.(post, files.tags, files.allTags || [], files.views);
                 }
                 const playable = files?.hls || files?.mp4;
                 if (playable) {
@@ -1058,6 +1181,10 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     setHhEpLoading(false);
     setMangaPages([]);
     setCurrentMangaPage(1);
+    lastMangaPageRef.current = 1;
+    mangaPageHeightsRef.current = {};
+    dismissingRef.current = false;
+    dragY.setValue(0);
     setMangaLoading(false);
     setIsMangaZoomed(false);
     mangaOffsetYRef.current = 0;
@@ -1116,9 +1243,9 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         }
         // Forward detail-resolved categorized tags to the Info panel
         if (detail.allTags && detail.allTags.length > 0) {
-          onTagsResolved?.(detail.tags, detail.allTags, detail.numFavorites);
+          onTagsResolved?.(post, detail.tags, detail.allTags, detail.numFavorites);
         } else if (detail.numFavorites) {
-          onTagsResolved?.(post.tags, post.allTags, detail.numFavorites);
+          onTagsResolved?.(post, post.tags, post.allTags, detail.numFavorites);
         }
       })
       .catch((err) => {
@@ -1300,8 +1427,12 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     }
   };
 
-  // Reset zoom when item becomes inactive
+  // Reset zoom & drag state when item becomes inactive
   useEffect(() => {
+    if (!isActive) {
+      dismissingRef.current = false;
+      dragY.setValue(0);
+    }
     if (!isActive && isZoomedRef.current && scrollRef.current) {
       scrollRef.current.scrollResponderZoomTo({
         x: 0,
@@ -1326,9 +1457,118 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       setIsMangaZoomed(false);
       onZoomChange?.(false);
     }
-  }, [isActive, onZoomChange, screenWidth, screenHeight]);
+  }, [isActive, onZoomChange, screenWidth, screenHeight, dragY]);
 
-  // Swipe Down to Dismiss tracking (only active when not zoomed)
+  const handleVideoLoaded = useCallback(() => {
+    setSampleLoading(false);
+  }, []);
+
+  const handleVideoScrubbingChange = useCallback(
+    (scrubbing: boolean) => {
+      if (isScrubbingRef.current === scrubbing) return;
+      isScrubbingRef.current = scrubbing;
+      let updatedNatively = false;
+      try {
+        const nativeScroll: any = scrollRef.current;
+        if (typeof nativeScroll?.setNativeProps === 'function') {
+          nativeScroll.setNativeProps({ scrollEnabled: !scrubbing });
+          updatedNatively = true;
+        }
+      } catch {}
+      if (!updatedNatively) {
+        setIsScrubbingActive(scrubbing);
+      }
+      onScrubbingChange?.(scrubbing);
+    },
+    [onScrubbingChange]
+  );
+
+  const verticalPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_, gesture) =>
+          !isZoomedRef.current &&
+          !isScrubbingRef.current &&
+          !dismissingRef.current &&
+          post.sourceId !== 'nhentai' &&
+          gesture.numberActiveTouches <= 1 &&
+          Math.abs(gesture.dy) > 12 &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.4,
+        onMoveShouldSetPanResponderCapture: (_, gesture) =>
+          !isZoomedRef.current &&
+          !isScrubbingRef.current &&
+          !dismissingRef.current &&
+          post.sourceId !== 'nhentai' &&
+          gesture.numberActiveTouches <= 1 &&
+          Math.abs(gesture.dy) > 12 &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.4,
+        onPanResponderGrant: () => {
+          (dragY as any).stopAnimation?.();
+        },
+        onPanResponderMove: (_, gesture) => {
+          if (gesture.dy > 0) {
+            dragY.setValue(gesture.dy);
+          } else {
+            dragY.setValue(Math.max(-48, gesture.dy * 0.25));
+          }
+        },
+        onPanResponderRelease: (_, gesture) => {
+          if (
+            (gesture.dy > 90 || (gesture.dy > 40 && gesture.vy > 0.65)) &&
+            !dismissingRef.current
+          ) {
+            dismissingRef.current = true;
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            Animated.timing(dragY, {
+              toValue: screenHeight,
+              duration: 170,
+              useNativeDriver: true,
+            }).start(() => {
+              onClose();
+            });
+          } else if (gesture.dy < -65 || (gesture.dy < -30 && gesture.vy < -0.6)) {
+            Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+            Animated.spring(dragY, {
+              toValue: 0,
+              damping: 24,
+              stiffness: 280,
+              useNativeDriver: true,
+            }).start();
+            onOpenDetails();
+          } else {
+            Animated.spring(dragY, {
+              toValue: 0,
+              damping: 24,
+              stiffness: 280,
+              useNativeDriver: true,
+            }).start();
+          }
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(dragY, {
+            toValue: 0,
+            damping: 24,
+            stiffness: 280,
+            useNativeDriver: true,
+          }).start();
+        },
+        onPanResponderTerminationRequest: (_, gesture) => gesture.numberActiveTouches > 1,
+      }),
+    [dragY, post.sourceId, screenHeight, onClose, onOpenDetails]
+  );
+
+  const dragScale =
+    typeof (dragY as any).interpolate === 'function'
+      ? dragY.interpolate({
+          inputRange: [0, 280],
+          outputRange: [1, 0.88],
+          extrapolate: 'clamp',
+        })
+      : 1;
+
+  // Zoom state tracking (vertical pull-to-dismiss / pull-up-for-info is handled
+  // cleanly on release by verticalPanResponder across both iOS and Android).
   const handleScroll = (e: any) => {
     const zoomScale = e.nativeEvent.zoomScale || 1;
     const zoomed = zoomScale > 1.05;
@@ -1340,46 +1580,17 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       }
       onZoomChange?.(zoomed);
     }
-
-    if (!zoomed) {
-      if (post.sourceId === 'nhentai') return;
-      const offsetY = e.nativeEvent.contentOffset.y;
-      if (offsetY < -80 && !dismissingRef.current) {
-        dismissingRef.current = true;
-        setIsDismissing(true);
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        onClose();
-      } else if (offsetY > 70) {
-        onOpenDetails();
-      }
-    }
-  };
-
-  const handleScrollEndDrag = (e: any) => {
-    if (post.sourceId === 'nhentai') return;
-    const zoomScale = e.nativeEvent.zoomScale || 1;
-    if (zoomScale <= 1.05) {
-      const offsetY = e.nativeEvent.contentOffset.y;
-      if (offsetY < -45 && !dismissingRef.current) {
-        dismissingRef.current = true;
-        setIsDismissing(true);
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        onClose();
-      } else if (offsetY > 50) {
-        onOpenDetails();
-      }
-    }
   };
 
   // Double tap to zoom & single tap to toggle controls
   const handleImageTouch = (event: any) => {
-    if (canPlayVideo) {
+    if (canPlayVideo || isVideo || isResolvingPornhubVideo || maxZoom <= 1) {
       onToggleControls();
       return;
     }
 
     const now = Date.now();
-    const DOUBLE_TAP_DELAY = 280;
+    const DOUBLE_TAP_DELAY = 190;
 
     if (now - lastTapRef.current < DOUBLE_TAP_DELAY) {
       // Clear pending single tap timer
@@ -1431,6 +1642,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         clearTimeout(singleTapTimerRef.current);
       }
       singleTapTimerRef.current = setTimeout(() => {
+        singleTapTimerRef.current = null;
         onToggleControls();
       }, DOUBLE_TAP_DELAY);
     }
@@ -1438,7 +1650,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
 
   const handleMangaDoubleTap = (event: any) => {
     const now = Date.now();
-    const DOUBLE_TAP_DELAY = 280;
+    const DOUBLE_TAP_DELAY = 190;
 
     if (now - mangaLastTapRef.current < DOUBLE_TAP_DELAY) {
       if (mangaSingleTapTimerRef.current) {
@@ -1469,7 +1681,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         const tapZoom = 2.2;
         const pageX = event.nativeEvent.pageX ?? event.nativeEvent.locationX ?? (screenWidth / 2);
         const pageY = event.nativeEvent.pageY ?? (screenHeight / 2);
-        const viewportY = Math.max(0, pageY - insets.top);
+        const viewportY = Math.max(0, pageY - insetTop);
         const contentY = mangaOffsetYRef.current + viewportY;
 
         const targetWidth = screenWidth / tapZoom;
@@ -1494,10 +1706,25 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         clearTimeout(mangaSingleTapTimerRef.current);
       }
       mangaSingleTapTimerRef.current = setTimeout(() => {
+        mangaSingleTapTimerRef.current = null;
         onToggleControls();
       }, DOUBLE_TAP_DELAY);
     }
   };
+
+  const defaultMangaPageHeight = useMemo(() => {
+    if (post.width > 0 && post.height > 0) {
+      return Math.round(screenWidth * (post.height / post.width));
+    }
+    if (post.aspectRatio && post.aspectRatio > 0) {
+      return Math.round(screenWidth / post.aspectRatio);
+    }
+    return Math.round(screenWidth * 1.42);
+  }, [post.width, post.height, post.aspectRatio, screenWidth]);
+
+  const handleMeasuredMangaPageHeight = useCallback((index: number, height: number) => {
+    mangaPageHeightsRef.current[index] = height;
+  }, []);
 
   const handleMangaScroll = (e: any) => {
     const scale = e.nativeEvent.zoomScale || 1;
@@ -1511,16 +1738,23 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       onZoomChange?.(zoomed);
     }
 
-    // Live page indicator from vertical scroll
-    const pageHeight = Math.round(screenWidth * 1.42);
+    // Live page indicator from vertical scroll (only update state when page changes)
     const offsetY = e.nativeEvent.contentOffset.y;
-    const effectivePageHeight = pageHeight * scale;
-    if (effectivePageHeight > 0) {
-      const pagesCount = mangaPages.length || post.pageCount || 1;
-      const p = Math.min(
-        pagesCount,
-        Math.max(1, Math.floor((offsetY + screenHeight * 0.3) / effectivePageHeight) + 1)
-      );
+    const pagesCount = mangaPages.length || post.pageCount || 1;
+    const targetY = (offsetY + screenHeight * 0.3) / Math.max(1, scale);
+    let p = 1;
+    let acc = 0;
+    for (let i = 0; i < pagesCount; i++) {
+      const h = mangaPageHeightsRef.current[i] ?? defaultMangaPageHeight;
+      acc += h;
+      if (targetY < acc) {
+        p = i + 1;
+        break;
+      }
+      p = i + 1;
+    }
+    if (p !== lastMangaPageRef.current) {
+      lastMangaPageRef.current = p;
       setCurrentMangaPage(p);
     }
   };
@@ -1531,7 +1765,6 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     // image we have — the real page 1 first, so the reader is never blank black.
     const firstImage = post.originalUrl || post.sampleUrl || post.previewUrl;
     const pages = mangaPages.length > 0 ? mangaPages : firstImage ? [firstImage] : [];
-    const pageHeight = Math.round(screenWidth * 1.42);
     return (
       <View style={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000' }}>
         {mangaLoading && mangaPages.length === 0 ? (
@@ -1546,7 +1779,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
           contentContainerStyle={{
             backgroundColor: '#000000',
             alignItems: 'center',
-            paddingBottom: Math.max(insets.bottom + 40, 60),
+            paddingBottom: Math.max(insetBottom + 40, 60),
           }}
           maximumZoomScale={3.5}
           minimumZoomScale={1}
@@ -1564,29 +1797,34 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
                 // distant pages wait as placeholders.
                 const activeIdx = currentMangaPage - 1;
                 const nearActive = Math.abs(index - activeIdx) <= 5;
+                if (nearActive) {
+                  return (
+                    <MangaPageImage
+                      key={`${item}-${index}`}
+                      uri={item}
+                      pageIndex={index}
+                      pageLabel={String(index + 1)}
+                      width={screenWidth}
+                      defaultHeight={defaultMangaPageHeight}
+                      onMeasuredHeight={handleMeasuredMangaPageHeight}
+                    />
+                  );
+                }
+                const placeholderHeight = mangaPageHeightsRef.current[index] ?? defaultMangaPageHeight;
                 return (
                   <View
                     key={`${item}-${index}`}
                     style={{
                       width: screenWidth,
-                      height: pageHeight,
+                      height: placeholderHeight,
                       backgroundColor: '#000000',
                       alignItems: 'center',
                       justifyContent: 'center',
                     }}
                   >
-                    {nearActive ? (
-                      <MangaPageImage
-                        uri={item}
-                        pageLabel={String(index + 1)}
-                        width={screenWidth}
-                        height={pageHeight}
-                      />
-                    ) : (
-                      <Text style={{ color: '#333333', fontSize: 13 }}>
-                        {`${index + 1}`}
-                      </Text>
-                    )}
+                    <Text style={{ color: '#333333', fontSize: 13 }}>
+                      {`${index + 1}`}
+                    </Text>
                   </View>
                 );
               })}
@@ -1598,7 +1836,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         <View
           style={[
             styles.mangaPagePill,
-            { bottom: Math.max(insets.bottom + 20, 28) },
+            { bottom: Math.max(insetBottom + 20, 28) },
           ]}
           pointerEvents="none"
         >
@@ -1612,62 +1850,68 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
 
   return (
     <View style={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000' }}>
-      <ScrollView
-        ref={scrollRef}
-        style={{ width: screenWidth, height: screenHeight }}
-        contentContainerStyle={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000', alignItems: 'center', justifyContent: 'center' }}
-        showsVerticalScrollIndicator={false}
-        showsHorizontalScrollIndicator={false}
-        maximumZoomScale={canPlayVideo ? 1 : maxZoom}
-        minimumZoomScale={1}
-        bouncesZoom={true}
-        centerContent={true}
-        scrollEventThrottle={16}
-        scrollEnabled={!isScrubbingActive}
-        onScroll={handleScroll}
-        onScrollEndDrag={handleScrollEndDrag}
+      <Animated.View
+        style={{
+          flex: 1,
+          transform: [{ translateY: dragY }, { scale: dragScale }],
+        }}
+        {...verticalPanResponder.panHandlers}
       >
-        <TouchableWithoutFeedback onPress={handleImageTouch}>
-          <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
-            {/* PH bot-wall fallback runs behind the loader while resolving. */}
-            {pornhubWebviewOn &&
-            Platform.OS !== 'web' &&
-            !resolvedOriginalUrl &&
-            isActive &&
-            !suspended &&
-            post.sourceId === 'pornhub' &&
-            post.sourceLink ? (
-              <PornhubWebViewResolver
-                pageUrl={post.sourceLink}
-                onResolve={(files) => {
-                  if (files) {
-                    setResolvedOriginalUrl(files.high || files.hls || files.low || null);
-                  } else {
-                    setVideoResolveFailed(true);
-                  }
-                  setPornhubWebviewOn(false);
-                }}
-              />
-            ) : null}
+        <ScrollView
+          ref={scrollRef}
+          style={{ width: screenWidth, height: screenHeight }}
+          contentContainerStyle={{ width: screenWidth, height: screenHeight, backgroundColor: '#000000', alignItems: 'center', justifyContent: 'center' }}
+          showsVerticalScrollIndicator={false}
+          showsHorizontalScrollIndicator={false}
+          maximumZoomScale={canPlayVideo ? 1 : maxZoom}
+          minimumZoomScale={1}
+          bounces={isZoomed}
+          bouncesZoom={true}
+          centerContent={true}
+          scrollEventThrottle={16}
+          scrollEnabled={!isScrubbingActive}
+          onScroll={handleScroll}
+        >
+          <TouchableWithoutFeedback onPress={handleImageTouch}>
+            <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
+              {/* PH bot-wall fallback runs behind the loader while resolving. */}
+              {pornhubWebviewOn &&
+              Platform.OS !== 'web' &&
+              !resolvedOriginalUrl &&
+              isActive &&
+              !suspended &&
+              post.sourceId === 'pornhub' &&
+              post.sourceLink ? (
+                <PornhubWebViewResolver
+                  pageUrl={post.sourceLink}
+                  onResolve={(files) => {
+                    if (files) {
+                      setResolvedOriginalUrl(files.high || files.hls || files.low || null);
+                    } else {
+                      setVideoResolveFailed(true);
+                    }
+                    setPornhubWebviewOn(false);
+                  }}
+                />
+              ) : null}
 
-            {isResolvingPornhubVideo ? (
-              <View style={styles.loaderCenter} pointerEvents="none">
-                <ActivityIndicator size="large" color={Colors.dark.primary} />
-              </View>
-            ) : canPlayVideo && isActive ? (
-              <VideoPlayerView
-                url={activeVideoUrl}
-                suspended={suspended}
-                screenWidth={screenWidth}
-                screenHeight={screenHeight}
-                onLoaded={() => setSampleLoading(false)}
-                onToggleControls={onToggleControls}
-                onScrubbingChange={(scrubbing) => {
-                  setIsScrubbingActive(scrubbing);
-                  onScrubbingChange?.(scrubbing);
-                }}
-              />
-            ) : (
+              {isResolvingPornhubVideo ? (
+                <View style={styles.loaderCenter} pointerEvents="none">
+                  <ActivityIndicator size="large" color={Colors.dark.primary} />
+                </View>
+              ) : canPlayVideo && isActive ? (
+                <VideoPlayerView
+                  url={activeVideoUrl}
+                  suspended={suspended}
+                  showControls={showControls}
+                  screenWidth={screenWidth}
+                  screenHeight={screenHeight}
+                  onLoaded={handleVideoLoaded}
+                  onToggleControls={onToggleControls}
+                  onSetControlsVisible={onSetControlsVisible}
+                  onScrubbingChange={handleVideoScrubbingChange}
+                />
+              ) : (
               <>
               {/* Sample first-load indicator: while the sample hasn't painted yet and full hasn't loaded */}
               {sampleLoading && !sampleLoaded && !fullLoaded && (
@@ -1937,6 +2181,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
         </View>
       </TouchableWithoutFeedback>
     </ScrollView>
+    </Animated.View>
 
     {/* HentaiHaven EP secici: ScrollView ve VideoPlayerView uzerinde yuzer */}
     {post.sourceId === 'hentaihaven' &&
@@ -1947,7 +2192,11 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
       <View
         style={[
           styles.hhEpisodeBar,
-          { top: Math.max(insets.top + 60, 76) },
+          {
+            top: Math.max(insetTop + 60, 76),
+            left: Math.max(insetLeft + 8, 12),
+            right: Math.max(insetRight + 8, 12),
+          },
         ]}
         pointerEvents="box-none"
       >
@@ -1980,7 +2229,7 @@ const PostPageItem: React.FC<PostPageItemProps> = ({
     ) : null}
   </View>
 );
-};
+});
 
 // Helper to format playback time
 const formatVideoTime = (seconds: number) => {
@@ -1999,34 +2248,234 @@ const setSessionVideoMuted = (muted: boolean) => {
   muteListeners.forEach((listener) => listener(muted));
 };
 
+interface VideoTimelineBarProps {
+  player: ReturnType<typeof useVideoPlayer>;
+  muted: boolean;
+  insetBottom: number;
+  insetLeft: number;
+  insetRight: number;
+  onToggleMute: () => void;
+  onInteraction: () => void;
+  onPauseHideTimer: () => void;
+  onScrubbingChange: (isScrubbing: boolean) => void;
+}
+
+/**
+ * Isolated playback progress + scrub bar so 250ms timeUpdate ticks and
+ * scrub moves only re-render this lightweight card, not VideoPlayerView or PostPageItem.
+ */
+const VideoTimelineBar: React.FC<VideoTimelineBarProps> = React.memo(({
+  player,
+  muted,
+  insetBottom,
+  insetLeft,
+  insetRight,
+  onToggleMute,
+  onInteraction,
+  onPauseHideTimer,
+  onScrubbingChange,
+}) => {
+  const [currentTime, setCurrentTime] = useState(() => {
+    try {
+      return player.currentTime || 0;
+    } catch {
+      return 0;
+    }
+  });
+  const [duration, setDuration] = useState(() => {
+    try {
+      return player.duration || 0;
+    } catch {
+      return 0;
+    }
+  });
+  const [isScrubbing, setIsScrubbing] = useState(false);
+  const [scrubTime, setScrubTime] = useState(0);
+
+  const durationRef = useRef(duration);
+  durationRef.current = duration;
+  const isScrubbingRef = useRef(false);
+  isScrubbingRef.current = isScrubbing;
+
+  const trackLayoutRef = useRef<{ pageX: number; width: number }>({ pageX: 0, width: 0 });
+  const trackWrapperRef = useRef<ViewInstance>(null);
+
+  useEventListener(player, 'timeUpdate', (event) => {
+    if (!isScrubbingRef.current) {
+      setCurrentTime(event.currentTime);
+    }
+    if (player.duration && player.duration > 0 && durationRef.current !== player.duration) {
+      setDuration(player.duration);
+    }
+  });
+
+  useEventListener(player, 'sourceLoad', () => {
+    if (player.duration && player.duration > 0) {
+      setDuration(player.duration);
+    }
+  });
+
+  const measureTrack = useCallback(() => {
+    trackWrapperRef.current?.measure((_x, _y, width, _height, pageX) => {
+      if (width > 0) {
+        trackLayoutRef.current = { pageX, width };
+      }
+    });
+  }, []);
+
+  const updateScrubFromPageX = useCallback(
+    (pageX: number, commitToPlayer: boolean) => {
+      const { pageX: trackX, width: trackW } = trackLayoutRef.current;
+      const totalDuration = durationRef.current;
+      if (trackW <= 0 || totalDuration <= 0) return;
+
+      const relX = pageX - trackX;
+      const progress = Math.max(0, Math.min(1, relX / trackW));
+      const targetTime = progress * totalDuration;
+
+      setScrubTime(targetTime);
+
+      if (commitToPlayer) {
+        player.currentTime = targetTime;
+        setCurrentTime(targetTime);
+        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+    },
+    [player]
+  );
+
+  const scrubberPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponderCapture: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponderCapture: () => true,
+        onPanResponderTerminationRequest: () => false,
+
+        onPanResponderGrant: (evt) => {
+          isScrubbingRef.current = true;
+          setIsScrubbing(true);
+          onScrubbingChange(true);
+          onPauseHideTimer();
+          Haptics.selectionAsync();
+
+          trackWrapperRef.current?.measure((_x, _y, width, _height, pageX) => {
+            if (width > 0) {
+              trackLayoutRef.current = { pageX, width };
+            }
+            updateScrubFromPageX(evt.nativeEvent.pageX, false);
+          });
+        },
+
+        onPanResponderMove: (evt) => {
+          updateScrubFromPageX(evt.nativeEvent.pageX, false);
+        },
+
+        onPanResponderRelease: (evt) => {
+          updateScrubFromPageX(evt.nativeEvent.pageX, true);
+          isScrubbingRef.current = false;
+          setIsScrubbing(false);
+          onScrubbingChange(false);
+          onInteraction();
+        },
+
+        onPanResponderTerminate: () => {
+          isScrubbingRef.current = false;
+          setIsScrubbing(false);
+          onScrubbingChange(false);
+          onInteraction();
+        },
+      }),
+    [updateScrubFromPageX, onInteraction, onPauseHideTimer, onScrubbingChange]
+  );
+
+  const displayTime = isScrubbing ? scrubTime : currentTime;
+  const progressPercent =
+    duration > 0 ? Math.min(100, Math.max(0, (displayTime / duration) * 100)) : 0;
+
+  return (
+    <View
+      style={[
+        styles.videoTimelineCard,
+        {
+          bottom: Math.max(insetBottom + 68, 92),
+          left: Math.max(insetLeft + 8, 16),
+          right: Math.max(insetRight + 8, 16),
+        },
+      ]}
+    >
+      <Text style={styles.videoTimeText}>{formatVideoTime(displayTime)}</Text>
+
+      {/* Draggable & Tappable Timeline Scrubber */}
+      <View
+        ref={trackWrapperRef}
+        style={styles.videoTimelineTrackWrapper}
+        onLayout={measureTrack}
+        {...scrubberPanResponder.panHandlers}
+      >
+        <View style={styles.videoTimelineTrack}>
+          <View style={[styles.videoTimelineFill, { width: `${progressPercent}%` }]} />
+          <View
+            style={[
+              styles.videoTimelineScrubber,
+              { left: `${progressPercent}%` },
+              isScrubbing && styles.videoTimelineScrubberActive,
+            ]}
+          />
+        </View>
+      </View>
+
+      <Text style={styles.videoTimeText}>{formatVideoTime(duration)}</Text>
+
+      {/* Mute / Unmute Button */}
+      <TouchableOpacity
+        style={styles.videoTimelineMuteBtn}
+        onPress={onToggleMute}
+        activeOpacity={0.7}
+      >
+        {muted ? (
+          <VolumeX size={18} color="#FFFFFF" />
+        ) : (
+          <Volume2 size={18} color={GOLD_ACCENT} />
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+});
+
 interface VideoPlayerViewProps {
   url: string;
   suspended?: boolean;
+  showControls: boolean;
   screenWidth: number;
   screenHeight: number;
   onLoaded?: () => void;
   onToggleControls?: () => void;
+  onSetControlsVisible?: (visible: boolean) => void;
   onScrubbingChange?: (isScrubbing: boolean) => void;
 }
 
 // Clean Video player component with expo-video and playback controls
-const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
+const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
   url,
   suspended = false,
+  showControls,
   screenWidth,
   screenHeight,
   onLoaded,
   onToggleControls,
+  onSetControlsVisible,
   onScrubbingChange,
 }) => {
   const insets = useSafeAreaInsets();
+  const insetBottom = insets.bottom ?? 0;
+  const insetLeft = insets.left ?? 0;
+  const insetRight = insets.right ?? 0;
   const [muted, setMuted] = useState(sessionVideoMuted);
-  const [showControls, setShowControls] = useState(true);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const [timelineWidth, setTimelineWidth] = useState(0);
   const hideTimerRef = useRef<any>(null);
   const wasPlayingRef = useRef(false);
+  const isScrubbingRef = useRef(false);
   const suspendedRef = useRef(suspended);
   suspendedRef.current = suspended;
 
@@ -2140,9 +2589,6 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         player.pause();
       } catch {}
     } else {
-      // Bring the controls back on focus and resume if it was playing.
-      // A frozen video with hidden controls felt like "the controls vanished".
-      setShowControls(true);
       if (wasPlayingRef.current && !loadFailed) {
         wasPlayingRef.current = false;
         try {
@@ -2166,55 +2612,46 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
 
   const { isPlaying } = useEvent(player, 'playingChange', { isPlaying: player.playing });
 
-  useEventListener(player, 'timeUpdate', (event) => {
-    setCurrentTime(event.currentTime);
-    if (player.duration && player.duration > 0 && duration !== player.duration) {
-      setDuration(player.duration);
-    }
-  });
-
   useEventListener(player, 'sourceLoad', () => {
-    if (player.duration && player.duration > 0) {
-      setDuration(player.duration);
-    }
     onLoaded?.();
   });
 
-  // Auto-hide controls after 3.5s of inactivity when video is playing
-  const resetHideTimer = useCallback(() => {
+  const pauseHideTimer = useCallback(() => {
     if (hideTimerRef.current) {
       clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
     }
-    if (isPlaying) {
+  }, []);
+
+  // Auto-hide unified controls after 3.5s of inactivity when video is playing
+  const resetHideTimer = useCallback(() => {
+    pauseHideTimer();
+    if (isPlaying && !suspendedRef.current) {
       hideTimerRef.current = setTimeout(() => {
+        hideTimerRef.current = null;
         // Hiding mid-scrub: the overlay unmounts, the gesture terminates
         // and the pager lock would release, letting the finger scroll pages.
         if (isScrubbingRef.current) return;
-        setShowControls(false);
+        onSetControlsVisible?.(false);
       }, 3500);
     }
-  }, [isPlaying]);
+  }, [isPlaying, onSetControlsVisible, pauseHideTimer]);
 
   useEffect(() => {
-    if (isPlaying && showControls) {
+    if (isPlaying && showControls && !suspended) {
       resetHideTimer();
+    } else {
+      pauseHideTimer();
     }
-    return () => {
-      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-    };
-  }, [isPlaying, showControls, resetHideTimer]);
+    return pauseHideTimer;
+  }, [isPlaying, showControls, suspended, resetHideTimer, pauseHideTimer]);
 
-  const handleToggleControls = () => {
+  const handleToggleControls = useCallback(() => {
     Haptics.selectionAsync();
-    setShowControls((prev) => {
-      const next = !prev;
-      if (next) resetHideTimer();
-      return next;
-    });
     onToggleControls?.();
-  };
+  }, [onToggleControls]);
 
-  const handlePlayPause = () => {
+  const handlePlayPause = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     if (isPlaying) {
       player.pause();
@@ -2222,120 +2659,36 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
       player.play();
       resetHideTimer();
     }
-  };
+  }, [isPlaying, player, resetHideTimer]);
 
-  const handleSeekBackward = () => {
+  const handleSeekBackward = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     player.seekBy(-10);
     resetHideTimer();
-  };
+  }, [player, resetHideTimer]);
 
-  const handleSeekForward = () => {
+  const handleSeekForward = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     player.seekBy(10);
     resetHideTimer();
-  };
+  }, [player, resetHideTimer]);
 
-  const toggleMute = () => {
+  const toggleMute = useCallback(() => {
     Haptics.selectionAsync();
     const nextMuted = !muted;
     player.muted = nextMuted;
     setMuted(nextMuted);
     setSessionVideoMuted(nextMuted);
     resetHideTimer();
-  };
+  }, [muted, player, resetHideTimer]);
 
-  const [isScrubbing, setIsScrubbing] = useState(false);
-  const [scrubTime, setScrubTime] = useState(0);
-
-  const durationRef = useRef(0);
-  durationRef.current = duration;
-  const isScrubbingRef = useRef(false);
-  isScrubbingRef.current = isScrubbing;
-
-  const trackLayoutRef = useRef<{ pageX: number; width: number }>({ pageX: 0, width: 0 });
-  const trackWrapperRef = useRef<ViewInstance>(null);
-
-  const measureTrack = useCallback(() => {
-    trackWrapperRef.current?.measure((_x, _y, width, _height, pageX) => {
-      if (width > 0) {
-        trackLayoutRef.current = { pageX, width };
-        setTimelineWidth(width);
-      }
-    });
-  }, []);
-
-  const updateScrubFromPageX = useCallback(
-    (pageX: number, commitToPlayer: boolean) => {
-      const { pageX: trackX, width: trackW } = trackLayoutRef.current;
-      const totalDuration = durationRef.current;
-      if (trackW <= 0 || totalDuration <= 0) return;
-
-      const relX = pageX - trackX;
-      const progress = Math.max(0, Math.min(1, relX / trackW));
-      const targetTime = progress * totalDuration;
-
-      setScrubTime(targetTime);
-
-      if (commitToPlayer) {
-        player.currentTime = targetTime;
-        setCurrentTime(targetTime);
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      }
+  const handleTimelineScrubbingChange = useCallback(
+    (scrubbing: boolean) => {
+      isScrubbingRef.current = scrubbing;
+      onScrubbingChange?.(scrubbing);
     },
-    [player]
+    [onScrubbingChange]
   );
-
-  const scrubberPanResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onStartShouldSetPanResponderCapture: () => true,
-        onMoveShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponderCapture: () => true,
-        onPanResponderTerminationRequest: () => false,
-
-        onPanResponderGrant: (evt) => {
-          setIsScrubbing(true);
-          onScrubbingChange?.(true);
-          if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-          Haptics.selectionAsync();
-
-          // Measure track position immediately on touch
-          trackWrapperRef.current?.measure((_x, _y, width, _height, pageX) => {
-            if (width > 0) {
-              trackLayoutRef.current = { pageX, width };
-              setTimelineWidth(width);
-            }
-            updateScrubFromPageX(evt.nativeEvent.pageX, false);
-          });
-        },
-
-        onPanResponderMove: (evt) => {
-          updateScrubFromPageX(evt.nativeEvent.pageX, false);
-          // If the native side drops the lock, re-assert it on every movement.
-          onScrubbingChange?.(true);
-        },
-
-        onPanResponderRelease: (evt) => {
-          updateScrubFromPageX(evt.nativeEvent.pageX, true);
-          setIsScrubbing(false);
-          onScrubbingChange?.(false);
-          resetHideTimer();
-        },
-
-        onPanResponderTerminate: () => {
-          setIsScrubbing(false);
-          onScrubbingChange?.(false);
-          resetHideTimer();
-        },
-      }),
-    [updateScrubFromPageX, resetHideTimer, onScrubbingChange]
-  );
-
-  const displayTime = isScrubbing ? scrubTime : currentTime;
-  const progressPercent =
-    duration > 0 ? Math.min(100, Math.max(0, (displayTime / duration) * 100)) : 0;
 
   const handleRetryLoad = useCallback(() => {
     if (!mountedRef.current || blockedUrl) return;
@@ -2390,7 +2743,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
         </View>
       )}
 
-      {/* Tap catcher on video to toggle video controls */}
+      {/* Tap catcher on video to toggle unified controls */}
       <TouchableWithoutFeedback onPress={handleToggleControls}>
         <View style={StyleSheet.absoluteFill} />
       </TouchableWithoutFeedback>
@@ -2436,54 +2789,23 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = ({
             </TouchableOpacity>
           </View>
 
-          {/* Bottom Timeline & Duration Scrubber Bar */}
-          <View
-            style={[
-              styles.videoTimelineCard,
-              { bottom: Math.max(insets.bottom + 68, 92) },
-            ]}
-          >
-            <Text style={styles.videoTimeText}>{formatVideoTime(displayTime)}</Text>
-
-            {/* Draggable & Tappable Timeline Scrubber */}
-            <View
-              ref={trackWrapperRef}
-              style={styles.videoTimelineTrackWrapper}
-              onLayout={measureTrack}
-              {...scrubberPanResponder.panHandlers}
-            >
-              <View style={styles.videoTimelineTrack}>
-                <View style={[styles.videoTimelineFill, { width: `${progressPercent}%` }]} />
-                <View
-                  style={[
-                    styles.videoTimelineScrubber,
-                    { left: `${progressPercent}%` },
-                    isScrubbing && styles.videoTimelineScrubberActive,
-                  ]}
-                />
-              </View>
-            </View>
-
-            <Text style={styles.videoTimeText}>{formatVideoTime(duration)}</Text>
-
-            {/* Mute / Unmute Button */}
-            <TouchableOpacity
-              style={styles.videoTimelineMuteBtn}
-              onPress={toggleMute}
-              activeOpacity={0.7}
-            >
-              {muted ? (
-                <VolumeX size={18} color="#FFFFFF" />
-              ) : (
-                <Volume2 size={18} color={GOLD_ACCENT} />
-              )}
-            </TouchableOpacity>
-          </View>
+          {/* Isolated Bottom Timeline & Duration Scrubber Bar */}
+          <VideoTimelineBar
+            player={player}
+            muted={muted}
+            insetBottom={insetBottom}
+            insetLeft={insetLeft}
+            insetRight={insetRight}
+            onToggleMute={toggleMute}
+            onInteraction={resetHideTimer}
+            onPauseHideTimer={pauseHideTimer}
+            onScrubbingChange={handleTimelineScrubbingChange}
+          />
         </View>
       )}
     </View>
   );
-};
+});
 
 const styles = StyleSheet.create({
   jumpOverlay: {
