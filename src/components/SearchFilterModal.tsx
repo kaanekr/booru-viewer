@@ -1,17 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Animated,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
-  View,
-  Dimensions,
   TouchableWithoutFeedback,
-  FlatList,
-  Platform,
+  View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
@@ -41,9 +41,19 @@ import { useSource } from '../context/SourceContext';
 import { TagChip } from './TagChip';
 import { Colors } from '../theme/colors';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
-
+const AnimatedView = Animated?.View ?? View;
 const GOLD_ACCENT = '#F5A623';
+
+type ActivePicker =
+  | 'sort'
+  | 'time'
+  | 'rating'
+  | 'score'
+  | 'page'
+  | 'cumstService'
+  | 'cumstMedia'
+  | 'dateAnchor'
+  | null;
 
 const SORT_OPTIONS: { label: string; value: SortOption; desc: string }[] = [
   { label: '---', value: 'default', desc: 'Default Sorting' },
@@ -128,7 +138,7 @@ const CUMST_MEDIA_OPTIONS: { label: string; value: CumstMediaTypeOption; desc: s
 ];
 
 const RATING_OPTIONS: { label: string; value: RatingFilterOption }[] = [
-  { label: 'Hepsi', value: 'all' },
+  { label: 'All', value: 'all' },
   { label: 'Safe', value: 'safe' },
   { label: 'Questionable', value: 'questionable' },
   { label: 'Explicit (18+)', value: 'explicit' },
@@ -152,6 +162,21 @@ const NHENTAI_MIN_SCORE_OPTIONS: { label: string; value: number | undefined }[] 
   { label: '10,000+ Favorites', value: 10000 },
 ];
 
+const SORT_OPTIONS_BY_TYPE: Record<string, { label: string; value: SortOption; desc: string }[]> = {
+  redgifs: REDGIFS_SORT_OPTIONS,
+  xvideos: XVIDEOS_SORT_OPTIONS,
+  xhamster: XHAMSTER_SORT_OPTIONS,
+  pornhub: PORNHUB_SORT_OPTIONS,
+  sexcom: SEXCOM_SORT_OPTIONS,
+  hentaihaven: HENTAIHAVEN_SORT_OPTIONS,
+  nhentai: NHENTAI_SORT_OPTIONS,
+  cumst: CUMST_SORT_OPTIONS,
+};
+
+function getSortOptionsForSource(source: BooruSource) {
+  return SORT_OPTIONS_BY_TYPE[source.type] ?? SORT_OPTIONS;
+}
+
 interface SearchFilterModalProps {
   visible: boolean;
   filterConfig: SearchFilterConfig;
@@ -171,34 +196,82 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 }) => {
   const insets = useSafeAreaInsets();
   const { selectSource } = useSource();
-  const activeSource = propSource;
+  const [draftSource, setDraftSource] = useState<BooruSource>(propSource);
+  const activeSource = draftSource;
   const [draft, setDraft] = useState<SearchFilterConfig>(filterConfig);
   const [tagInput, setTagInput] = useState('');
   const [suggestions, setSuggestions] = useState<BooruTagSuggestion[]>([]);
 
-  // Popover menus state
-  const [showSortPicker, setShowSortPicker] = useState(false);
-  const [showTimePicker, setShowTimePicker] = useState(false);
-  const [showRatingPicker, setShowRatingPicker] = useState(false);
-  const [showScorePicker, setShowScorePicker] = useState(false);
-  const [showPagePicker, setShowPagePicker] = useState(false);
-  const [showCumstServicePicker, setShowCumstServicePicker] = useState(false);
-  const [showCumstMediaPicker, setShowCumstMediaPicker] = useState(false);
-  const [showDateAnchorPicker, setShowDateAnchorPicker] = useState(false);
+  // Inline overlay picker state
+  const [activePicker, setActivePicker] = useState<ActivePicker>(null);
   const [isSourceListOpen, setIsSourceListOpen] = useState(false);
   const [customDateText, setCustomDateText] = useState('');
   const [pageInputText, setPageInputText] = useState('');
+
+  const overlayAnim = useRef(Animated?.Value ? new Animated.Value(0) : null).current;
+  const onApplyRef = useRef(onApply);
+  onApplyRef.current = onApply;
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   // Sync draft when modal opens
   useEffect(() => {
     if (visible) {
       setDraft({ ...filterConfig });
+      setDraftSource(propSource);
       setTagInput('');
       setSuggestions([]);
       setIsSourceListOpen(false);
+      setActivePicker(null);
       setPageInputText(filterConfig.jumpToPage > 1 ? String(filterConfig.jumpToPage) : '');
     }
-  }, [visible, filterConfig]);
+  }, [visible, filterConfig, propSource]);
+
+  useEffect(() => {
+    if (!activePicker || !overlayAnim || !Animated?.timing) return;
+    overlayAnim.setValue(0);
+    Animated.timing(overlayAnim, {
+      toValue: 1,
+      duration: 150,
+      useNativeDriver: true,
+    }).start();
+  }, [activePicker, overlayAnim]);
+
+  const dismissPicker = useCallback(() => {
+    if (activePicker === 'page') {
+      setPageInputText(draft.jumpToPage > 1 ? String(draft.jumpToPage) : '');
+    }
+    setActivePicker(null);
+  }, [activePicker, draft.jumpToPage]);
+
+  const overlayBackdropStyle = useMemo(
+    () => (overlayAnim ? { opacity: overlayAnim } : undefined),
+    [overlayAnim]
+  );
+
+  const overlayCardStyle = useMemo(
+    () =>
+      overlayAnim
+        ? {
+            opacity: overlayAnim,
+            transform: [
+              {
+                scale: overlayAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0.96, 1],
+                }),
+              },
+            ],
+          }
+        : undefined,
+    [overlayAnim]
+  );
 
   // Autocomplete from server for filter modal tag input
   useEffect(() => {
@@ -304,10 +377,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
     const resolvedPage = Number.isFinite(n) && n > 0 ? Math.min(n, 9999) : 1;
     setDraft((prev) => ({ ...prev, jumpToPage: resolvedPage }));
     setPageInputText(resolvedPage > 1 ? String(resolvedPage) : '');
-    setShowPagePicker(false);
+    setActivePicker(null);
   };
 
-  const handleApplySearch = () => {
+  const handleApplySearch = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     let finalDraft = { ...draft };
     if (tagInput.trim()) {
@@ -320,50 +393,30 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
         }
       }
     }
-    // Safety: if the user types a number in the go-to-page popup and hits Apply directly
-    if (pageInputText.trim()) {
+    // Commit unsaved page input only if the user taps Apply while the page picker is open
+    if (activePicker === 'page' && pageInputText.trim()) {
       const n = parseInt(pageInputText.replace(/[^0-9]/g, ''), 10);
       if (Number.isFinite(n) && n > 0) {
         finalDraft.jumpToPage = Math.min(n, 9999);
       }
     }
-    onApply(finalDraft);
+    if (draftSource.id !== propSource.id) {
+      try {
+        await (onSelectSource ?? selectSource)(draftSource);
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        if (!isMountedRef.current) return;
+      } catch {
+        Alert.alert('Could not switch source', 'Please try again.');
+        return;
+      }
+    }
+    onApplyRef.current(finalDraft);
   };
 
+  const sortOptions = getSortOptionsForSource(activeSource);
+
   const getSortLabel = () => {
-    if (activeSource.type === 'redgifs') {
-      const opt = REDGIFS_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
-      return opt ? opt.label : '---';
-    }
-    if (activeSource.type === 'xvideos') {
-      const opt = XVIDEOS_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
-      return opt ? opt.label : '---';
-    }
-    if (activeSource.type === 'xhamster') {
-      const opt = XHAMSTER_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
-      return opt ? opt.label : '---';
-    }
-    if (activeSource.type === 'pornhub') {
-      const opt = PORNHUB_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
-      return opt ? opt.label : '---';
-    }
-    if (activeSource.type === 'sexcom') {
-      const opt = SEXCOM_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
-      return opt ? opt.label : '---';
-    }
-    if (activeSource.type === 'hentaihaven') {
-      const opt = HENTAIHAVEN_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
-      return opt ? opt.label : '---';
-    }
-    if (activeSource.type === 'nhentai') {
-      const opt = NHENTAI_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
-      return opt ? opt.label : '---';
-    }
-    if (activeSource.type === 'cumst') {
-      const opt = CUMST_SORT_OPTIONS.find((s) => s.value === draft.sortBy);
-      return opt ? opt.label : '---';
-    }
-    const opt = SORT_OPTIONS.find((s) => s.value === draft.sortBy);
+    const opt = sortOptions.find((s) => s.value === draft.sortBy);
     return opt ? opt.label : '---';
   };
 
@@ -374,7 +427,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
   const getRatingLabel = () => {
     const opt = RATING_OPTIONS.find((r) => r.value === draft.rating);
-    return opt ? opt.label : 'Hepsi';
+    return opt ? opt.label : 'All';
   };
 
   const getScoreLabel = () => {
@@ -384,12 +437,12 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
   const getCumstServiceLabel = () => {
     const opt = CUMST_SERVICE_OPTIONS.find((s) => s.value === draft.cumstService);
-    return opt ? opt.label : 'Hepsi';
+    return opt ? opt.label : 'All';
   };
 
   const getCumstMediaLabel = () => {
     const opt = CUMST_MEDIA_OPTIONS.find((m) => m.value === draft.cumstMediaType);
-    return opt ? opt.label : 'Hepsi';
+    return opt ? opt.label : 'All';
   };
 
   const getDateLabel = () => describeAnchor(draft.leaderboardDate, draft.timeRange);
@@ -414,25 +467,33 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
       visible={visible}
       animationType="slide"
       presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'overFullScreen'}
-      onRequestClose={onClose}
+      onRequestClose={() => {
+        if (activePicker) dismissPicker();
+        else onClose();
+      }}
       onDismiss={onClose}
     >
-      <View
+      <KeyboardAvoidingView
         style={[
           styles.container,
           {
-            paddingTop: Platform.OS === 'ios' ? 8 : insets.top,
+            paddingTop: Platform.OS === 'ios' ? 8 : insets.top + 8,
           },
         ]}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        {/* Drag Handle Indicator */}
-        <View style={styles.dragHandleContainer}>
-          <View style={styles.dragHandle} />
-        </View>
+        {/* Drag Handle Indicator (iOS pageSheet is natively swipeable) */}
+        {Platform.OS === 'ios' && (
+          <View style={styles.dragHandleContainer}>
+            <View style={styles.dragHandle} />
+          </View>
+        )}
 
-        {/* Header (Screenshot 1: X on left, Filter in center, Search icon on right) */}
+        {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Close filter modal"
             style={styles.circleBtn}
             onPress={onClose}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
@@ -443,6 +504,8 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
           <Text style={styles.headerTitle}>Filter</Text>
 
           <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel="Apply filters"
             style={[styles.circleBtn, styles.searchBtn]}
             onPress={handleApplySearch}
             hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
@@ -495,14 +558,15 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
           {/* Autocomplete dropdown overlay */}
           {suggestions.length > 0 && (
             <View style={styles.suggestionsCard}>
-              <FlatList
-                data={suggestions}
-                keyExtractor={(item, index) => `suggest-${item.name}-${index}`}
-                keyboardShouldPersistTaps="handled"
-                nestedScrollEnabled
+              <ScrollView
                 style={{ maxHeight: 200 }}
-                renderItem={({ item }) => (
+                nestedScrollEnabled
+                keyboardShouldPersistTaps="handled"
+                showsVerticalScrollIndicator={true}
+              >
+                {suggestions.map((item, index) => (
                   <TouchableOpacity
+                    key={`suggest-${item.name}-${index}`}
                     style={styles.suggestionRow}
                     onPress={() => handleSelectSuggestion(item.name, item.category)}
                   >
@@ -514,8 +578,8 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                       onPress={() => handleSelectSuggestion(item.name, item.category)}
                     />
                   </TouchableOpacity>
-                )}
-              />
+                ))}
+              </ScrollView>
             </View>
           )}
 
@@ -549,15 +613,20 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
               {isSourceListOpen && (
                 <View style={{ padding: 12 }}>
-                  <SourceCatalog activeSource={activeSource} onSelect={async (source) => {
-                    Haptics.selectionAsync();
-                    try {
-                      await (onSelectSource ?? selectSource)(source);
+                  <SourceCatalog
+                    activeSource={activeSource}
+                    onSelect={(source) => {
+                      Haptics.selectionAsync();
+                      setDraftSource(source);
                       setIsSourceListOpen(false);
-                    } catch {
-                      Alert.alert('Could not switch source', 'Please try again.');
-                    }
-                  }} />
+                      setDraft((prev) => {
+                        const options = getSortOptionsForSource(source);
+                        return options.some((opt) => opt.value === prev.sortBy)
+                          ? prev
+                          : { ...prev, sortBy: 'default' };
+                      });
+                    }}
+                  />
                 </View>
               )}
             </View>
@@ -572,14 +641,14 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                 style={styles.rowItem}
                 onPress={() => {
                   setPageInputText(draft.jumpToPage > 1 ? String(draft.jumpToPage) : '');
-                  setShowPagePicker(true);
+                  setActivePicker('page');
                 }}
                 activeOpacity={0.7}
               >
                 <Text style={styles.rowLabel}>Jump to Page</Text>
                 <View style={styles.rowRight}>
                   <Text style={styles.rowValue}>
-                    {draft.jumpToPage > 1 ? `Sayfa ${draft.jumpToPage}` : '---'}
+                    {draft.jumpToPage > 1 ? `Page ${draft.jumpToPage}` : '---'}
                   </Text>
                   <ChevronRight size={18} color={Colors.dark.textMuted} />
                 </View>
@@ -611,7 +680,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
               {/* Sort by */}
               <TouchableOpacity
                 style={styles.rowItem}
-                onPress={() => setShowSortPicker(true)}
+                onPress={() => setActivePicker('sort')}
                 activeOpacity={0.7}
               >
                 <Text style={styles.rowLabel}>Sort by</Text>
@@ -626,7 +695,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
               {/* Popularity Time Range / Leaderboard */}
               <TouchableOpacity
                 style={styles.rowItem}
-                onPress={() => setShowTimePicker(true)}
+                onPress={() => setActivePicker('time')}
                 activeOpacity={0.7}
               >
                 <Text style={styles.rowLabel}>
@@ -644,10 +713,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                 <>
                   <View style={styles.rowDivider} />
 
-                  {/* Platform / Servis Filter */}
+                  {/* Platform / Service Filter */}
                   <TouchableOpacity
                     style={styles.rowItem}
-                    onPress={() => setShowCumstServicePicker(true)}
+                    onPress={() => setActivePicker('cumstService')}
                     activeOpacity={0.7}
                   >
                     <Text style={styles.rowLabel}>Platform / Service</Text>
@@ -664,7 +733,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                   {/* Media Type Filter */}
                   <TouchableOpacity
                     style={styles.rowItem}
-                    onPress={() => setShowCumstMediaPicker(true)}
+                    onPress={() => setActivePicker('cumstMedia')}
                     activeOpacity={0.7}
                   >
                     <Text style={styles.rowLabel}>Media Type</Text>
@@ -683,7 +752,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                     style={styles.rowItem}
                     onPress={() => {
                       setCustomDateText(draft.leaderboardDate || '');
-                      setShowDateAnchorPicker(true);
+                      setActivePicker('dateAnchor');
                     }}
                     activeOpacity={0.7}
                   >
@@ -706,7 +775,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                       {/* Rating Filter */}
                       <TouchableOpacity
                         style={styles.rowItem}
-                        onPress={() => setShowRatingPicker(true)}
+                        onPress={() => setActivePicker('rating')}
                         activeOpacity={0.7}
                       >
                         <Text style={styles.rowLabel}>Rating</Text>
@@ -725,7 +794,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
                   {/* Min Score (on nhentai = favorite count) */}
                   <TouchableOpacity
                     style={styles.rowItem}
-                    onPress={() => setShowScorePicker(true)}
+                    onPress={() => setActivePicker('score')}
                     activeOpacity={0.7}
                   >
                     <Text style={styles.rowLabel}>
@@ -774,444 +843,352 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
           </TouchableOpacity>
         </ScrollView>
 
-        {/* -------------------- FLOATING POPUPS -------------------- */}
+        {/* Inline Animated Picker Overlay (replaces stacked nested <Modal>s) */}
+        {activePicker !== null && (
+          <AnimatedView style={[styles.inlineOverlay, overlayBackdropStyle]}>
+            <TouchableWithoutFeedback accessibilityLabel="Dismiss picker" onPress={dismissPicker}>
+              <KeyboardAvoidingView
+                style={styles.modalOverlay}
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+              >
+                <TouchableWithoutFeedback>
+                  <AnimatedView
+                    style={[
+                      styles.popoverCard,
+                      activePicker === 'dateAnchor' && { maxHeight: '80%' },
+                      overlayCardStyle,
+                    ]}
+                  >
+                    {activePicker === 'sort' && (
+                      <>
+                        <Text style={styles.popoverTitle}>Sort by</Text>
+                        <View style={styles.popoverList}>
+                          {sortOptions.map((opt) => {
+                            const isSelected = draft.sortBy === opt.value;
+                            return (
+                              <TouchableOpacity
+                                key={opt.value}
+                                style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
+                                onPress={() => {
+                                  Haptics.selectionAsync();
+                                  setDraft((prev) => ({ ...prev, sortBy: opt.value }));
+                                  setActivePicker(null);
+                                }}
+                              >
+                                <Text
+                                  style={[
+                                    styles.popoverItemText,
+                                    isSelected && styles.popoverItemTextSelected,
+                                  ]}
+                                >
+                                  {opt.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </>
+                    )}
 
-        {/* 1. Sort by Popup */}
-        <Modal
-          visible={showSortPicker}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setShowSortPicker(false)}
-        >
-          <TouchableWithoutFeedback onPress={() => setShowSortPicker(false)}>
-            <View style={styles.modalOverlay}>
-              <TouchableWithoutFeedback>
-                <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>Sort by</Text>
-                  <View style={styles.popoverList}>
-                    {(activeSource.type === 'redgifs'
-                      ? REDGIFS_SORT_OPTIONS
-                      : activeSource.type === 'xvideos'
-                      ? XVIDEOS_SORT_OPTIONS
-                      : activeSource.type === 'xhamster'
-                      ? XHAMSTER_SORT_OPTIONS
-                      : activeSource.type === 'pornhub'
-                      ? PORNHUB_SORT_OPTIONS
-                      : activeSource.type === 'sexcom'
-                      ? SEXCOM_SORT_OPTIONS
-                      : activeSource.type === 'hentaihaven'
-                      ? HENTAIHAVEN_SORT_OPTIONS
-                      : activeSource.type === 'nhentai'
-                      ? NHENTAI_SORT_OPTIONS
-                      : activeSource.type === 'cumst'
-                      ? CUMST_SORT_OPTIONS
-                      : SORT_OPTIONS
-                    ).map((opt) => {
-                      const isSelected = draft.sortBy === opt.value;
-                      return (
-                        <TouchableOpacity
-                          key={opt.value}
-                          style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
-                          onPress={() => {
-                            Haptics.selectionAsync();
-                            setDraft((prev) => ({ ...prev, sortBy: opt.value }));
-                            setShowSortPicker(false);
-                          }}
-                        >
-                          <Text
-                            style={[
-                              styles.popoverItemText,
-                              isSelected && styles.popoverItemTextSelected,
-                            ]}
-                          >
-                            {opt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </View>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
-        </Modal>
+                    {activePicker === 'time' && (
+                      <>
+                        <Text style={styles.popoverTitle}>Time Range</Text>
+                        <View style={styles.popoverList}>
+                          {TIME_RANGES.map((opt) => {
+                            const isSelected = draft.timeRange === opt.value;
+                            return (
+                              <TouchableOpacity
+                                key={opt.value}
+                                style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
+                                onPress={() => {
+                                  Haptics.selectionAsync();
+                                  setDraft((prev) => ({
+                                    ...prev,
+                                    timeRange: opt.value,
+                                    sortBy: prev.sortBy === 'default' ? 'score' : prev.sortBy,
+                                  }));
+                                  setActivePicker(null);
+                                }}
+                              >
+                                <Text
+                                  style={[
+                                    styles.popoverItemText,
+                                    isSelected && styles.popoverItemTextSelected,
+                                  ]}
+                                >
+                                  {opt.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </>
+                    )}
 
-        {/* 2. Time Range Popup */}
-        <Modal
-          visible={showTimePicker}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setShowTimePicker(false)}
-        >
-          <TouchableWithoutFeedback onPress={() => setShowTimePicker(false)}>
-            <View style={styles.modalOverlay}>
-              <TouchableWithoutFeedback>
-                <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>Time Range</Text>
-                  <View style={styles.popoverList}>
-                    {TIME_RANGES.map((opt) => {
-                      const isSelected = draft.timeRange === opt.value;
-                      return (
-                        <TouchableOpacity
-                          key={opt.value}
-                          style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
-                          onPress={() => {
-                            Haptics.selectionAsync();
-                            setDraft((prev) => ({
-                              ...prev,
-                              timeRange: opt.value,
-                              sortBy: prev.sortBy === 'default' ? 'score' : prev.sortBy,
-                            }));
-                            setShowTimePicker(false);
-                          }}
-                        >
-                          <Text
-                            style={[
-                              styles.popoverItemText,
-                              isSelected && styles.popoverItemTextSelected,
-                            ]}
-                          >
-                            {opt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </View>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
-        </Modal>
+                    {activePicker === 'rating' && (
+                      <>
+                        <Text style={styles.popoverTitle}>Rating</Text>
+                        <View style={styles.popoverList}>
+                          {RATING_OPTIONS.map((opt) => {
+                            const isSelected = draft.rating === opt.value;
+                            return (
+                              <TouchableOpacity
+                                key={opt.value}
+                                style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
+                                onPress={() => {
+                                  Haptics.selectionAsync();
+                                  setDraft((prev) => ({ ...prev, rating: opt.value }));
+                                  setActivePicker(null);
+                                }}
+                              >
+                                <Text
+                                  style={[
+                                    styles.popoverItemText,
+                                    isSelected && styles.popoverItemTextSelected,
+                                  ]}
+                                >
+                                  {opt.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </>
+                    )}
 
-        {/* 3. Rating Filter Popup */}
-        <Modal
-          visible={showRatingPicker}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setShowRatingPicker(false)}
-        >
-          <TouchableWithoutFeedback onPress={() => setShowRatingPicker(false)}>
-            <View style={styles.modalOverlay}>
-              <TouchableWithoutFeedback>
-                <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>Derecelendirme</Text>
-                  <View style={styles.popoverList}>
-                    {RATING_OPTIONS.map((opt) => {
-                      const isSelected = draft.rating === opt.value;
-                      return (
-                        <TouchableOpacity
-                          key={opt.value}
-                          style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
-                          onPress={() => {
-                            Haptics.selectionAsync();
-                            setDraft((prev) => ({ ...prev, rating: opt.value }));
-                            setShowRatingPicker(false);
-                          }}
-                        >
-                          <Text
-                            style={[
-                              styles.popoverItemText,
-                              isSelected && styles.popoverItemTextSelected,
-                            ]}
-                          >
-                            {opt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </View>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
-        </Modal>
+                    {activePicker === 'score' && (
+                      <>
+                        <Text style={styles.popoverTitle}>
+                          {activeSource.type === 'nhentai'
+                            ? 'Minimum Favorites Count'
+                            : 'Minimum Score'}
+                        </Text>
+                        <View style={styles.popoverList}>
+                          {(activeSource.type === 'nhentai'
+                            ? NHENTAI_MIN_SCORE_OPTIONS
+                            : MIN_SCORE_OPTIONS
+                          ).map((opt, i) => {
+                            const isSelected = draft.minScore === opt.value;
+                            return (
+                              <TouchableOpacity
+                                key={i}
+                                style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
+                                onPress={() => {
+                                  Haptics.selectionAsync();
+                                  setDraft((prev) => ({ ...prev, minScore: opt.value }));
+                                  setActivePicker(null);
+                                }}
+                              >
+                                <Text
+                                  style={[
+                                    styles.popoverItemText,
+                                    isSelected && styles.popoverItemTextSelected,
+                                  ]}
+                                >
+                                  {opt.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </>
+                    )}
 
-        {/* 4. Min Score Popup */}
-        <Modal
-          visible={showScorePicker}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setShowScorePicker(false)}
-        >
-          <TouchableWithoutFeedback onPress={() => setShowScorePicker(false)}>
-            <View style={styles.modalOverlay}>
-              <TouchableWithoutFeedback>
-                <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>
-                    {activeSource.type === 'nhentai'
-                      ? 'Minimum Favorites Count'
-                      : 'Minimum Score'}
-                  </Text>
-                  <View style={styles.popoverList}>
-                    {(activeSource.type === 'nhentai'
-                      ? NHENTAI_MIN_SCORE_OPTIONS
-                      : MIN_SCORE_OPTIONS
-                    ).map((opt, i) => {
-                      const isSelected = draft.minScore === opt.value;
-                      return (
-                        <TouchableOpacity
-                          key={i}
-                          style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
-                          onPress={() => {
-                            Haptics.selectionAsync();
-                            setDraft((prev) => ({ ...prev, minScore: opt.value }));
-                            setShowScorePicker(false);
-                          }}
-                        >
-                          <Text
-                            style={[
-                              styles.popoverItemText,
-                              isSelected && styles.popoverItemTextSelected,
-                            ]}
-                          >
-                            {opt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </View>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
-        </Modal>
-
-        {/* 5. Jump to Page Popup */}
-        <Modal
-          visible={showPagePicker}
-          transparent
-          animationType="fade"
-          onRequestClose={confirmPageInput}
-        >
-          <TouchableWithoutFeedback onPress={confirmPageInput}>
-            <View style={styles.modalOverlay}>
-              <TouchableWithoutFeedback>
-                <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>Go to Page</Text>
-                  <TextInput
-                    style={styles.pageInput}
-                    placeholder={`Page number (current: ${draft.jumpToPage})`}
-                    placeholderTextColor={Colors.dark.textMuted}
-                    value={pageInputText}
-                    onChangeText={setPageInputText}
-                    keyboardType="number-pad"
-                    returnKeyType="done"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    selectTextOnFocus
-                    onSubmitEditing={confirmPageInput}
-                  />
-                  <View style={styles.pageBtnRow}>
-                    <TouchableOpacity
-                      style={[styles.popoverItem, styles.pageConfirmBtn]}
-                      onPress={confirmPageInput}
-                    >
-                      <Text style={[styles.popoverItemText, styles.popoverItemTextSelected]}>Go</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.popoverItem}
-                      onPress={() => {
-                        Haptics.selectionAsync();
-                        setDraft((prev) => ({ ...prev, jumpToPage: 1 }));
-                        setPageInputText('');
-                        setShowPagePicker(false);
-                      }}
-                    >
-                      <Text style={styles.popoverItemText}>Reset (1)</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
-        </Modal>
-        {/* 6. Cum.st Platform / Service Popup */}
-        <Modal
-          visible={showCumstServicePicker}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setShowCumstServicePicker(false)}
-        >
-          <TouchableWithoutFeedback onPress={() => setShowCumstServicePicker(false)}>
-            <View style={styles.modalOverlay}>
-              <TouchableWithoutFeedback>
-                <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>Platform / Service</Text>
-                  <View style={styles.popoverList}>
-                    {CUMST_SERVICE_OPTIONS.map((opt) => {
-                      const isSelected = draft.cumstService === opt.value;
-                      return (
-                        <TouchableOpacity
-                          key={opt.value}
-                          style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
-                          onPress={() => {
-                            Haptics.selectionAsync();
-                            setDraft((prev) => ({ ...prev, cumstService: opt.value }));
-                            setShowCumstServicePicker(false);
-                          }}
-                        >
-                          <Text
-                            style={[
-                              styles.popoverItemText,
-                              isSelected && styles.popoverItemTextSelected,
-                            ]}
-                          >
-                            {opt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </View>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
-        </Modal>
-
-        {/* 7. Cum.st Media Type Popup */}
-        <Modal
-          visible={showCumstMediaPicker}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setShowCumstMediaPicker(false)}
-        >
-          <TouchableWithoutFeedback onPress={() => setShowCumstMediaPicker(false)}>
-            <View style={styles.modalOverlay}>
-              <TouchableWithoutFeedback>
-                <View style={styles.popoverCard}>
-                  <Text style={styles.popoverTitle}>Media Type</Text>
-                  <View style={styles.popoverList}>
-                    {CUMST_MEDIA_OPTIONS.map((opt) => {
-                      const isSelected = draft.cumstMediaType === opt.value;
-                      return (
-                        <TouchableOpacity
-                          key={opt.value}
-                          style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
-                          onPress={() => {
-                            Haptics.selectionAsync();
-                            setDraft((prev) => ({ ...prev, cumstMediaType: opt.value }));
-                            setShowCumstMediaPicker(false);
-                          }}
-                        >
-                          <Text
-                            style={[
-                              styles.popoverItemText,
-                              isSelected && styles.popoverItemTextSelected,
-                            ]}
-                          >
-                            {opt.label}
-                          </Text>
-                        </TouchableOpacity>
-                      );
-                    })}
-                  </View>
-                </View>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
-        </Modal>
-
-        {/* 8. Cum.st Historical Date Anchor Popup */}
-        <Modal
-          visible={showDateAnchorPicker}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setShowDateAnchorPicker(false)}
-        >
-          <TouchableWithoutFeedback onPress={() => setShowDateAnchorPicker(false)}>
-            <View style={styles.modalOverlay}>
-              <TouchableWithoutFeedback>
-                <View style={[styles.popoverCard, { maxHeight: '80%' }]}>
-                  <Text style={styles.popoverTitle}>{datePickerTitle}</Text>
-                  <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={true}>
-                    <View style={styles.popoverList}>
-                      {dateSlots.map((opt, idx) => {
-                        const isSelected = draft.leaderboardDate === opt.value;
-                        return (
+                    {activePicker === 'page' && (
+                      <>
+                        <Text style={styles.popoverTitle}>Go to Page</Text>
+                        <TextInput
+                          style={styles.pageInput}
+                          placeholder={`Page number (current: ${draft.jumpToPage})`}
+                          placeholderTextColor={Colors.dark.textMuted}
+                          value={pageInputText}
+                          onChangeText={setPageInputText}
+                          keyboardType="number-pad"
+                          returnKeyType="done"
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          selectTextOnFocus
+                          onSubmitEditing={confirmPageInput}
+                        />
+                        <View style={styles.pageBtnRow}>
                           <TouchableOpacity
-                            key={idx}
-                            style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
+                            style={[styles.popoverItem, styles.pageConfirmBtn]}
+                            onPress={confirmPageInput}
+                          >
+                            <Text style={[styles.popoverItemText, styles.popoverItemTextSelected]}>Go</Text>
+                          </TouchableOpacity>
+                          <TouchableOpacity
+                            style={styles.popoverItem}
                             onPress={() => {
                               Haptics.selectionAsync();
-                              setDraft((prev) => ({
-                                ...prev,
-                                leaderboardDate: opt.value,
-                                sortBy: opt.value ? 'score' : prev.sortBy,
-                                // Picking a date also picks the period time:
-                                // a weekly slot opens the weekly leaderboard, a monthly slot
-                                // the monthly leaderboard. Clearing keeps it as-is.
-                                timeRange: opt.value ? opt.range : prev.timeRange,
-                              }));
-                              setShowDateAnchorPicker(false);
+                              setDraft((prev) => ({ ...prev, jumpToPage: 1 }));
+                              setPageInputText('');
+                              setActivePicker(null);
                             }}
                           >
-                            <Text
-                              style={[
-                                styles.popoverItemText,
-                                isSelected && styles.popoverItemTextSelected,
-                              ]}
-                            >
-                              {opt.label}
-                            </Text>
+                            <Text style={styles.popoverItemText}>Reset (1)</Text>
                           </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  </ScrollView>
+                        </View>
+                      </>
+                    )}
 
-                  {/* Custom Date Input Row */}
-                  <View style={{ marginTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 10 }}>
-                    <Text style={{ fontSize: 12, color: '#8E92A4', marginBottom: 6 }}>Custom Date (YYYY-MM-DD):</Text>
-                    <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-                      <TextInput
-                        style={{
-                          flex: 1,
-                          backgroundColor: '#1E2026',
-                          borderRadius: 8,
-                          borderWidth: 1,
-                          borderColor: '#2D313A',
-                          color: '#FFFFFF',
-                          paddingHorizontal: 10,
-                          paddingVertical: 6,
-                          fontSize: 13,
-                        }}
-                        placeholder="E.g.: 2026-05-15"
-                        placeholderTextColor="#7E8494"
-                        value={customDateText}
-                        onChangeText={setCustomDateText}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                      />
-                      <TouchableOpacity
-                        style={{
-                          backgroundColor: GOLD_ACCENT,
-                          borderRadius: 8,
-                          paddingHorizontal: 12,
-                          paddingVertical: 7,
-                        }}
-                        onPress={() => {
-                          const trimmed = customDateText.trim();
-                          if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
-                            Haptics.selectionAsync();
-                            setDraft((prev) => ({
-                              ...prev,
-                              leaderboardDate: trimmed,
-                              sortBy: 'score',
-                            }));
-                            setShowDateAnchorPicker(false);
-                          }
-                        }}
-                      >
-                        <Text style={{ color: '#111216', fontWeight: '700', fontSize: 13 }}>Apply</Text>
-                      </TouchableOpacity>
-                    </View>
-                  </View>
-                </View>
-              </TouchableWithoutFeedback>
-            </View>
-          </TouchableWithoutFeedback>
-        </Modal>
-      </View>
+                    {activePicker === 'cumstService' && (
+                      <>
+                        <Text style={styles.popoverTitle}>Platform / Service</Text>
+                        <View style={styles.popoverList}>
+                          {CUMST_SERVICE_OPTIONS.map((opt) => {
+                            const isSelected = draft.cumstService === opt.value;
+                            return (
+                              <TouchableOpacity
+                                key={opt.value}
+                                style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
+                                onPress={() => {
+                                  Haptics.selectionAsync();
+                                  setDraft((prev) => ({ ...prev, cumstService: opt.value }));
+                                  setActivePicker(null);
+                                }}
+                              >
+                                <Text
+                                  style={[
+                                    styles.popoverItemText,
+                                    isSelected && styles.popoverItemTextSelected,
+                                  ]}
+                                >
+                                  {opt.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </>
+                    )}
+
+                    {activePicker === 'cumstMedia' && (
+                      <>
+                        <Text style={styles.popoverTitle}>Media Type</Text>
+                        <View style={styles.popoverList}>
+                          {CUMST_MEDIA_OPTIONS.map((opt) => {
+                            const isSelected = draft.cumstMediaType === opt.value;
+                            return (
+                              <TouchableOpacity
+                                key={opt.value}
+                                style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
+                                onPress={() => {
+                                  Haptics.selectionAsync();
+                                  setDraft((prev) => ({ ...prev, cumstMediaType: opt.value }));
+                                  setActivePicker(null);
+                                }}
+                              >
+                                <Text
+                                  style={[
+                                    styles.popoverItemText,
+                                    isSelected && styles.popoverItemTextSelected,
+                                  ]}
+                                >
+                                  {opt.label}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </>
+                    )}
+
+                    {activePicker === 'dateAnchor' && (
+                      <>
+                        <Text style={styles.popoverTitle}>{datePickerTitle}</Text>
+                        <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={true}>
+                          <View style={styles.popoverList}>
+                            {dateSlots.map((opt, idx) => {
+                              const isSelected = draft.leaderboardDate === opt.value;
+                              return (
+                                <TouchableOpacity
+                                  key={idx}
+                                  style={[styles.popoverItem, isSelected && styles.popoverItemSelected]}
+                                  onPress={() => {
+                                    Haptics.selectionAsync();
+                                    setDraft((prev) => ({
+                                      ...prev,
+                                      leaderboardDate: opt.value,
+                                      sortBy: opt.value ? 'score' : prev.sortBy,
+                                      // Picking a date also picks the period time:
+                                      // a weekly slot opens the weekly leaderboard, a monthly slot
+                                      // the monthly leaderboard. Clearing keeps it as-is.
+                                      timeRange: opt.value ? opt.range : prev.timeRange,
+                                    }));
+                                    setActivePicker(null);
+                                  }}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.popoverItemText,
+                                      isSelected && styles.popoverItemTextSelected,
+                                    ]}
+                                  >
+                                    {opt.label}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                        </ScrollView>
+
+                        {/* Custom Date Input Row */}
+                        <View style={{ marginTop: 12, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 10 }}>
+                          <Text style={{ fontSize: 12, color: '#8E92A4', marginBottom: 6 }}>Custom Date (YYYY-MM-DD):</Text>
+                          <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                            <TextInput
+                              style={{
+                                flex: 1,
+                                backgroundColor: '#1E2026',
+                                borderRadius: 8,
+                                borderWidth: 1,
+                                borderColor: '#2D313A',
+                                color: '#FFFFFF',
+                                paddingHorizontal: 10,
+                                paddingVertical: 6,
+                                fontSize: 13,
+                              }}
+                              placeholder="E.g.: 2026-05-15"
+                              placeholderTextColor="#7E8494"
+                              value={customDateText}
+                              onChangeText={setCustomDateText}
+                              autoCapitalize="none"
+                              autoCorrect={false}
+                            />
+                            <TouchableOpacity
+                              style={{
+                                backgroundColor: GOLD_ACCENT,
+                                borderRadius: 8,
+                                paddingHorizontal: 12,
+                                paddingVertical: 7,
+                              }}
+                              onPress={() => {
+                                const trimmed = customDateText.trim();
+                                if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+                                  Haptics.selectionAsync();
+                                  setDraft((prev) => ({
+                                    ...prev,
+                                    leaderboardDate: trimmed,
+                                    sortBy: 'score',
+                                  }));
+                                  setActivePicker(null);
+                                }
+                              }}
+                            >
+                              <Text style={{ color: '#111216', fontWeight: '700', fontSize: 13 }}>Apply</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      </>
+                    )}
+                  </AnimatedView>
+                </TouchableWithoutFeedback>
+              </KeyboardAvoidingView>
+            </TouchableWithoutFeedback>
+          </AnimatedView>
+        )}
+      </KeyboardAvoidingView>
     </Modal>
   );
 };
@@ -1435,7 +1412,15 @@ const styles = StyleSheet.create({
     color: GOLD_ACCENT,
   },
 
-  /* Popover styles (Screenshot 2) */
+  /* Inline animated popover styles */
+  inlineOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 100,
+  },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.65)',

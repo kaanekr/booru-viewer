@@ -1,5 +1,5 @@
-import React, { useCallback, useState } from 'react';
-import { ActivityIndicator, Alert, BackHandler, KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Animated, BackHandler, Easing, KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import { ArrowLeft, ArrowUpRight, Check, ChevronRight, Database, Download, EyeOff, HardDrive, Image as ImageIcon, KeyRound, Layers, Lock, Radio, Settings2, Shield, SlidersHorizontal, Smartphone, Trash2, Upload, X } from 'lucide-react-native';
@@ -28,6 +28,8 @@ const QUALITY = [
   { id: 'full' as const, name: 'Original quality', description: 'Full-resolution images from the start.' },
 ];
 
+const AnimatedView = Animated?.View ?? View;
+
 export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: propSource, onSelectSource, route, navigation }) => {
   const context = useSource();
   const activeSource = propSource ?? context.activeSource;
@@ -36,8 +38,56 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: pr
   const [pages, setPages] = useState<Page[]>(['home']);
   const [configuringSource, setConfiguringSource] = useState<BooruSource>(activeSource);
   const page = pages[pages.length - 1];
-  const open = (next: Page) => setPages((previous) => [...previous, next]);
+  const open = useCallback((next: Page) => setPages((previous) => [...previous, next]), []);
   const back = useCallback(() => setPages((previous) => previous.length > 1 ? previous.slice(0, -1) : previous), []);
+
+  const scrollRef = useRef<React.ComponentRef<typeof ScrollView> | null>(null);
+  const slideAnim = useRef(Animated?.Value ? new Animated.Value(0) : null).current;
+  const fadeAnim = useRef(Animated?.Value ? new Animated.Value(1) : null).current;
+  const prevDepthRef = useRef(pages.length);
+
+  const animatePageTransition = useCallback((direction: 'forward' | 'back') => {
+    scrollRef.current?.scrollTo?.({ y: 0, animated: false });
+    if (!Animated?.parallel || !Animated?.timing || !slideAnim || !fadeAnim) return;
+    slideAnim.setValue(direction === 'forward' ? 32 : -32);
+    fadeAnim.setValue(0.25);
+    const easing = typeof Easing?.out === 'function' && Easing?.cubic ? Easing.out(Easing.cubic) : undefined;
+    Animated.parallel([
+      Animated.timing(slideAnim, {
+        toValue: 0,
+        duration: 210,
+        ...(easing ? { easing } : {}),
+        useNativeDriver: true,
+      }),
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 180,
+        ...(easing ? { easing } : {}),
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [slideAnim, fadeAnim]);
+
+  useEffect(() => {
+    const prevDepth = prevDepthRef.current;
+    prevDepthRef.current = pages.length;
+    if (pages.length > prevDepth) {
+      animatePageTransition('forward');
+    } else if (pages.length < prevDepth) {
+      animatePageTransition('back');
+    }
+  }, [pages.length, animatePageTransition]);
+
+  useEffect(() => {
+    setConfiguringSource((current) =>
+      page !== 'source' || current.id === activeSource.id ? activeSource : current
+    );
+  }, [activeSource, page]);
+
+  const pageAnimatedStyle = useMemo(
+    () => (slideAnim && fadeAnim ? { opacity: fadeAnim, transform: [{ translateX: slideAnim }] } : undefined),
+    [slideAnim, fadeAnim]
+  );
 
   useFocusEffect(useCallback(() => {
     if (route?.params?.section) {
@@ -198,23 +248,25 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: pr
       </View>
       {page === 'home' && <View style={styles.headerIcon}><SlidersHorizontal size={20} color="#9298CA" /></View>}
     </View>
-    {settings.loading ? <View style={styles.empty}><ActivityIndicator color={Colors.dark.primaryLight} /></View> : <ScrollView key={page} style={styles.scroll} showsVerticalScrollIndicator={false}
+    {settings.loading ? <View style={styles.empty}><ActivityIndicator color={Colors.dark.primaryLight} /></View> : <ScrollView ref={scrollRef} style={styles.scroll} showsVerticalScrollIndicator={false}
       keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag" contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 32 }]}>
-      {page === 'home' && renderHome()}
-      {page === 'sources' && <>
-        <View style={styles.catalogNotice}><Settings2 size={15} color={Colors.dark.textSecondary} /><Text style={styles.rowDescription}>Switch with a tap. Use the settings icon for account & API options.</Text></View>
-        <SourceCatalog activeSource={activeSource} onSelect={settings.changeSource} onConfigure={configure} busy={settings.busy === 'source'}
-          credentials={{ rule34: !!settings.savedAuth.rule34.apiKey && !!settings.savedAuth.rule34.userId }} />
-      </>}
-      {page === 'source' && renderSource()}
-      {page === 'appearance' && renderAppearance()}
-      {page === 'privacy' && renderPrivacy()}
-      {page === 'storage' && renderStorage()}
-      {page === 'network' && renderNetwork()}
-      {page === 'about' && <><View style={styles.detailHero}><View style={styles.appMark}><Layers size={32} color="#B1B5FF" strokeWidth={1.3} /></View>
-        <Text style={styles.detailName}>Booru Viewer</Text><Text style={styles.detailMeta}>Your library. Your way.</Text></View>
-        <SettingsSection title="Application"><SettingsRow title="Version" value="1.0.0" /><SettingsRow title="Platform" value="React Native · Expo 57" /><SettingsRow title="Connection" value={networkSummary} last /></SettingsSection>
-        <Text style={ui.hint}>An independent multi-source viewer. Not affiliated with any content source. Adults only (18+).</Text></>}
+      <AnimatedView style={pageAnimatedStyle}>
+        {page === 'home' && renderHome()}
+        {page === 'sources' && <>
+          <View style={styles.catalogNotice}><Settings2 size={15} color={Colors.dark.textSecondary} /><Text style={styles.rowDescription}>Switch with a tap. Use the settings icon for account & API options.</Text></View>
+          <SourceCatalog activeSource={activeSource} onSelect={settings.changeSource} onConfigure={configure} busy={settings.busy === 'source'}
+            credentials={{ rule34: !!settings.savedAuth.rule34.apiKey && !!settings.savedAuth.rule34.userId }} />
+        </>}
+        {page === 'source' && renderSource()}
+        {page === 'appearance' && renderAppearance()}
+        {page === 'privacy' && renderPrivacy()}
+        {page === 'storage' && renderStorage()}
+        {page === 'network' && renderNetwork()}
+        {page === 'about' && <><View style={styles.detailHero}><View style={styles.appMark}><Layers size={32} color="#B1B5FF" strokeWidth={1.3} /></View>
+          <Text style={styles.detailName}>Booru Viewer</Text><Text style={styles.detailMeta}>Your library. Your way.</Text></View>
+          <SettingsSection title="Application"><SettingsRow title="Version" value="1.0.0" /><SettingsRow title="Platform" value="React Native · Expo 58" /><SettingsRow title="Connection" value={networkSummary} last /></SettingsSection>
+          <Text style={ui.hint}>An independent multi-source viewer. Not affiliated with any content source. Adults only (18+).</Text></>}
+      </AnimatedView>
     </ScrollView>}
     <PasscodeModal visible={settings.passcodeModalVisible} mode={settings.passcodeModalMode} onClose={settings.closePasscode} onSuccess={settings.refreshSecurity} />
   </KeyboardAvoidingView>;
