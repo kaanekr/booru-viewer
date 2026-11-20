@@ -109,3 +109,12 @@ test('viewing changes preserve the preview preference and Android back navigates
   await act(() => { assert.equal(back(), true); });
   assert.ok(button('Choose source'));
 });
+
+test('SettingsScreen reports Expo 58 and preserves ScrollView across subpage transitions', async () => {
+  const { Screen } = setupSettings();
+  await mount(Screen);
+  const initialScroll = root.root.findByType('ScrollView');
+  await click('About');
+  assert.equal(root.root.findByType('ScrollView'), initialScroll);
+  assert.ok(root.root.findAllByType('Text').some((n) => n.props.children === 'React Native · Expo 58'));
+});

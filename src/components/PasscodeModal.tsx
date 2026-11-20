@@ -26,7 +26,7 @@ export const PasscodeModal: React.FC<PasscodeModalProps> = ({
   const [firstPin, setFirstPin] = useState<string>('');
   const [errorText, setErrorText] = useState<string | null>(null);
 
-  // Reset state on open/close
+  // Reset state on open
   useEffect(() => {
     if (visible) {
       setStep(1);
@@ -34,8 +34,6 @@ export const PasscodeModal: React.FC<PasscodeModalProps> = ({
       setErrorText(null);
     }
   }, [visible, mode]);
-
-  if (!visible) return null;
 
   // Compute title & subtitle based on current mode and step
   let title = 'Passcode';
@@ -83,6 +81,7 @@ export const PasscodeModal: React.FC<PasscodeModalProps> = ({
         } else {
           setFirstPin('');
           setStep(1);
+          setErrorText('Passcodes did not match! Enter again.');
           return { success: false, error: 'Passcodes did not match! Enter again.' };
         }
       }
@@ -111,6 +110,7 @@ export const PasscodeModal: React.FC<PasscodeModalProps> = ({
         } else {
           setFirstPin('');
           setStep(2);
+          setErrorText('New passcodes did not match! Try again.');
           return { success: false, error: 'New passcodes did not match! Try again.' };
         }
       }
@@ -141,6 +141,7 @@ export const PasscodeModal: React.FC<PasscodeModalProps> = ({
     >
       <View style={styles.modalContainer}>
         <LockScreen
+          key={`${mode}-${step}`}
           mode="custom"
           title={title}
           subtitle={subtitle}

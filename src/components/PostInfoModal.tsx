@@ -1,16 +1,16 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   Animated,
-  Dimensions,
   Linking,
   Modal,
   PanResponder,
-  Platform,
   ScrollView,
+  type ScrollViewInstance,
   StyleSheet,
   Text,
   TouchableOpacity,
   TouchableWithoutFeedback,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -36,11 +36,9 @@ import { hentaiHavenTagQuery, isHentaiHavenOfficialGenre } from '../services/hen
 import { resolveRealDimensions } from '../utils/media';
 import { onlyStrings } from '../utils/guards';
 
-const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
 /** Down-drag threshold at which the sheet closes on release */
 const DISMISS_THRESHOLD = 130;
-const SHEET_MAX_HEIGHT = SCREEN_HEIGHT * 0.92;
 
 interface PostInfoModalProps {
   visible: boolean;
@@ -67,11 +65,43 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   onPreviewOriginal,
 }) => {
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+  const windowHeightRef = useRef(windowHeight);
+  windowHeightRef.current = windowHeight;
+  const insetTop = insets.top ?? 0;
+  const insetBottom = insets.bottom ?? 0;
+  const insetLeft = insets.left ?? 0;
+  const insetRight = insets.right ?? 0;
+  const sheetMaxHeight = Math.round(windowHeight * 0.92);
+
   const [selectedTag, setSelectedTag] = useState<TagItemData | null>(null);
+  const selectedTagRef = useRef<TagItemData | null>(null);
+  selectedTagRef.current = selectedTag;
   const [menuPosition, setMenuPosition] = useState<{ y: number }>({ y: 200 });
   const [isTagFav, setIsTagFav] = useState(false);
   const [isTagBlacklisted, setIsTagBlacklisted] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!visible) {
+      if (toastTimerRef.current) {
+        clearTimeout(toastTimerRef.current);
+        toastTimerRef.current = null;
+      }
+      setToastMessage(null);
+      setSelectedTag(null);
+    }
+  }, [visible]);
 
   useEffect(() => {
     if (selectedTag) {
@@ -90,77 +120,95 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     }
   }, [visible]);
 
-  const showToast = (msg: string) => {
+  const showToast = useCallback((msg: string) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+    }
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 2200);
-  };
+    toastTimerRef.current = setTimeout(() => {
+      toastTimerRef.current = null;
+      setToastMessage(null);
+    }, 2200);
+  }, []);
 
   // --- Drag-to-dismiss infrastructure (Animated + PanResponder, Expo Go compatible) ---
-  const translateY = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
+  const translateY = useRef(new Animated.Value(windowHeight)).current;
+  const scrollViewRef = useRef<ScrollViewInstance>(null);
   const scrollOffsetY = useRef(0);
   const closing = useRef(false);
-  const [sheetScrollEnabled, setSheetScrollEnabled] = useState(true);
+
+  const setNativeScrollEnabled = useCallback((enabled: boolean) => {
+    try {
+      (scrollViewRef.current as any)?.setNativeProps?.({ scrollEnabled: enabled });
+    } catch {}
+  }, []);
 
   // onClose is not called before the close animation finishes — otherwise
   // the Modal unmounts instantly and the exit animation dies.
-  const dismissThen = (cb?: () => void) => {
+  const dismissThen = useCallback((cb?: () => void) => {
     if (closing.current) {
       cb?.();
       return;
     }
     closing.current = true;
-    setSheetScrollEnabled(false);
+    setNativeScrollEnabled(false);
     Animated.timing(translateY, {
-      toValue: SCREEN_HEIGHT,
+      toValue: windowHeightRef.current,
       duration: 240,
       useNativeDriver: true,
     }).start(() => {
       closing.current = false;
-      setSheetScrollEnabled(true);
+      setNativeScrollEnabled(true);
       onClose();
       cb?.();
     });
-  };
+  }, [onClose, setNativeScrollEnabled, translateY]);
 
-  const requestClose = () => dismissThen();
+  const requestClose = useCallback(() => dismissThen(), [dismissThen]);
 
   // Opening: slide in from the bottom
   useEffect(() => {
     if (visible) {
       closing.current = false;
-      setSheetScrollEnabled(true);
-      translateY.setValue(SCREEN_HEIGHT);
+      scrollOffsetY.current = 0;
+      setNativeScrollEnabled(true);
+      translateY.setValue(windowHeightRef.current);
       Animated.timing(translateY, {
         toValue: 0,
         duration: 180,
         useNativeDriver: true,
       }).start();
     }
-  }, [visible, translateY]);
+  }, [visible, translateY, setNativeScrollEnabled]);
 
   // Catch pull-down when the inner ScrollView is at the top, track finger 1:1
+  // without triggering React state re-renders mid-drag.
   const sheetPanResponder = useMemo(
     () =>
       PanResponder.create({
         onStartShouldSetPanResponder: () => false,
         onMoveShouldSetPanResponder: (_, gesture) =>
+          !closing.current &&
+          !selectedTagRef.current &&
           gesture.dy > 10 &&
           Math.abs(gesture.dy) > Math.abs(gesture.dx) &&
           scrollOffsetY.current <= 0,
         onMoveShouldSetPanResponderCapture: (_, gesture) =>
+          !closing.current &&
+          !selectedTagRef.current &&
           gesture.dy > 10 &&
           Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.2 &&
           scrollOffsetY.current <= 0,
         onPanResponderGrant: () => {
-          translateY.stopAnimation();
-          setSheetScrollEnabled(false);
+          (translateY as any).stopAnimation?.();
+          setNativeScrollEnabled(false);
         },
         onPanResponderMove: (_, gesture) => {
           // Resist upward pushes, track downward ones exactly
           translateY.setValue(gesture.dy > 0 ? gesture.dy : gesture.dy * 0.25);
         },
         onPanResponderRelease: (_, gesture) => {
-          setSheetScrollEnabled(true);
+          setNativeScrollEnabled(true);
           if (gesture.dy > DISMISS_THRESHOLD || gesture.vy > 0.7) {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             dismissThen();
@@ -174,7 +222,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
           }
         },
         onPanResponderTerminate: () => {
-          setSheetScrollEnabled(true);
+          setNativeScrollEnabled(true);
           Animated.spring(translateY, {
             toValue: 0,
             damping: 26,
@@ -184,16 +232,14 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
         },
         onPanResponderTerminationRequest: () => false,
       }),
-    [translateY]
+    [translateY, dismissThen, setNativeScrollEnabled]
   );
 
   const backdropOpacity = translateY.interpolate({
-    inputRange: [0, SCREEN_HEIGHT],
+    inputRange: [0, Math.max(1, windowHeight)],
     outputRange: [0.5, 0],
     extrapolate: 'clamp',
   });
-
-  if (!post) return null;
 
   // Build ordered tag list with categories
   const allTagItems: TagItemData[] = [];
@@ -209,21 +255,23 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     });
   };
 
-  addCategoryTags(post.tags.copyright || [], 'copyright');
-  addCategoryTags(post.tags.character || [], 'character');
-  addCategoryTags(post.tags.artist || [], 'artist');
-  addCategoryTags(post.tags.general || [], 'general');
-  addCategoryTags(post.tags.meta || [], 'meta');
+  if (post) {
+    addCategoryTags(post.tags?.copyright || [], 'copyright');
+    addCategoryTags(post.tags?.character || [], 'character');
+    addCategoryTags(post.tags?.artist || [], 'artist');
+    addCategoryTags(post.tags?.general || [], 'general');
+    addCategoryTags(post.tags?.meta || [], 'meta');
 
-  // Fallback for uncategorized
-  if (allTagItems.length === 0 && post.allTags && post.allTags.length > 0) {
-    onlyStrings(post.allTags).forEach((t) => {
-      const clean = t.trim();
-      if (clean && !seen.has(clean)) {
-        seen.add(clean);
-        allTagItems.push({ name: clean, category: 'general' });
-      }
-    });
+    // Fallback for uncategorized
+    if (allTagItems.length === 0 && post.allTags && post.allTags.length > 0) {
+      onlyStrings(post.allTags).forEach((t) => {
+        const clean = t.trim();
+        if (clean && !seen.has(clean)) {
+          seen.add(clean);
+          allTagItems.push({ name: clean, category: 'general' });
+        }
+      });
+    }
   }
 
   const getTagColor = (category: TagCategory, name?: string) => {
@@ -400,18 +448,18 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   };
 
   // Resolution data
-  const normalExt = typeof post.sampleUrl === 'string' && post.sampleUrl ? post.sampleUrl.split('.').pop() || 'jpg' : 'jpg';
+  const normalExt = typeof post?.sampleUrl === 'string' && post.sampleUrl ? post.sampleUrl.split('.').pop() || 'jpg' : 'jpg';
   const originalExt =
-    typeof post.fileExt === 'string' && post.fileExt
+    typeof post?.fileExt === 'string' && post.fileExt
       ? post.fileExt
-      : typeof post.originalUrl === 'string' && post.originalUrl
+      : typeof post?.originalUrl === 'string' && post.originalUrl
         ? post.originalUrl.split('.').pop() || 'png'
         : 'png';
   const [resolvedDims, setResolvedDims] = useState<{ w: number; h: number } | null>(null);
   const [resolvedBytes, setResolvedBytes] = useState<number | null>(null);
 
-  const currentW = resolvedDims?.w || post.width;
-  const currentH = resolvedDims?.h || post.height;
+  const currentW = resolvedDims?.w || post?.width || 0;
+  const currentH = resolvedDims?.h || post?.height || 0;
   const sampleWidth = Math.round(currentW > 1200 ? currentW * 0.5 : currentW);
   const sampleHeight = Math.round(currentH > 1200 ? currentH * 0.5 : currentH);
 
@@ -429,7 +477,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
 
   // Real dimensions: scrape leaves an 800x1000 placeholder, resolve from the post page
   useEffect(() => {
-    if (!visible) return;
+    if (!visible || !post) return;
     setResolvedDims(null);
     setResolvedBytes(post.fileSize && post.fileSize > 0 ? post.fileSize : null);
     const looksPlaceholder =
@@ -449,14 +497,15 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     return () => {
       mounted = false;
     };
-  }, [post.id, visible]);
+  }, [post?.id, visible]);
 
   // Dynamic menu positioning based on touch Y
   const MENU_CARD_HEIGHT = 350;
-  const menuTop = Math.min(
-    Math.max(menuPosition.y - 40, insets.top + 50),
-    SCREEN_HEIGHT - insets.bottom - MENU_CARD_HEIGHT - 20
-  );
+  const minMenuTop = insetTop + 50;
+  const maxMenuTop = Math.max(minMenuTop, windowHeight - insetBottom - MENU_CARD_HEIGHT - 20);
+  const menuTop = Math.min(Math.max(menuPosition.y - 40, minMenuTop), maxMenuTop);
+
+  if (!post) return null;
 
   return (
     <Modal
@@ -467,7 +516,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
       statusBarTranslucent
       onRequestClose={requestClose}
     >
-      <View style={styles.backdropContainer}>
+      <View style={[styles.backdropContainer, { paddingTop: insetTop }]}>
         <TouchableWithoutFeedback onPress={requestClose}>
           <Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]} />
         </TouchableWithoutFeedback>
@@ -475,15 +524,17 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
           style={[
             styles.sheet,
             {
+              height: sheetMaxHeight,
+              maxHeight: '100%',
               transform: [{ translateY }],
-              paddingTop: Platform.OS === 'ios' ? 8 : insets.top,
+              paddingTop: 8,
             },
           ]}
           {...sheetPanResponder.panHandlers}
         >
         {/* Toast Notification */}
         {toastMessage && (
-          <View style={[styles.toastContainer, { top: insets.top + 56 }]}>
+          <View style={[styles.toastContainer, { top: 56 }]}>
             <Text style={styles.toastText}>{toastMessage}</Text>
           </View>
         )}
@@ -494,7 +545,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
         </View>
 
         {/* Top Header */}
-        <View style={styles.header}>
+        <View style={[styles.header, { paddingLeft: insetLeft + 16, paddingRight: insetRight + 16 }]}>
           <TouchableOpacity
             style={styles.circleBtn}
             onPress={requestClose}
@@ -510,13 +561,17 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
         </View>
 
         <ScrollView
+          ref={scrollViewRef}
           style={styles.scrollArea}
           contentContainerStyle={[
             styles.scrollContent,
-            { paddingBottom: insets.bottom + 40 },
+            {
+              paddingBottom: insetBottom + 40,
+              paddingLeft: insetLeft + 16,
+              paddingRight: insetRight + 16,
+            },
           ]}
           showsVerticalScrollIndicator={true}
-          scrollEnabled={sheetScrollEnabled}
           scrollEventThrottle={16}
           onScroll={(e) => {
             scrollOffsetY.current = e.nativeEvent.contentOffset.y;
@@ -755,33 +810,6 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
                 <Text style={styles.otherLabel}>Rating</Text>
                 <Text style={styles.otherValue}>{getRatingLabel(post.rating)}</Text>
               </View>
-
-              <View style={styles.rowDivider} />
-
-              {/* Notes */}
-              <View style={styles.otherRowItem}>
-                <Text style={styles.otherLabel}>Notes</Text>
-                <Text style={styles.otherValue}>No</Text>
-              </View>
-
-              <View style={styles.rowDivider} />
-
-              {/* Childs */}
-              <View style={styles.otherRowItem}>
-                <Text style={styles.otherLabel}>Childs</Text>
-                <Text style={styles.otherValue}>No</Text>
-              </View>
-
-              <View style={styles.rowDivider} />
-
-              {/* Parent ID */}
-              <View style={[styles.otherRowItem, styles.otherRowItemFlex]}>
-                <View>
-                  <Text style={styles.otherLabel}>Parent ID</Text>
-                  <Text style={styles.otherValue}>0</Text>
-                </View>
-                <ChevronRight size={16} color="#7E8494" />
-              </View>
             </View>
           </View>
         </ScrollView>
@@ -791,7 +819,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
           <TouchableWithoutFeedback onPress={() => setSelectedTag(null)}>
             <View style={styles.modalOverlay}>
               <TouchableWithoutFeedback>
-                <View style={[styles.anchoredMenuCard, { top: menuTop }]}>
+                <View style={[styles.anchoredMenuCard, { top: menuTop, right: insetRight + 16 }]}>
                   {/* Tag Name Header in Popover */}
                   <View style={styles.menuHeader}>
                     <Text style={styles.menuHeaderText} numberOfLines={1}>
@@ -905,7 +933,6 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(20, 21, 24, 0.9)',
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    height: SHEET_MAX_HEIGHT,
     overflow: 'hidden',
   },
   dragHandleContainer: {
