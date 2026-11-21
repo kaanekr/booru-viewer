@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+
+const runLowPriority = (fn: () => void) => {
+  if (typeof startTransition === 'function') {
+    startTransition(fn);
+  } else {
+    fn();
+  }
+};
 
 export interface CardLayout {
   y: number;
@@ -39,7 +47,7 @@ export function useVisibleIds() {
       });
       if (key !== keyRef.current) {
         keyRef.current = key;
-        setVisibleIds(next);
+        runLowPriority(() => setVisibleIds(next));
       }
     },
     []
@@ -75,7 +83,7 @@ export function computeWindowIds(
  * ~20 while placeholders preserve scroll height.
  */
 export function useMountedIds(
-  overscan: number = 1200,
+  overscan: number = 1800,
   initialLayouts?: Map<string, CardLayout>,
   initialViewportH: number = 844
 ) {
@@ -96,7 +104,7 @@ export function useMountedIds(
       });
       if (key !== keyRef.current) {
         keyRef.current = key;
-        setMountedIds(next);
+        runLowPriority(() => setMountedIds(next));
       }
     },
     [overscan]

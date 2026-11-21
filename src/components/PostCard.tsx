@@ -257,9 +257,15 @@ const PostCardComponent: React.FC<PostCardProps> = ({
         if (oldest !== undefined) MEASURED_ASPECT_CACHE.delete(oldest);
       }
       MEASURED_ASPECT_CACHE.set(postKey, ratio);
-      setMeasuredAspect((prev) =>
-        prev !== undefined && Math.abs(Math.max(0.6, Math.min(1.4, prev)) - clampedNew) <= 0.01 ? prev : ratio
-      );
+      const apply = () =>
+        setMeasuredAspect((prev) =>
+          prev !== undefined && Math.abs(Math.max(0.6, Math.min(1.4, prev)) - clampedNew) <= 0.01 ? prev : ratio
+        );
+      if (typeof React.startTransition === 'function') {
+        React.startTransition(apply);
+      } else {
+        apply();
+      }
     },
     [fixedHeight, post.aspectRatio, postKey]
   );
@@ -374,7 +380,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
           recyclingKey={`${postKey}:${currentUri}`}
           priority="normal"
           autoplay={false}
-          cachePolicy="disk"
+          cachePolicy="memory-disk"
           allowDownscaling={true}
           onLoad={handleImageLoad}
           onLoadEnd={releaseSlot}

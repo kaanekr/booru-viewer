@@ -558,7 +558,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
             const now = Date.now();
             const headerEdgeReached =
               changed && (header.occlusionRef.current === 0 || header.occlusionRef.current === header.height);
-            if (headerEdgeReached || now - lastGridUpdateRef.current >= 80) {
+            if (headerEdgeReached || now - lastGridUpdateRef.current >= 160) {
               lastGridUpdateRef.current = now;
               updateGridViewport(false);
             }
