@@ -409,6 +409,48 @@ test('canUseExpoVideoCache enables caching for direct/proxied MP4s, disables for
   assert.deepEqual({ ...videoCache.getVideoCacheStats() }, { bytes: 0, files: 0 });
 });
 
+test('the optional iOS HLS module opens Worker-wrapped playlists and shares existing cache controls', async () => {
+  const fs = createFakeFileSystem();
+  const calls = [];
+  const session = { id: 'a1', uri: 'http://127.0.0.1:30001/a1/master.m3u8' };
+  const native = {
+    open: async (...args) => { calls.push(['open', ...args]); return session; },
+    setLimit: async (size) => { calls.push(['limit', size]); },
+    close: async (id) => { calls.push(['close', id]); },
+    stats: async () => ({ bytes: 8192, files: 1 }),
+    clear: async () => { calls.push(['clear']); },
+  };
+  const load = createLoader({
+    'expo-file-system': fs.module,
+    expo: { requireOptionalNativeModule: (name) => name === 'BooruHlsCache' ? native : null },
+    'expo-video': { setVideoCacheSizeAsync: async (size) => { calls.push(['progressive', size]); } },
+    '../services/storage': { DEFAULT_CACHE_LIMIT_MB: 512, StorageService: { getCacheLimitMb: async () => 500 } },
+  });
+  const cache = load(path.resolve(__dirname, '../src/utils/videoFallbackCache.ts'));
+  const playlist = 'https://ev.phncdn.com/hls/test/master.m3u8';
+  const wrapped = 'https://relay.example.com/?url=' + encodeURIComponent(playlist);
+  const headers = { Referer: 'https://www.pornhub.com/' };
+  assert.equal(await cache.openHlsCachePlayback('https://ev.phncdn.com/test.mp4', 'ph:1', headers), null);
+  assert.equal(await cache.openHlsCachePlayback(wrapped, 'ph:1', headers), session);
+  assert.deepEqual(calls[0], ['open', wrapped, 'ph:1', headers, 150 * 1024 * 1024]);
+  cache.closeHlsCachePlayback(session.id);
+  assert.deepEqual(calls[1], ['close', 'a1']);
+  assert.deepEqual({ ...(await cache.getHlsVideoCacheStats()) }, { bytes: 8192, files: 1 });
+  await cache.enforceVideoCacheLimit(500);
+  assert.deepEqual(calls.slice(2), [['progressive', 75 * 1024 * 1024], ['limit', 150 * 1024 * 1024]]);
+  await cache.clearVideoCache();
+  assert.deepEqual(calls.at(-1), ['clear']);
+});
+
+test('Expo Go can keep playing the original HLS URL without the optional module', async () => {
+  const load = createLoader({ 'expo-file-system': {}, '../services/storage': {}, expo: { requireOptionalNativeModule: () => null } });
+  const cache = load(path.resolve(__dirname, '../src/utils/videoFallbackCache.ts'));
+  const hls = 'https://ev.phncdn.com/hls/test/master.m3u8';
+  assert.equal(await cache.openHlsCachePlayback(hls, 'ph:1', {}), null);
+  assert.equal(cache.canUseExpoVideoCache(hls), false);
+  assert.deepEqual({ ...(await cache.getHlsVideoCacheStats()) }, { bytes: 0, files: 0 });
+});
+
 test('parseImageHeaderDimensions and enrichPostAspectRatios parse JPEG/PNG/GIF headers via Range and cache results', async () => {
   // Minimal valid JPEG SOF0 (width=640, height=480)
   const jpegBytes = new Uint8Array([

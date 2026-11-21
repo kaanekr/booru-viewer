@@ -69,7 +69,7 @@ export async function enforceVideoCacheLimit(limitMb: number, protectedFilename?
   if (!dir) return;
 
   try {
-    const budgetBytes = getVideoBudgetBytes(limitMb);
+    const budgetBytes = getFileVideoBudgetBytes(limitMb);
     const index = readIndex(dir);
     const rawEntries = dir.list();
 
@@ -121,6 +121,30 @@ type ExpoVideoCacheApi = {
   getCurrentVideoCacheSize?: () => number;
 };
 
+type HlsPlayback = { id: string; uri: string };
+type HlsVideoCacheApi = {
+  open: (uri: string, asset: string, headers: Record<string, string>, bytes: number) => Promise<HlsPlayback | null>;
+  close: (id: string) => Promise<void>;
+  setLimit: (bytes: number) => Promise<void>;
+  stats: () => Promise<{ bytes: number; files: number }>;
+  clear: () => Promise<void>;
+};
+
+function getHlsVideoCacheApi(): HlsVideoCacheApi | null {
+  try {
+    // The local iOS module is optional in Expo Go and on other platforms.
+    const { requireOptionalNativeModule } = require('expo') as typeof import('expo');
+    return requireOptionalNativeModule<HlsVideoCacheApi>('BooruHlsCache');
+  } catch {
+    return null;
+  }
+}
+
+function getFileVideoBudgetBytes(limitMb: number): number {
+  const budget = getVideoBudgetBytes(limitMb);
+  return getHlsVideoCacheApi() ? Math.floor(budget / 4) : budget;
+}
+
 function getExpoVideoCacheApi(): ExpoVideoCacheApi | null {
   try {
     // Lazy require keeps pure-Node tests without expo-video mocks working cleanly.
@@ -129,6 +153,18 @@ function getExpoVideoCacheApi(): ExpoVideoCacheApi | null {
   } catch {
     return null;
   }
+}
+
+function unwrapWorkerMediaUrl(url: string): string {
+  try {
+    const wrapped = new URL(url).searchParams.get('url');
+    if (wrapped && /^https?:\/\//i.test(wrapped)) return wrapped;
+  } catch {}
+  return url;
+}
+
+export function isHlsVideoUrl(url: string): boolean {
+  return /\.m3u8(?:$|[?#&])|\/hls\/|[?&](?:format|type)=hls(?:$|&)/i.test(unwrapWorkerMediaUrl(url));
 }
 
 /**
@@ -141,27 +177,13 @@ export function canUseExpoVideoCache(url: string | null | undefined): boolean {
   const trimmed = url.trim();
   if (!/^https?:\/\//i.test(trimmed)) return false;
 
-  let candidate = trimmed;
-  try {
-    const parsed = new URL(trimmed);
-    const wrapped = parsed.searchParams.get('url');
-    if (wrapped && /^https?:\/\//i.test(wrapped)) {
-      candidate = wrapped;
-    }
-  } catch {
-    // fall through with trimmed URL
-  }
-
-  const lower = candidate.toLowerCase();
-  if (/\.m3u8(?:$|[?#&])|\.mpd(?:$|[?#&])|\/hls\/|[?&](?:format|type)=hls(?:$|&)/i.test(lower)) {
-    return false;
-  }
-  return true;
+  return !isHlsVideoUrl(trimmed) && !/\.mpd(?:$|[?#&])/i.test(unwrapWorkerMediaUrl(trimmed));
 }
 
 export async function syncNativeVideoCacheSize(limitMb?: number): Promise<void> {
   const api = getExpoVideoCacheApi();
-  if (typeof api?.setVideoCacheSizeAsync !== 'function') return;
+  const hls = getHlsVideoCacheApi();
+  if (!api?.setVideoCacheSizeAsync && !hls) return;
   try {
     const effectiveMb =
       typeof limitMb === 'number'
@@ -169,10 +191,44 @@ export async function syncNativeVideoCacheSize(limitMb?: number): Promise<void> 
         : typeof StorageService?.getCacheLimitMb === 'function'
           ? await StorageService.getCacheLimitMb()
           : DEFAULT_CACHE_LIMIT_MB;
-    await api.setVideoCacheSizeAsync(getVideoBudgetBytes(effectiveMb));
+    const budget = getVideoBudgetBytes(effectiveMb);
+    // In a native pilot build reserve half for HLS and split the remainder between the existing stores.
+    await Promise.all([
+      api?.setVideoCacheSizeAsync?.(hls ? Math.floor(budget / 4) : budget),
+      hls?.setLimit(Math.floor(budget / 2)),
+    ]);
   } catch {
     // expo-video throws if a VideoPlayer instance is currently active; ignore safely.
   }
+}
+
+export async function openHlsCachePlayback(
+  uri: string, asset: string, headers: Record<string, string>,
+): Promise<HlsPlayback | null> {
+  if (!/\.m3u8(?:$|[?#])/i.test(unwrapWorkerMediaUrl(uri))) return null;
+  const hls = getHlsVideoCacheApi();
+  if (!hls) return null;
+  try {
+    const limit = await StorageService.getCacheLimitMb();
+    const session = await hls.open(uri, asset, headers, Math.floor(getVideoBudgetBytes(limit) / 2));
+    if (session && /^http:\/\/127\.0\.0\.1:\d+\/[a-f0-9-]+\/master\.m3u8$/i.test(session.uri)) return session;
+    if (session?.id) await hls.close(session.id);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function closeHlsCachePlayback(id: string): void {
+  void getHlsVideoCacheApi()?.close(id).catch(() => {});
+}
+
+export async function getHlsVideoCacheStats(): Promise<{ bytes: number; files: number }> {
+  try {
+    const stats = await getHlsVideoCacheApi()?.stats();
+    if (stats) return stats;
+  } catch {}
+  return { bytes: 0, files: 0 };
 }
 
 const NATIVE_TRACKED_FILE = 'native-tracked.json';
@@ -283,6 +339,9 @@ export function getVideoCacheStats(): { bytes: number; files: number } {
 }
 
 export async function clearVideoCache(): Promise<void> {
+  try {
+    await getHlsVideoCacheApi()?.clear();
+  } catch {}
   if (nativeTrackedKeys) {
     nativeTrackedKeys.clear();
   } else {

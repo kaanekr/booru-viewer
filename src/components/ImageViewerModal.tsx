@@ -47,7 +47,14 @@ import { Colors } from '../theme/colors';
 import { StorageService, ImageQuality } from '../services/storage';
 import { getPostKey } from '../utils/postIdentity';
 import { isGifMediaPost } from '../utils/gifMedia';
-import { canUseExpoVideoCache, downloadVideoViaAppSession, recordCachedVideo } from '../utils/videoFallbackCache';
+import {
+  canUseExpoVideoCache,
+  closeHlsCachePlayback,
+  downloadVideoViaAppSession,
+  isHlsVideoUrl,
+  openHlsCachePlayback,
+  recordCachedVideo,
+} from '../utils/videoFallbackCache';
 import { TagChip } from './TagChip';
 import { PostInfoModal } from './PostInfoModal';
 import { PornhubWebViewResolver } from './PornhubWebViewResolver';
@@ -2109,6 +2116,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
               ) : canPlayVideo && isActive ? (
                 <VideoPlayerView
                   url={activeVideoUrl}
+                  hlsCacheAssetKey={Platform.OS === 'ios' && post.sourceId === 'pornhub' ? getPostKey(post) : undefined}
                   suspended={suspended}
                   showControls={showControls}
                   screenWidth={screenWidth}
@@ -2706,6 +2714,7 @@ const VideoTimelineBar: React.FC<VideoTimelineBarProps> = React.memo(({
 
 interface VideoPlayerViewProps {
   url: string;
+  hlsCacheAssetKey?: string;
   suspended?: boolean;
   showControls: boolean;
   screenWidth: number;
@@ -2719,6 +2728,7 @@ interface VideoPlayerViewProps {
 // Clean Video player component with expo-video and playback controls
 const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
   url,
+  hlsCacheAssetKey,
   suspended = false,
   showControls,
   screenWidth,
@@ -2760,6 +2770,11 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
   const localDownloadAbortRef = useRef<AbortController | null>(null);
   const activeMediaUriRef = useRef(url);
   const loadGenRef = useRef(0);
+  const hlsSessionIdRef = useRef<string | null>(null);
+  const releaseHlsSession = useCallback(() => {
+    if (hlsSessionIdRef.current) closeHlsCachePlayback(hlsSessionIdRef.current);
+    hlsSessionIdRef.current = null;
+  }, []);
   // If fallbacks die, go to a terminal error state instead of a black screen.
   const [loadFailed, setLoadFailed] = useState(false);
   const [isLocalDownloading, setIsLocalDownloading] = useState(false);
@@ -2772,6 +2787,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
     return () => {
       mountedRef.current = false;
       loadGenRef.current += 1;
+      releaseHlsSession();
       localDownloadAbortRef.current?.abort();
       localDownloadAbortRef.current = null;
       if (isScrubbingRef.current) {
@@ -2779,12 +2795,13 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
         onScrubbingChangeRef.current?.(false);
       }
     };
-  }, []);
+  }, [releaseHlsSession]);
   // A format iOS AVPlayer cannot open (WebM) is never handed to the player:
   // show the error card directly instead of a -11828 warning storm.
   const blockedUrl = Platform.OS === 'ios' && isUnsupportedOnIOS(url);
   useEffect(() => {
     loadGenRef.current += 1;
+    releaseHlsSession();
     localDownloadAbortRef.current?.abort();
     localDownloadAbortRef.current = null;
     proxyFallbackDoneRef.current = false;
@@ -2793,7 +2810,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
     setLoadFailed(false);
     setIsLocalDownloading(false);
     setLocalDownloadProgress(null);
-  }, [url]);
+  }, [url, hlsCacheAssetKey, releaseHlsSession]);
 
   const player = useVideoPlayer(null, (p) => {
     p.loop = true;
@@ -2808,6 +2825,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
         !localFallbackDoneRef.current &&
         Platform.OS !== 'web' &&
         /^https?:\/\//i.test(url) &&
+        !isHlsVideoUrl?.(url) &&
         !proxyService.isProxiedUrl(url);
 
       if (!canTryLocalDownload) return false;
@@ -2862,6 +2880,30 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
     };
   }, [player]);
 
+  const playSource = useCallback(async (gen: number, preferHlsCache: boolean) => {
+    const isCurrent = () => mountedRef.current && loadGenRef.current === gen;
+    const session = preferHlsCache && hlsCacheAssetKey && typeof openHlsCachePlayback === 'function'
+      ? await openHlsCachePlayback(url, hlsCacheAssetKey, videoSource.headers)
+      : null;
+    if (!isCurrent()) {
+      if (session) closeHlsCachePlayback(session.id);
+      return;
+    }
+    if (session) {
+      hlsSessionIdRef.current = session.id;
+      try {
+        await player.replaceAsync({ uri: session.uri, contentType: 'hls' });
+        if (isCurrent() && hlsSessionIdRef.current === session.id && !suspendedRef.current) player.play();
+        return;
+      } catch {
+        if (!isCurrent() || hlsSessionIdRef.current !== session.id) return;
+        releaseHlsSession();
+      }
+    }
+    await player.replaceAsync(videoSource);
+    if (isCurrent() && !suspendedRef.current) player.play();
+  }, [hlsCacheAssetKey, player, releaseHlsSession, url, videoSource]);
+
   useEventListener(player, 'statusChange', (payload) => {
     if (payload.status === 'readyToPlay') {
       if (typeof recordCachedVideo === 'function') {
@@ -2870,6 +2912,16 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
       return;
     }
     if (payload.status !== 'error') return;
+
+    if (hlsSessionIdRef.current) {
+      // A failure reading through the local cache gets one retry with the original stream.
+      releaseHlsSession();
+      const directGen = ++loadGenRef.current;
+      void playSource(directGen, false).catch(() => {
+        if (mountedRef.current && loadGenRef.current === directGen) setLoadFailed(true);
+      });
+      return;
+    }
 
     const gen = loadGenRef.current;
 
@@ -2923,11 +2975,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
 
     (async () => {
       try {
-        await player.replaceAsync(videoSource);
-        if (!mountedRef.current || !isCurrent || loadGenRef.current !== gen) return;
-        if (!suspendedRef.current) {
-          player.play();
-        }
+        await playSource(gen, true);
       } catch (error) {
         if (!isCurrent || !mountedRef.current || loadGenRef.current !== gen) return;
         console.warn('[VideoPlayerView] Async source failed:', error);
@@ -2940,7 +2988,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
     return () => {
       isCurrent = false;
     };
-  }, [player, videoSource, blockedUrl, tryLocalDownloadFallback]);
+  }, [playSource, videoSource.uri, blockedUrl, tryLocalDownloadFallback]);
 
   useEffect(() => {
     if (suspended) {
@@ -3061,6 +3109,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
   const handleRetryLoad = useCallback(() => {
     if (!mountedRef.current || blockedUrl) return;
     const gen = ++loadGenRef.current;
+    releaseHlsSession();
     localDownloadAbortRef.current?.abort();
     localDownloadAbortRef.current = null;
     setLoadFailed(false);
@@ -3071,9 +3120,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
     activeMediaUriRef.current = url;
     (async () => {
       try {
-        await player.replaceAsync(videoSource);
-        if (!mountedRef.current || loadGenRef.current !== gen) return;
-        if (!suspendedRef.current) player.play();
+        await playSource(gen, true);
       } catch (e) {
         if (!mountedRef.current || loadGenRef.current !== gen) return;
         console.warn('[VideoPlayerView] Manual retry failed:', e);
@@ -3082,7 +3129,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
         }
       }
     })();
-  }, [player, videoSource, blockedUrl, url, tryLocalDownloadFallback]);
+  }, [blockedUrl, playSource, releaseHlsSession, tryLocalDownloadFallback, url]);
 
   return (
     <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>

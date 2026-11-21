@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert } from 'react-native';
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
@@ -19,7 +19,7 @@ import { setGridPreviewsEnabled } from '../../utils/gridPreviews';
 import { clearCachedPosts } from '../../navigation/postsCache';
 import { navigationRef } from '../../navigation/rootNavigation';
 import { clearListCache, enforceListCacheLimit, getListCacheStats } from '../../utils/listCache';
-import { clearVideoCache, enforceVideoCacheLimit, getVideoCacheStats } from '../../utils/videoFallbackCache';
+import { clearVideoCache, enforceVideoCacheLimit, getHlsVideoCacheStats, getVideoCacheStats } from '../../utils/videoFallbackCache';
 import { clearResolveCaches } from '../../utils/media';
 import type { PasscodeModalMode } from '../../components/PasscodeModal';
 
@@ -49,13 +49,17 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
   const [cacheLimitMb, setCacheLimitMb] = useState<number>(DEFAULT_CACHE_LIMIT_MB);
   const [cacheLimitInput, setCacheLimitInput] = useState<string>(String(DEFAULT_CACHE_LIMIT_MB));
   const [cacheStats, setCacheStats] = useState({ videoBytes: 0, videoFiles: 0, listBytes: 0, listEntries: 0 });
+  const cacheStatsRequest = useRef(0);
 
-  const refreshCacheStats = useCallback(() => {
+  const refreshCacheStats = useCallback(async () => {
+    const request = ++cacheStatsRequest.current;
     const video = typeof getVideoCacheStats === 'function' ? getVideoCacheStats() : { bytes: 0, files: 0 };
     const list = typeof getListCacheStats === 'function' ? getListCacheStats() : { bytes: 0, entries: 0 };
+    const hls = await getHlsVideoCacheStats?.();
+    if (request !== cacheStatsRequest.current) return;
     setCacheStats({
-      videoBytes: video.bytes,
-      videoFiles: video.files,
+      videoBytes: video.bytes + (hls?.bytes ?? 0),
+      videoFiles: video.files + (hls?.files ?? 0),
       listBytes: list.bytes,
       listEntries: list.entries,
     });
@@ -82,11 +86,11 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
       setImageQuality(quality); setGridPreviews(previews); setGridPreviewsEnabled(previews);
       setGelbooruAuth(gelbooru); setRule34Auth(rule34); setSavedAuth({ gelbooru, rule34 });
       setCacheLimitMb(limitMb); setCacheLimitInput(String(limitMb));
-      refreshCacheStats();
+      void refreshCacheStats();
     }).catch(() => Alert.alert('Settings unavailable', 'Could not load your preferences. Please reopen Settings.'))
       .finally(() => { if (alive) setLoading(false); });
     refreshSecurity().catch(() => {});
-    return () => { alive = false; };
+    return () => { alive = false; cacheStatsRequest.current++; };
   }, [refreshSecurity, refreshCacheStats]);
 
   useFocusEffect(useCallback(() => {
@@ -97,7 +101,7 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
         prev.length === tags.length && prev.every((tag, idx) => tag === tags[idx]) ? prev : tags
       );
     });
-    refreshCacheStats();
+    void refreshCacheStats();
     return () => { alive = false; };
   }, [refreshCacheStats]));
 
@@ -180,7 +184,7 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
       typeof enforceVideoCacheLimit === 'function' ? enforceVideoCacheLimit(saved) : Promise.resolve(),
       typeof enforceListCacheLimit === 'function' ? enforceListCacheLimit(saved) : Promise.resolve(),
     ]);
-    refreshCacheStats();
+    await refreshCacheStats();
     Haptics.selectionAsync();
   });
 
@@ -216,14 +220,14 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
     }),
     clearVideoCache: () => confirm('Clear video cache?', 'Locally buffered videos will be removed. Your favorites and settings will be kept.', async () => {
       if (typeof clearVideoCache === 'function') await clearVideoCache();
-      refreshCacheStats();
+      await refreshCacheStats();
       Alert.alert('Video cache cleared');
     }),
     clearApiCache: () => confirm('Clear list & API cache?', 'Cached feeds, search pages and resolved links will be removed.', async () => {
       clearCachedPosts();
       if (typeof clearListCache === 'function') await clearListCache();
       if (typeof clearResolveCaches === 'function') clearResolveCaches();
-      refreshCacheStats();
+      await refreshCacheStats();
       Alert.alert('List & API cache cleared');
     }),
     clearCache: () => confirm('Clear media cache?', 'Downloaded thumbnails, cached videos and temporary post data will be removed. Your favorites and settings will be kept.', async () => {
@@ -232,7 +236,7 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
       if (typeof clearResolveCaches === 'function') clearResolveCaches();
       if (typeof clearVideoCache === 'function') await clearVideoCache();
       await Image.clearDiskCache(); await Image.clearMemoryCache();
-      refreshCacheStats();
+      await refreshCacheStats();
       Alert.alert('Cache cleared');
     }),
     importBackup: () => run('import', async () => {

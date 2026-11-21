@@ -30,6 +30,13 @@ jobs:
       - name: 📦 Install dependencies
         run: npm ci
 
+      - name: Test native HLS playlist and disk cache
+        run: |
+          xcrun swiftc modules/booru-hls-cache/ios/HlsPlaylist.swift \
+            modules/booru-hls-cache/ios/HlsSegmentStore.swift \
+            tests/ios-hls-cache/Smoke.swift -o "$RUNNER_TEMP/booru-hls-cache-tests"
+          "$RUNNER_TEMP/booru-hls-cache-tests"
+
       - name: ⚙️ Expo Prebuild (iOS)
         run: npx expo prebuild --platform ios --clean --no-install
 
