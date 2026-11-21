@@ -124,15 +124,18 @@ class ProxyService {
     await this.ensureInitialized();
     this.throwIfAborted(init?.signal);
     const target = this.proxyUrl(url);
+    const viaProxy = this.forceProxyUrl(url);
+    const hasProxyFallback = this.hasWorker() && viaProxy !== target;
+    // Leave time for the worker fallback leg before an outer 12s caller timeout fires.
+    const directTimeoutMs = hasProxyFallback ? Math.min(retryTimeoutMs, 6500) : retryTimeoutMs;
     const scrub = !/redgifs\.com/i.test(url);
     let res: Response;
     try {
-      res = await this.fetchWithTimeout(target, init, retryTimeoutMs);
+      res = await this.fetchWithTimeout(target, init, directTimeoutMs);
     } catch (e) {
       // A caller cancellation is final, not a reason to start a new download.
       this.throwIfAborted(init?.signal);
-      const viaProxy = this.forceProxyUrl(url);
-      if (!this.hasWorker() || viaProxy === target) throw e;
+      if (!hasProxyFallback) throw e;
       return await this.fetchViaProxy(viaProxy, init, retryTimeoutMs, scrub);
     }
 

@@ -220,17 +220,28 @@ export class BooruApiService {
       await this.reserveRequestSlot(url);
       const ctrl = new AbortController();
       const callerSignal = init?.signal;
+      let timedOut = false;
       const onAbort = () => ctrl.abort();
       callerSignal?.addEventListener('abort', onAbort, { once: true });
       if (callerSignal?.aborted) ctrl.abort();
-      const t = setTimeout(() => ctrl.abort(), timeoutMs);
+      const t = setTimeout(() => {
+        timedOut = true;
+        ctrl.abort();
+      }, timeoutMs);
       try {
         if (ctrl.signal.aborted) {
-          const error = new Error('Request aborted');
-          error.name = 'AbortError';
+          const error = new Error(timedOut ? `fetch timeout after ${timeoutMs}ms` : 'Request aborted');
+          error.name = timedOut ? 'TimeoutError' : 'AbortError';
           throw error;
         }
         return await withHardTimeout(fetchBooru(url, { ...init, signal: ctrl.signal }), timeoutMs, url);
+      } catch (err: any) {
+        if (timedOut && !callerSignal?.aborted && err?.name === 'AbortError') {
+          const timeoutErr = new Error(`fetch timeout after ${timeoutMs}ms`);
+          timeoutErr.name = 'TimeoutError';
+          throw timeoutErr;
+        }
+        throw err;
       } finally {
         clearTimeout(t);
         callerSignal?.removeEventListener('abort', onAbort);
@@ -484,17 +495,13 @@ export class BooruApiService {
 
     try {
       if (source.id === 'gelbooru') {
-        // With a stored DAPI key a 401 means wrong/missing key: surface it
-        // instead of falling back to scrape so the user can fix the key.
+        // Gelbooru DAPI always returns 401 without an API key; go straight to HTML scrape
+        // when no key is saved instead of burning 6–12s on a guaranteed-failing DAPI call.
         const { userId, apiKey } = await StorageService.getGelbooruAuth().catch(() => ({ userId: '', apiKey: '' }));
         if (userId.trim() && apiKey.trim()) {
           return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted, filter);
         }
-        try {
-          return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted, filter);
-        } catch {
-          return await this.fetchGelbooruScrapedPosts(source, page, limit, tags, includeBlacklisted);
-        }
+        return await this.fetchGelbooruScrapedPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'gelbooru') {
         return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else if (source.type === 'moebooru') {
