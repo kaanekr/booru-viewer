@@ -432,3 +432,19 @@ test('grid cover prefers crisp static sampleUrl over tiny previewUrl, but skips 
   await act(async () => root.update(React.createElement(PostCard, { post: gifPost, onPress })));
   assert.equal(root.root.findByType('Image').props.source.uri, 'https://cdn.test/thumb_150.jpg');
 });
+
+test('PostCard adapts fixed placeholder aspectRatio to real loaded cover dimensions (clamped 0.6–1.4) and caches it', async () => {
+  const { PostCard } = loadCard();
+  const realbooruPost = { ...imagePost('rb_42'), sourceId: 'realbooru', aspectRatio: 0.8 };
+  await act(async () => {
+    root = create(React.createElement(PostCard, { post: realbooruPost, onPress, columnWidth: 180 }));
+  });
+  const getHeight = () => root.root.findByType('TouchableOpacity').props.style[1].height;
+  assert.equal(getHeight(), 180 / 0.8);
+
+  // Landscape photo loads (1600x1000 -> ratio 1.6, clamped to 1.4 like Gelbooru masonry)
+  await act(async () => {
+    root.root.findByType('Image').props.onLoad({ source: { width: 1600, height: 1000 } });
+  });
+  assert.equal(getHeight(), 180 / 1.4);
+});
