@@ -1107,6 +1107,7 @@ struct BackupSettingsView: View {
 
     @State private var isConfirmingCacheClear = false
     @State private var isConfirmingHistoryClear = false
+    @State private var cacheLimitDraft = ""
 
     init(model: SettingsViewModel) {
         self.model = model
@@ -1118,6 +1119,25 @@ struct BackupSettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: AppTheme.Spacing.section) {
                 SettingsPageIntro(text: "Back up your library and manage local data.")
+
+                SettingsSection(
+                    title: "Video cache limit",
+                    hint: "Choose Unlimited or set a disk limit for cached HLS video."
+                ) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        SettingsHint(text: model.settings.cacheLimitMb.map { "Current limit \($0) MB" } ?? "Cache storage is unlimited")
+                        SettingsField(label: "Custom limit (MB)", placeholder: "At least \(AppSettings.minimumCacheLimitMb) MB", text: $cacheLimitDraft, isNumeric: true)
+                        HStack {
+                            SettingsActionButton(title: "Unlimited", isSecondary: true, isDisabled: model.busy != nil || model.settings.cacheLimitMb == nil) {
+                                Task { await model.setCacheLimit(nil) }
+                            }
+                            SettingsActionButton(title: "Save limit", isBusy: model.busy == .cacheLimit, isDisabled: model.busy != nil) {
+                                Task { await model.saveCustomCacheLimit(cacheLimitDraft) }
+                            }
+                        }
+                    }
+                    .padding(16)
+                }
 
                 SettingsSection(
                     title: "Backup & transfer",
@@ -1147,7 +1167,7 @@ struct BackupSettingsView: View {
                 ) {
                     SettingsRow(
                         title: "Clear media cache",
-                        subtitle: "Thumbnails & temporary post data",
+                        subtitle: "Videos, thumbnails & temporary post data",
                         systemImage: "externaldrive",
                         action: { isConfirmingCacheClear = true }
                     )
@@ -1172,6 +1192,12 @@ struct BackupSettingsView: View {
         .background(AppTheme.background.ignoresSafeArea())
         .navigationTitle("Storage & backup")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            cacheLimitDraft = model.settings.cacheLimitMb.map { String($0) } ?? ""
+        }
+        .onChange(of: model.settings.cacheLimitMb) { _, limit in
+            cacheLimitDraft = limit.map { String($0) } ?? ""
+        }
         .fileExporter(
             isPresented: $model.isExporting,
             document: model.exportDocument,
@@ -1204,11 +1230,11 @@ struct BackupSettingsView: View {
             titleVisibility: .visible
         ) {
             Button("Clear", role: .destructive) {
-                model.clearCache()
+                Task { await model.clearCache() }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Downloaded thumbnails and temporary post data will be removed. Your favorites and settings will be kept.")
+            Text("Cached videos, thumbnails and temporary post data will be removed. Your favorites and settings will be kept.")
         }
     }
 }

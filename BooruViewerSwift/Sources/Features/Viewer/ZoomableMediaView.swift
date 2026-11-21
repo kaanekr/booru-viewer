@@ -105,6 +105,7 @@ struct ZoomableMediaView: View {
             } else if let videoURL = media?.videoURL {
                 PrivateVideoPlaybackView(
                     url: videoURL,
+                    hlsCacheKey: post.sourceID == .pornhub ? post.uniqueKey : nil,
                     isActive: isActive,
                     showsControls: showsControls,
                     isInfoPresented: isInfoPresented,
@@ -519,6 +520,7 @@ private struct PrivateVideoPlaybackView: View {
     }
 
     let url: URL
+    let hlsCacheKey: String?
     var isActive: Bool
     /// Only show the transport card while the viewer's controls are visible.
     var showsControls = true
@@ -528,6 +530,8 @@ private struct PrivateVideoPlaybackView: View {
     var onSingleTap: (() -> Void)?
 
     @State private var player: AVPlayer?
+    @State private var hlsServer: HlsLoopbackServer?
+    @State private var setupTask: Task<Void, Never>?
     @State private var isPlaying = false
     @State private var isMuted = VideoPlaybackSession.isMuted
     @State private var currentTime: Double = 0
@@ -610,6 +614,10 @@ private struct PrivateVideoPlaybackView: View {
         }
         .onChange(of: isActive) { _, active in
             isPageActive = active
+            if active, player == nil {
+                setUp()
+                return
+            }
             guard let player else { return }
             if active {
                 if loadFailed {
@@ -776,13 +784,40 @@ private struct PrivateVideoPlaybackView: View {
     // MARK: Player lifecycle
 
     private func setUp() {
-        guard player == nil else { return }
+        guard player == nil, setupTask == nil else { return }
         didRetryAlternate = false
         loadFailed = false
         isDisposed = false
         isPageActive = isActive
         isMuted = VideoPlaybackSession.isMuted
-        let item = MediaRequestConfiguration.makePlayerItem(for: url)
+        if let hlsCacheKey,
+           let attempt = MediaRequestConfiguration.routeAttempts(for: url).first,
+           let origin = try? HlsOrigin(source: attempt.url) {
+            guard isPageActive else { return }
+            let server = HlsLoopbackServer(
+                asset: hlsCacheKey,
+                origin: origin,
+                headers: MediaRequestConfiguration.headers(for: attempt)
+            )
+            hlsServer = server
+            setupTask = Task { @MainActor in
+                guard !Task.isCancelled else { return }
+                let localURL = try? await server.start()
+                guard !Task.isCancelled, !isDisposed, hlsServer === server else { return }
+                setupTask = nil
+                if let localURL {
+                    startPlayer(with: AVPlayerItem(url: localURL))
+                } else {
+                    closeHlsServer()
+                    startPlayer(with: MediaRequestConfiguration.makePlayerItem(for: url))
+                }
+            }
+        } else {
+            startPlayer(with: MediaRequestConfiguration.makePlayerItem(for: url))
+        }
+    }
+
+    private func startPlayer(with item: AVPlayerItem) {
         let newPlayer = AVPlayer(playerItem: item)
         newPlayer.isMuted = isMuted
         player = newPlayer
@@ -808,7 +843,7 @@ private struct PrivateVideoPlaybackView: View {
         }
         observeItemStatus(of: item)
         observeEndOfCurrentItem(of: newPlayer)
-        if isActive {
+        if isPageActive {
             newPlayer.play()
             isPlaying = true
         }
@@ -835,22 +870,17 @@ private struct PrivateVideoPlaybackView: View {
     /// alternate leg works, surfaces the retryable failure overlay.
     private func retryAlternateLeg() {
         guard !isDisposed, !loadFailed, let player else { return }
+        if hlsServer != nil {
+            closeHlsServer()
+            replacePlaybackItem(MediaRequestConfiguration.makePlayerItem(for: url), in: player)
+            return
+        }
         if !didRetryAlternate {
             didRetryAlternate = true
             let attempts = MediaRequestConfiguration.routeAttempts(for: url)
             if attempts.count > 1 {
                 let alternate = attempts[1]
-                let nextItem = MediaRequestConfiguration.makePlayerItem(for: alternate)
-                player.replaceCurrentItem(with: nextItem)
-                currentTime = 0
-                duration = 0
-                // The replaced item is a different object: re-bind observers to it.
-                observeItemStatus(of: nextItem)
-                observeEndOfCurrentItem(of: player)
-                if isPageActive {
-                    player.play()
-                    isPlaying = true
-                }
+                replacePlaybackItem(MediaRequestConfiguration.makePlayerItem(for: alternate), in: player)
                 return
             }
         }
@@ -858,6 +888,23 @@ private struct PrivateVideoPlaybackView: View {
         isPlaying = false
         loadFailed = true
         onSetControlsVisible?(true)
+    }
+
+    private func replacePlaybackItem(_ item: AVPlayerItem, in player: AVPlayer) {
+        player.replaceCurrentItem(with: item)
+        currentTime = 0
+        duration = 0
+        observeItemStatus(of: item)
+        observeEndOfCurrentItem(of: player)
+        if isPageActive {
+            player.play()
+            isPlaying = true
+        }
+    }
+
+    private func closeHlsServer() {
+        hlsServer?.close()
+        hlsServer = nil
     }
 
     /// Loops a finished finite clip: observe `didPlayToEndTimeNotification` bound to
@@ -939,6 +986,9 @@ private struct PrivateVideoPlaybackView: View {
 
     private func tearDown() {
         isDisposed = true
+        setupTask?.cancel()
+        setupTask = nil
+        closeHlsServer()
         itemStatusObservation?.invalidate()
         itemStatusObservation = nil
         removeEndObserver()

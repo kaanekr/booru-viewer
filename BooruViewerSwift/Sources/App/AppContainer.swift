@@ -103,6 +103,7 @@ final class AppContainer {
     /// `-forceLock` additionally locks the app so the PIN pad can be screenshotted.
     func bootstrap() async {
         await reloadSharedState()
+        await HlsSegmentStore.shared.setLimit(settings.cacheLimitBytes)
         MediaRequestConfiguration.updateCurrentProxy(settings.proxy)
         await lockController.prepareForLaunch()
         if launchOptions.forceLock {

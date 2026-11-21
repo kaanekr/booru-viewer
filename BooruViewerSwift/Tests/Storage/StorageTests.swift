@@ -255,6 +255,8 @@ final class StorageTests: XCTestCase {
 
         XCTAssertEqual(settings.imageQuality, .auto)
         XCTAssertTrue(settings.gridPreviews)
+        XCTAssertNil(settings.cacheLimitMb)
+        XCTAssertEqual(settings.cacheLimitBytes, -1)
         XCTAssertEqual(settings.activeSourceID, .gelbooru)
         XCTAssertNil(settings.feedOrder)
         XCTAssertTrue(settings.hentaiHavenLastEpisodes.isEmpty)
@@ -266,6 +268,7 @@ final class StorageTests: XCTestCase {
         var settings = AppSettings()
         settings.imageQuality = .full
         settings.gridPreviews = false
+        settings.cacheLimitMb = 8192
         settings.activeSourceID = .rule34
         settings.feedOrder = FeedOrder(sortBy: .score, timeRange: .oneMonth, hentaiHavenSection: .episodes)
         settings.hentaiHavenLastEpisodes = ["series": 7]
@@ -282,6 +285,8 @@ final class StorageTests: XCTestCase {
         let loaded = try await SettingsStore(directory: directory).load()
         XCTAssertEqual(loaded.imageQuality, .full)
         XCTAssertFalse(loaded.gridPreviews)
+        XCTAssertEqual(loaded.cacheLimitMb, 8192)
+        XCTAssertEqual(loaded.cacheLimitBytes, 8192 * 1024 * 1024)
         XCTAssertEqual(loaded.activeSourceID, .rule34)
         XCTAssertEqual(loaded.feedOrder?.sortBy, .score)
         XCTAssertEqual(loaded.feedOrder?.timeRange, .oneMonth)
@@ -296,6 +301,33 @@ final class StorageTests: XCTestCase {
     }
 
     // MARK: - File store behaviour
+
+    func testHlsSegmentsPersistInUnlimitedModeAndEvictWhenLimited() async throws {
+        let cacheDirectory = directory.appendingPathComponent("hls", isDirectory: true)
+        let cache = HlsSegmentStore(directory: cacheDirectory)
+        await cache.setLimit(1)
+        let revision = await cache.lookup(asset: "one", identity: "segment").revision
+        let response = HlsResponse(200, body: Data([1, 2, 3]))
+        await cache.store(response, asset: "one", identity: "segment", revision: revision)
+        let limited = await cache.stats()
+        XCTAssertEqual(limited["files"], 0)
+
+        await cache.setLimit(-1)
+        await cache.store(response, asset: "one", identity: "segment", revision: revision)
+        let reopened = HlsSegmentStore(directory: cacheDirectory)
+        let saved = await reopened.lookup(asset: "one", identity: "segment")
+        XCTAssertEqual(saved.response?.body, response.body)
+        await cache.setLimit(1)
+        let evicted = await cache.stats()
+        XCTAssertEqual(evicted["files"], 0)
+
+        await cache.setLimit(-1)
+        await cache.store(response, asset: "one", identity: "segment", revision: revision)
+        await cache.clear()
+        await cache.store(response, asset: "one", identity: "segment", revision: revision)
+        let cleared = await cache.stats()
+        XCTAssertEqual(cleared["files"], 0)
+    }
 
     func testCorruptDocumentIsPreservedAndAddFails() async throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

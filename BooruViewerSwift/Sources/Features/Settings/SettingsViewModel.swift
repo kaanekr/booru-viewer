@@ -75,6 +75,7 @@ final class SettingsViewModel {
         case tag
         case importBackup
         case exportBackup
+        case cacheLimit
         case clear
     }
 
@@ -685,16 +686,39 @@ final class SettingsViewModel {
 
     // MARK: - Local data
 
-    /// Clears the shared `URLCache` and the decoded `MediaImageLoader` cache, the
-    /// native stand-in for the RN image cache purge.
-    func clearCache() {
+    func saveCustomCacheLimit(_ input: String) async {
+        guard let limit = Int(input.trimmingCharacters(in: .whitespacesAndNewlines)),
+              limit >= AppSettings.minimumCacheLimitMb else {
+            alert = AlertState(title: "Invalid cache size", message: "Enter a whole number of MB, at least \(AppSettings.minimumCacheLimitMb).")
+            return
+        }
+        await setCacheLimit(limit)
+    }
+
+    func setCacheLimit(_ limitMb: Int?) async {
+        guard busy == nil, settings.cacheLimitMb != limitMb else { return }
+        let previous = settings.cacheLimitMb
+        settings.cacheLimitMb = limitMb
+        busy = .cacheLimit
+        defer { busy = nil }
+        if await persist() {
+            await HlsSegmentStore.shared.setLimit(settings.cacheLimitBytes)
+            notifySettingsChanged()
+        } else {
+            settings.cacheLimitMb = previous
+        }
+    }
+
+    func clearCache() async {
+        guard busy == nil else { return }
         busy = .clear
         defer { busy = nil }
         URLCache.shared.removeAllCachedResponses()
-        Task { await MediaImageLoader.shared.clearCache() }
+        await MediaImageLoader.shared.clearCache()
+        await HlsSegmentStore.shared.clear()
         alert = AlertState(
             title: "Cache cleared",
-            message: "Downloaded thumbnails and temporary post data were removed. Your favorites and settings were kept."
+            message: "Cached videos, thumbnails and temporary post data were removed. Your favorites and settings were kept."
         )
     }
 
