@@ -109,14 +109,18 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   );
 
   // Prefer crisp static sample (~850px) over tiny ~150px booru thumbnails when available;
-  // skip animated GIFs and videos for the static cover so cards stay sharp and lightweight.
+  // skip animated GIFs, videos, and previewVideoUrl for the static cover so cards stay sharp and never blank.
   const primaryRaw = React.useMemo(() => {
-    if (isCrispCoverCandidate(post.sampleUrl)) {
-      return post.sampleUrl!;
+    if (
+      post.sampleUrl &&
+      post.sampleUrl !== post.previewVideoUrl &&
+      isCrispCoverCandidate(post.sampleUrl)
+    ) {
+      return post.sampleUrl;
     }
     const candidates = [post.previewUrl, post.previewFallbackUrl, post.sampleUrl];
     return candidates.find(isStaticImageCandidate) || candidates.find(isCandidateSafe) || '';
-  }, [post.previewUrl, post.previewFallbackUrl, post.sampleUrl]);
+  }, [post.previewUrl, post.previewFallbackUrl, post.sampleUrl, post.previewVideoUrl]);
 
   const imageFallbacks = React.useMemo(
     () => Array.from(new Set([post.previewUrl, post.previewFallbackUrl, post.previewThumbUrl, post.sampleUrl]
