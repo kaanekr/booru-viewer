@@ -1,12 +1,12 @@
 # Booru Viewer
 
-> **18+ ONLY. This app aggregates adult content. No minors.**
+> **For adults 18 and older. Supported sources include adult content.**
 
 Multi-source image/video viewer built with Expo SDK 58 (React Native).
 Browse, search, filter, favorite, and back up posts across supported booru and
 video sources. English UI.
 
-Exact Expo version docs: https://docs.expo.dev/versions/v58.0.0/
+[Expo SDK 58 reference](https://docs.expo.dev/versions/v58.0.0/)
 
 ## Features
 
@@ -15,8 +15,8 @@ Exact Expo version docs: https://docs.expo.dev/versions/v58.0.0/
 - Favorites, favorite tags, blacklist, search history, recent views
 - App lock (4-digit PIN + biometrics)
 - Backup import/export (AnimeBoxes `.abbj` / JSON)
-- Optional Cloudflare Worker relay to bypass ISP censorship (no VPN)
-- Gelbooru DAPI key support (user-provided, stored on-device only)
+- Optional Cloudflare Worker relay for source connections
+- Account and API settings for Gelbooru and Rule34
 
 ## Requirements
 
@@ -31,50 +31,34 @@ npm ci
 npx expo start
 ```
 
-- `npm run android` / `npm run ios` / `npm run web` — start per platform
-- `npm run test:freeze` — run lifecycle tests (`node --test tests/*lifecycle.test.cjs`)
+- Run `npm run android`, `npm run ios`, or `npm run web` to start on a specific platform.
+- Run `npm run test:freeze` to run the lifecycle test suite.
 
 ## Configuration
 
-- Source: Settings → Choose Booru Source
-- Image quality: Settings → Image Quality (Quick / Automatic / Full)
-- Video previews: Settings → Video Previews
-- Proxy relay: Settings → Network & Bypass
-  1. Deploy your own Cloudflare Worker (never commit its URL).
-  2. Paste it as `https://<your-worker>.workers.dev` (see `.env.example`).
-  3. Use **Test Connection** to verify direct vs worker paths.
-- Gelbooru DAPI: Settings → Gelbooru API Key. Keys are stored in
-  AsyncStorage on-device only and never committed.
+- Choose a source under **Settings → Sources**. Open its settings icon and select **Account & API** to enter your own credentials. Rule34 requires both a user ID and an API key. Gelbooru accepts a user ID and API key for DAPI access.
+- Set image quality and card video previews under **Settings → Viewing**.
+- Import an AnimeBoxes or JSON backup, or export your library as JSON, under **Settings → Storage & backup**.
+- To use a Cloudflare Worker you control, enter its URL under **Settings → Connection → Cloudflare relay**, then use **Test connection** to compare direct and relay access. A saved Worker can be used as a fallback with **Route all traffic via Worker** turned off. Select **Remove Worker** to use direct connections only.
 
-## Publish checklist (new repo)
+## Builds
 
-This repo is sanitized for public publishing:
+The [iOS build workflow](.github/workflows/build-ios.yml) produces an unsigned IPA. A device installation requires signing for the intended device and distribution method.
 
-- [x] No hardcoded API keys (Gelbooru/Rule34 keys removed; backup JSON is an empty sample)
-- [x] No bundled personal backup (root `*.abbj` is git-ignored and excluded)
-- [x] `app.json` contains no private EAS `projectId` — new owner runs `eas init`
-- [x] `android.package` set (`com.booru.viewer` — change to your reverse domain before Store submit)
-- [x] `.gitignore` covers `.env*`, IPA/APK/AAB, native build dirs, credentials
-- [x] English UI throughout
-- [ ] **You must still do a clean export**: `git` history in the old repo may
-      contain secrets. Create the new repo with a fresh `git init` from the
-      sanitized tree (do NOT push `.git/`), then verify GitHub secret scanning.
-- [ ] Rotate/revoke any Gelbooru/Rule34 keys that were ever committed.
-- [ ] Redact/move internal docs (`docs/donma-raporu.md`, `HANDOFF_GLOBAL_STACK.md`)
-      before publishing if they leak LAN IPs/paths.
+For EAS builds from a fork, remove `expo.extra.eas.projectId` from your copy of `app.json`, then run `npx eas-cli@latest login` and `npx eas-cli@latest init` to link your own EAS project. Set your own `ios.bundleIdentifier` and `android.package` before distributing a fork. [Expo build guide](https://docs.expo.dev/build/setup/)
 
 ## Security & privacy
 
-- PIN is SHA-256 hashed with salt; biometric auth via `expo-local-authentication`.
-- No keys/secrets are committed. User keys stay in AsyncStorage.
-- `node_modules/`, `.expo/`, `build-ipa/`, `*.abbj`, credentials are ignored.
+- The app hashes the lock PIN with a salt and uses the device's biometric authentication when enabled.
+- User-provided API credentials are saved in the app's local AsyncStorage. Requests using those credentials go to the selected source and pass through the Worker when relay routing is used.
+- Library exports can contain favorites, tags, and browsing and search history. Treat exports and diagnostics as private, and keep credentials, personal backups, and local traces out of commits and issue reports.
 
 ## Content & legal
 
 - No affiliation with Gelbooru, Yande.re, Danbooru, Realbooru, Rule34,
   RedGifs, XVideos, XHamster, Pornhub, Sex.com, HentaiHaven, nhentai.
 - Respect each source's Terms of Service and rate limits. Scraping-based
-  sources may break or block; official APIs are preferred where available.
+  sources may break or block. The app uses official APIs where supported.
 - Age gate + content filters are the distributor's responsibility before any
   Store submission. Get legal review for adult-content distribution.
 

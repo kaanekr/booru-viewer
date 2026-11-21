@@ -44,6 +44,8 @@ yarn-error.*
 
 # local / test
 *.abbj
+booru_backup_*.json
+Trace-*.json
 .claude/
 build-ipa/
 *.ipa
