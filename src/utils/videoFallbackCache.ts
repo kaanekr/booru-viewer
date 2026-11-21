@@ -176,7 +176,16 @@ export async function syncNativeVideoCacheSize(limitMb?: number): Promise<void> 
 }
 
 const NATIVE_TRACKED_FILE = 'native-tracked.json';
+const MAX_NATIVE_TRACKED_KEYS = 500;
 let nativeTrackedKeys: Set<string> | null = null;
+
+function trimNativeTracked(keys: Set<string>): void {
+  while (keys.size > MAX_NATIVE_TRACKED_KEYS) {
+    const oldest = keys.values().next().value;
+    if (oldest === undefined) break;
+    keys.delete(oldest);
+  }
+}
 
 function loadNativeTracked(dir: Directory | null): Set<string> {
   if (nativeTrackedKeys !== null) return nativeTrackedKeys;
@@ -190,6 +199,7 @@ function loadNativeTracked(dir: Directory | null): Set<string> {
           for (const k of parsed) {
             if (typeof k === 'string' && k) loaded.add(k);
           }
+          trimNativeTracked(loaded);
         }
       }
     } catch {}
@@ -229,6 +239,7 @@ export function recordCachedVideo(url: string | null | undefined): void {
   const key = normalizeVideoTrackKey(url);
   if (keys.has(key)) return;
   keys.add(key);
+  trimNativeTracked(keys);
   saveNativeTracked(dir, keys);
 }
 
@@ -335,16 +346,29 @@ export async function downloadVideoViaAppSession(
       : DEFAULT_CACHE_LIMIT_MB;
   await enforceVideoCacheLimit(limitMb);
 
-  const downloaded = await File.downloadFileAsync(url, target, {
-    headers,
-    idempotent: true,
-    signal,
-    onProgress: onProgress
-      ? ({ bytesWritten, totalBytes }) => {
-          onProgress(totalBytes > 0 ? Math.min(1, bytesWritten / totalBytes) : null);
-        }
-      : undefined,
-  });
+  let downloaded: File;
+  try {
+    downloaded = await File.downloadFileAsync(url, target, {
+      headers,
+      idempotent: true,
+      signal,
+      onProgress: onProgress
+        ? ({ bytesWritten, totalBytes }) => {
+            onProgress(totalBytes > 0 ? Math.min(1, bytesWritten / totalBytes) : null);
+          }
+        : undefined,
+    });
+    if (signal?.aborted) {
+      const abortErr = new Error('Download aborted');
+      abortErr.name = 'AbortError';
+      throw abortErr;
+    }
+  } catch (err) {
+    try {
+      target.delete();
+    } catch {}
+    throw err;
+  }
 
   const finalSize = downloaded.size || target.size || 0;
   const index = readIndex(dir);

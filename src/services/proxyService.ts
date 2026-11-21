@@ -189,8 +189,10 @@ class ProxyService {
       }, timeoutMs);
     });
     try {
-      // Keep a caller's signal attached to the response body as well as headers.
-      return await Promise.race([fetch(url, { ...init, signal: signal ?? ctrl.signal }), interrupted]);
+      const fetchPromise = fetch(url, { ...init, signal: ctrl.signal });
+      // Suppress unhandled rejection if `interrupted` wins the race and `fetch()` rejects later.
+      fetchPromise.catch(() => {});
+      return await Promise.race([fetchPromise, interrupted]);
     } finally {
       if (timer) clearTimeout(timer);
       if (onAbort) signal?.removeEventListener('abort', onAbort);

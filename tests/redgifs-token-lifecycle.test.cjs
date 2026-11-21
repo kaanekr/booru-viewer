@@ -18,7 +18,9 @@ function loadApi(send) {
       getRedGifsTokenCache: async () => { throw new Error('Must not reuse persisted device-bound tokens'); },
       setRedGifsTokenCache: async () => { throw new Error('Must not persist device-bound tokens'); },
     } },
-    '../utils/guards': {}, './xvideos': {}, './xhamster': {}, './pornhub': {}, './sexcom': {}, './hentaihavens': {}, './nhentai': { searchNHentaiTags: async () => [] },
+    '../utils/guards': {},
+    '../utils/lruCache': { LruCache: class { constructor() { this.m = new Map(); } get(k) { return this.m.get(k); } set(k, v) { this.m.set(k, v); } } },
+    './xvideos': {}, './xhamster': {}, './pornhub': {}, './sexcom': {}, './hentaihavens': {}, './nhentai': { searchNHentaiTags: async () => [] },
   };
   const filename = path.resolve(__dirname, '../src/services/booruApi.ts');
   const js = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {

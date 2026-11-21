@@ -247,8 +247,8 @@ export const BackupService = {
     const cleanText = (v: any): string =>
       typeof v === 'string' ? v.trim().toLowerCase().replace(/\s+/g, ' ') : '';
     const starredTags = rawHistory
-      .filter((h: any) => h && (typeof h === 'string' || (h.starred && h.searchText)))
-      .map((h: any) => (typeof h === 'string' ? cleanText(h) : cleanText(h.searchText)))
+      .filter((h: any) => h && typeof h === 'object' && h.starred && h.searchText)
+      .map((h: any) => cleanText(h.searchText))
       .filter(Boolean);
 
     const searchHistory = rawHistory

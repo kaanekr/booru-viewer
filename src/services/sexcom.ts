@@ -235,12 +235,12 @@ export async function resolveSexComVideoUrls(
   signal?: AbortSignal
 ): Promise<SexComFiles | null> {
   if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
+  if (signal?.aborted) return null;
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 10000);
-  if (signal) {
-    signal.addEventListener('abort', () => ctrl.abort(), { once: true });
-  }
+  const onAbort = () => ctrl.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
     // If the direct link breaks (TLS -1200 / bot wall), a registered worker is tried
@@ -258,14 +258,15 @@ export async function resolveSexComVideoUrls(
       },
       10000
     );
-    clearTimeout(timeout);
     if (!response.ok) return null;
     const html = await response.text();
     const files = parseSexComDetail(html);
     if (!files.hls && !files.mp4) return null;
     return files;
   } catch {
-    clearTimeout(timeout);
     return null;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', onAbort);
   }
 }

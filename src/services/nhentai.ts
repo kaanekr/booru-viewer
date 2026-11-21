@@ -391,18 +391,20 @@ export async function resolveNHentaiGalleryDetail(
   const headers = nhentaiApiHeaders();
 
   const fetchWithTimeout = async (url: string, ms = 9000): Promise<string | null> => {
+    if (signal?.aborted) return null;
     const ctrl = new AbortController();
     const timeout = setTimeout(() => ctrl.abort(), ms);
     const onAbort = () => ctrl.abort();
-    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    signal?.addEventListener('abort', onAbort, { once: true });
     try {
       const res = await proxyService.fetchWithFallback(url, { headers, signal: ctrl.signal }, ms);
-      clearTimeout(timeout);
       if (!res.ok) return null;
       return await res.text();
     } catch {
-      clearTimeout(timeout);
       return null;
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', onAbort);
     }
   };
 

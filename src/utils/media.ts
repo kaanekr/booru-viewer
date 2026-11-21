@@ -40,11 +40,15 @@ export async function resolveRealDimensions(post: {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
-    const res = await proxyService.fetchWithFallback(pageUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148' },
-      signal: ctrl.signal,
-    });
-    clearTimeout(t);
+    let res: Response;
+    try {
+      res = await proxyService.fetchWithFallback(pageUrl, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148' },
+        signal: ctrl.signal,
+      });
+    } finally {
+      clearTimeout(t);
+    }
     if (!res.ok) return null;
     const html = await res.text();
     // File size: written next to the original link on the post page
@@ -68,12 +72,16 @@ export async function resolveRealDimensions(post: {
         const headers = getMediaHeaders(rawMediaUrl);
         const headCtrl = new AbortController();
         const headTimeout = setTimeout(() => headCtrl.abort(), 4000);
-        const headRes = await proxyService.fetchWithFallback(rawMediaUrl as string, {
-          method: 'HEAD',
-          headers,
-          signal: headCtrl.signal,
-        });
-        clearTimeout(headTimeout);
+        let headRes: Response;
+        try {
+          headRes = await proxyService.fetchWithFallback(rawMediaUrl as string, {
+            method: 'HEAD',
+            headers,
+            signal: headCtrl.signal,
+          });
+        } finally {
+          clearTimeout(headTimeout);
+        }
         const cl = headRes.headers.get('content-length');
         if (cl) {
           const parsed = parseInt(cl, 10);
@@ -444,12 +452,12 @@ export async function resolveXVideosVideoUrls(
   signal?: AbortSignal
 ): Promise<{ high: string; low: string; hls: string } | null> {
   if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
+  if (signal?.aborted) return null;
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 10000);
-  if (signal) {
-    signal.addEventListener('abort', () => ctrl.abort(), { once: true });
-  }
+  const onAbort = () => ctrl.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
     const response = await proxyService.fetchWithFallback(post.sourceLink, {
@@ -460,15 +468,16 @@ export async function resolveXVideosVideoUrls(
       },
       signal: ctrl.signal,
     });
-    clearTimeout(timeout);
     if (!response.ok) return null;
     const html = await response.text();
     const files = parseXVideosFiles(html);
     if (!files.high && !files.low && !files.hls) return null;
     return files;
   } catch {
-    clearTimeout(timeout);
     return null;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', onAbort);
   }
 }
 
@@ -498,12 +507,12 @@ export async function resolveXHamsterVideoUrls(
   signal?: AbortSignal
 ): Promise<{ high: string; low: string; hls: string } | null> {
   if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
+  if (signal?.aborted) return null;
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 10000);
-  if (signal) {
-    signal.addEventListener('abort', () => ctrl.abort(), { once: true });
-  }
+  const onAbort = () => ctrl.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
     const response = await proxyService.fetchWithFallback(post.sourceLink, {
@@ -514,15 +523,16 @@ export async function resolveXHamsterVideoUrls(
       },
       signal: ctrl.signal,
     });
-    clearTimeout(timeout);
     if (!response.ok) return null;
     const html = await response.text();
     const files = parseXhamsterDetail(html);
     if (!files.high && !files.low && !files.hls) return null;
     return files;
   } catch {
-    clearTimeout(timeout);
     return null;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', onAbort);
   }
 }
 
@@ -540,12 +550,12 @@ export async function resolvePornhubVideoUrls(
   signal?: AbortSignal
 ): Promise<{ high: string; low: string; hls: string } | null> {
   if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
+  if (signal?.aborted) return null;
 
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), 10000);
-  if (signal) {
-    signal.addEventListener('abort', () => ctrl.abort(), { once: true });
-  }
+  const onAbort = () => ctrl.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
 
   const headers = {
     'User-Agent': PORNHUB_UA,
@@ -571,15 +581,15 @@ export async function resolvePornhubVideoUrls(
       const html = await response.text();
       const files = parsePornhubDetail(html);
       if (files.high || files.low || files.hls) {
-        clearTimeout(timeout);
         return files;
       }
     }
-    clearTimeout(timeout);
     return null;
   } catch {
-    clearTimeout(timeout);
     return null;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', onAbort);
   }
 }
 
