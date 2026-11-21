@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { useWindowDimensions } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useIsFocused } from '@react-navigation/native';
 import type { RootStackParamList } from '../navigation/types';
@@ -23,7 +25,10 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   const posts = getCachedPosts(postsKey);
   const isFocused = useIsFocused();
   const mediaAllowed = useMediaPlaybackAllowed();
+  const { height: windowHeight } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
+  const [isScrubbing, setIsScrubbing] = useState(false);
   const closingRef = useRef(false);
   useEffect(() => { if (isFocused) closingRef.current = false; }, [isFocused]);
 
@@ -44,13 +49,20 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
     setCurrentIndex(initialIndex);
   }, [initialIndex]);
 
-  // Native back gesture for photos (as before). Disabled for videos:
-  // the edge strip also overlapped the timeline and caused accidental exits;
-  // a dedicated edge area excluding the timeline is used instead.
+  // Native stack back gesture works on BOTH photos and videos:
+  // on videos, exclude the bottom timeline strip via gestureResponseDistance.bottom
+  // and temporarily pause gestureEnabled while actively scrubbing the timeline.
   const currentIsVideo = isVideoPost(posts[currentIndex]);
   useEffect(() => {
-    navigation.setOptions({ gestureEnabled: !currentIsVideo });
-  }, [currentIsVideo, navigation]);
+    const edgeEnd = 48 + Math.min(insets.left ?? 0, 32);
+    const timelineTop = Math.max(200, windowHeight - (insets.bottom ?? 0) - 165);
+    navigation.setOptions({
+      gestureEnabled: !isScrubbing,
+      gestureResponseDistance: currentIsVideo
+        ? { end: edgeEnd, bottom: timelineTop }
+        : { end: edgeEnd },
+    });
+  }, [currentIsVideo, isScrubbing, navigation, windowHeight, insets.left, insets.bottom]);
 
   useEffect(() => {
     if (isFocused && mediaAllowed && posts[currentIndex]) {
@@ -61,9 +73,18 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   const currentSourceId = posts[currentIndex]?.sourceId;
   const source = originSource?.id === currentSourceId
     ? originSource : AVAILABLE_SOURCES.find((item) => item.id === currentSourceId);
-  const handleClose = useCallback(() => {
+  const handleClose = useCallback((immediate?: boolean) => {
     if (!closingRef.current && navigation.canGoBack()) {
       closingRef.current = true;
+      if (immediate) {
+        navigation.setOptions({ animation: 'none' });
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => navigation.goBack());
+        } else {
+          navigation.goBack();
+        }
+        return;
+      }
       navigation.goBack();
     }
   }, [navigation]);
@@ -84,6 +105,7 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
       posts={posts}
       initialIndex={initialIndex}
       onIndexChange={setCurrentIndex}
+      onScrubbingChange={setIsScrubbing}
       suspended={!isFocused || !mediaAllowed}
       dismissOnTagPress={false}
       onClose={handleClose}

@@ -72,7 +72,7 @@ import { resolveSexComVideoUrls, selectSexComPlayable } from '../services/sexcom
 import { resolveHentaiHavenEpisodeUrls, listHentaiHavenEpisodes, resolveHentaiHavenEpisodeUrl, HentaiHavenEpisode } from '../services/hentaihavens';
 import { resolveNHentaiPages, resolveNHentaiGalleryDetail, rotateNhentaiImageHost } from '../services/nhentai';
 
-const { width: DEFAULT_SCREEN_WIDTH } = Dimensions.get('window');
+const { width: DEFAULT_SCREEN_WIDTH, height: DEFAULT_SCREEN_HEIGHT } = Dimensions.get('window');
 const GOLD_ACCENT = '#F5A623';
 const viewerKeyExtractor = (item: BooruPost, index: number) => `${getPostKey(item)}-${index}`;
 
@@ -88,7 +88,7 @@ interface ImageViewerModalProps {
   posts: BooruPost[];
   initialIndex: number;
   visible: boolean;
-  onClose: () => void;
+  onClose: (immediate?: boolean) => void;
   onTagPress: (tag: string) => void;
   onAddTagToSearch?: (tag: string) => void;
   onExcludeTagFromSearch?: (tag: string) => void;
@@ -141,6 +141,12 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   const [showPageJump, setShowPageJump] = useState(false);
   const [pageInput, setPageInput] = useState('');
   const [showDetailsSheet, setShowDetailsSheet] = useState(false);
+  const [isPeekingDetails, setIsPeekingDetails] = useState(false);
+  const isPeekingDetailsRef = useRef(false);
+  const sheetMaxHeight = Math.round(windowHeight * 0.92);
+  const sheetMaxHeightRef = useRef(sheetMaxHeight);
+  sheetMaxHeightRef.current = sheetMaxHeight;
+  const edgeStartDxRef = useRef<number | null>(null);
   const [, setGalleryScrollFallback] = useState(true);
   const galleryScrollEnabledRef = useRef(true);
   // One-shot full-preview request from the Original row in the info modal
@@ -154,6 +160,9 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   // Animated slide value for interactive edge swipe back
   // Starts at 0 with asScreen: no off-screen flash on the first frame.
   const translateX = useRef(new Animated.Value(asScreen ? 0 : DEFAULT_SCREEN_WIDTH)).current;
+  const infoSheetTranslateY = useRef(
+    new Animated.Value(Math.round(DEFAULT_SCREEN_HEIGHT * 0.92))
+  ).current;
 
   useEffect(() => {
     // Free mode is only granted while the media viewer is open
@@ -205,19 +214,25 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     if (suspended || !visible) {
       setIsPlayingSlideshow(false);
       setShowDetailsSheet(false);
+      setIsPeekingDetails(false);
+      isPeekingDetailsRef.current = false;
+      infoSheetTranslateY.setValue(sheetMaxHeightRef.current);
       setShowPageJump(false);
     } else if (visible) {
       // Bring controls back on refocus: resets the "controls are gone"
       // state where taps were swallowed.
       setShowControls(true);
     }
-  }, [suspended, visible]);
+  }, [suspended, visible, infoSheetTranslateY]);
 
   useEffect(() => {
     if (visible) {
       setCurrentIndex(initialIndex);
       setShowControls(true);
       setShowDetailsSheet(false);
+      setIsPeekingDetails(false);
+      isPeekingDetailsRef.current = false;
+      infoSheetTranslateY.setValue(sheetMaxHeightRef.current);
       setIsPlayingSlideshow(false);
       setGalleryScrollSynchronously(true);
       setPreviewOriginalId(null);
@@ -225,15 +240,12 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       // Stack route and modal alike start at rest position.
       translateX.setValue(0);
     }
-  }, [visible, initialIndex, enterAnimation, asScreen, setGalleryScrollSynchronously, translateX]);
+  }, [visible, initialIndex, enterAnimation, asScreen, setGalleryScrollSynchronously, translateX, infoSheetTranslateY]);
 
   const currentPost = posts[currentIndex] || posts[0];
   const currentPostKey = currentPost ? getPostKey(currentPost) : '';
   const currentPostKeyRef = useRef(currentPostKey);
   currentPostKeyRef.current = currentPostKey;
-  // Dedicated edge back-area is live on video pages (native gesture off);
-  // on photos the native gesture works and this area is off.
-  const currentIsVideo = isVideoPost(currentPost);
 
   useEffect(() => {
     if (!visible || suspended || !showPageJump) return;
@@ -298,7 +310,11 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   // In stack-route mode the native stack is in charge: its own open animation
   // and edge-swipe gesture are off; translateX stays pinned at 0.
   const isStackScreen = asScreen === true;
-  const handleDismissWithSlide = useCallback(() => {
+  const handleDismissWithSlide = useCallback((immediate?: boolean) => {
+    if (immediate) {
+      onClose(true);
+      return;
+    }
     Haptics.selectionAsync();
     if (isStackScreen) {
       onClose();
@@ -306,66 +322,67 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     }
     Animated.timing(translateX, {
       toValue: windowWidth,
-      duration: 220,
+      duration: 200,
       useNativeDriver: true,
     }).start(() => {
       onClose();
     });
   }, [isStackScreen, onClose, translateX, windowWidth]);
 
-  // Interactive edge swipe gesture (modal mode and asScreen video pages):
-  // tracks finger horizontal translation smoothly with Animated.Value
-  // (useNativeDriver: true) and either completes dismissal/goBack or springs back.
+  // Interactive edge swipe gesture (modal mode, Android, and asScreen video pages):
+  // tracks finger horizontal translation 1:1 from 0px without stealing taps,
+  // and completes the slide off-screen before calling onClose(true) so there is
+  // never a snap-back or double slide animation.
   const edgePanResponder = useMemo(
     () =>
       PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponder: () => false,
         onMoveShouldSetPanResponder: (_, gesture) =>
-          gesture.dx > 8 && Math.abs(gesture.dy) < 35,
+          gesture.dx > 6 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.15,
         onMoveShouldSetPanResponderCapture: (_, gesture) =>
-          gesture.dx > 8 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
-        onPanResponderGrant: () => {
+          gesture.dx > 6 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.15,
+        onPanResponderGrant: (_, gesture) => {
+          edgeStartDxRef.current = gesture?.dx ?? 0;
           (translateX as any).stopAnimation?.();
         },
         onPanResponderMove: (_, gesture) => {
-          if (gesture.dx > 0) {
-            translateX.setValue(gesture.dx);
-          }
+          const deltaX = gesture.dx - (edgeStartDxRef.current ?? 0);
+          translateX.setValue(deltaX > 0 ? deltaX : 0);
         },
         onPanResponderRelease: (_, gesture) => {
-          if (gesture.dx > 80 || gesture.vx > 0.4) {
+          const startDx = edgeStartDxRef.current ?? 0;
+          edgeStartDxRef.current = null;
+          const deltaX = gesture.dx - startDx;
+          if (deltaX > 72 || gesture.vx > 0.35) {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-            if (asScreen) {
-              onClose();
-              return;
-            }
             Animated.timing(translateX, {
               toValue: windowWidth,
-              duration: 180,
+              duration: 130,
               useNativeDriver: true,
             }).start(() => {
-              onClose();
+              onClose(true);
             });
           } else {
             Animated.spring(translateX, {
               toValue: 0,
-              damping: 24,
-              stiffness: 260,
+              damping: 26,
+              stiffness: 300,
               useNativeDriver: true,
             }).start();
           }
         },
         onPanResponderTerminate: () => {
+          edgeStartDxRef.current = null;
           Animated.spring(translateX, {
             toValue: 0,
-            damping: 24,
-            stiffness: 260,
+            damping: 26,
+            stiffness: 300,
             useNativeDriver: true,
           }).start();
         },
         onPanResponderTerminationRequest: () => false,
       }),
-    [translateX, onClose, asScreen, windowWidth]
+    [translateX, onClose, windowWidth]
   );
 
   const handleToggleControls = useCallback(() => {
@@ -392,7 +409,12 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 
   const toggleDetails = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setShowDetailsSheet((prev) => !prev);
+    setShowDetailsSheet((prev) => {
+      if (!prev) {
+        infoSheetTranslateY.setValue(sheetMaxHeightRef.current);
+      }
+      return !prev;
+    });
   };
 
   const toggleOrientation = async () => {
@@ -445,8 +467,53 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     [setGalleryScrollSynchronously, onScrubbingChange]
   );
   const handleOpenDetails = useCallback(() => {
+    infoSheetTranslateY.setValue(sheetMaxHeightRef.current);
     setShowDetailsSheet(true);
-  }, []);
+  }, [infoSheetTranslateY]);
+  const handleInfoDragStart = useCallback(() => {
+    (infoSheetTranslateY as any).stopAnimation?.();
+    if (!isPeekingDetailsRef.current) {
+      isPeekingDetailsRef.current = true;
+      setIsPeekingDetails(true);
+    }
+  }, [infoSheetTranslateY]);
+  const handleInfoDragMove = useCallback(
+    (dy: number) => {
+      if (dy < 0) {
+        if (!isPeekingDetailsRef.current) {
+          isPeekingDetailsRef.current = true;
+          setIsPeekingDetails(true);
+        }
+        infoSheetTranslateY.setValue(Math.max(0, sheetMaxHeightRef.current + dy * 1.15));
+      } else if (isPeekingDetailsRef.current) {
+        infoSheetTranslateY.setValue(sheetMaxHeightRef.current);
+      }
+    },
+    [infoSheetTranslateY]
+  );
+  const handleInfoDragEnd = useCallback(
+    (shouldOpen: boolean) => {
+      if (shouldOpen) {
+        isPeekingDetailsRef.current = false;
+        setIsPeekingDetails(false);
+        setShowDetailsSheet(true);
+        return;
+      }
+      if (!isPeekingDetailsRef.current) return;
+      Animated.spring(infoSheetTranslateY, {
+        toValue: sheetMaxHeightRef.current,
+        damping: 28,
+        stiffness: 320,
+        useNativeDriver: true,
+      }).start(() => {
+        isPeekingDetailsRef.current = false;
+        if (mountedRef.current) {
+          setIsPeekingDetails(false);
+        }
+      });
+    },
+    [infoSheetTranslateY]
+  );
   const handleTagsResolved = useCallback(
     (
       targetPost: BooruPost,
@@ -495,6 +562,9 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
         onToggleControls={handleToggleControls}
         onSetControlsVisible={setShowControls}
         onOpenDetails={handleOpenDetails}
+        onInfoDragStart={handleInfoDragStart}
+        onInfoDragMove={handleInfoDragMove}
+        onInfoDragEnd={handleInfoDragEnd}
         onClose={handleDismissWithSlide}
         onTagPress={onTagPress}
         onZoomChange={handleZoomChange}
@@ -512,6 +582,9 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       handleTagsResolved,
       handleToggleControls,
       handleOpenDetails,
+      handleInfoDragStart,
+      handleInfoDragMove,
+      handleInfoDragEnd,
       handleDismissWithSlide,
       onTagPress,
       handleZoomChange,
@@ -534,15 +607,15 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             },
           ]}
         >
-          {/* Left-edge back area: in modal mode and on video pages
-              (while the native gesture is off). The bottom 150px video timeline
-              strip is excluded: a finger starting on the strip seeks, never exits. */}
-          {(!asScreen || currentIsVideo) && (
+          {/* Left-edge back area: active in modal mode and on Android (where
+              native stack swipe-back doesn't exist). On iOS asScreen, native
+              stack handles both photos and videos identically. */}
+          {(!asScreen || Platform.OS === 'android') && (
             <View
               style={[
                 styles.leftEdgeGestureArea,
                 {
-                  width: 28 + Math.min(insetLeft, 32),
+                  width: 44 + Math.min(insetLeft, 32),
                   bottom: 150 + insetBottom,
                 },
               ]}
@@ -583,7 +656,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             >
               <TouchableOpacity
                 style={styles.circleBtn}
-                onPress={handleDismissWithSlide}
+                onPress={() => handleDismissWithSlide()}
                 hitSlop={{ top: 16, bottom: 16, left: 16, right: 16 }}
                 activeOpacity={0.7}
               >
@@ -667,11 +740,18 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             </View>
           )}
 
-          {/* 4. POST INFO MODAL (Screenshot Style & Menu) */}
+          {/* 4. POST INFO SHEET (Inline 1:1 interactive layer — no Modal mount lag) */}
           <PostInfoModal
+            useModal={false}
             visible={showDetailsSheet && !suspended}
+            isPeeking={isPeekingDetails && !suspended}
+            externalTranslateY={infoSheetTranslateY}
             post={currentPost}
-            onClose={() => setShowDetailsSheet(false)}
+            onClose={() => {
+              setShowDetailsSheet(false);
+              isPeekingDetailsRef.current = false;
+              setIsPeekingDetails(false);
+            }}
             onPreviewOriginal={(p) => setPreviewOriginalId(getPostKey(p))}
             onSearchTag={(tag) => {
               setShowDetailsSheet(false);
@@ -860,7 +940,10 @@ interface PostPageItemProps {
   onToggleControls: () => void;
   onSetControlsVisible?: (visible: boolean) => void;
   onOpenDetails: () => void;
-  onClose: () => void;
+  onInfoDragStart?: () => void;
+  onInfoDragMove?: (dy: number) => void;
+  onInfoDragEnd?: (shouldOpen: boolean) => void;
+  onClose: (immediate?: boolean) => void;
   onTagPress: (tag: string) => void;
   onZoomChange?: (isZoomed: boolean) => void;
   onScrubbingChange?: (isScrubbing: boolean) => void;
@@ -878,6 +961,9 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
   onToggleControls,
   onSetControlsVisible,
   onOpenDetails,
+  onInfoDragStart,
+  onInfoDragMove,
+  onInfoDragEnd,
   onClose,
   onZoomChange,
   onScrubbingChange,
@@ -942,6 +1028,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
   const dismissingRef = useRef<boolean>(false);
   const singleTapTimerRef = useRef<any>(null);
   const dragY = useRef(new Animated.Value(0)).current;
+  const dragStartDyRef = useRef<number | null>(null);
 
   useEffect(() => {
     return () => {
@@ -1493,76 +1580,102 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
           !dismissingRef.current &&
           post.sourceId !== 'nhentai' &&
           gesture.numberActiveTouches <= 1 &&
-          Math.abs(gesture.dy) > 12 &&
-          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.4,
+          Math.abs(gesture.dy) > 6 &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.15,
         onMoveShouldSetPanResponderCapture: (_, gesture) =>
           !isZoomedRef.current &&
           !isScrubbingRef.current &&
           !dismissingRef.current &&
           post.sourceId !== 'nhentai' &&
           gesture.numberActiveTouches <= 1 &&
-          Math.abs(gesture.dy) > 12 &&
-          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.4,
-        onPanResponderGrant: () => {
+          Math.abs(gesture.dy) > 6 &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.15,
+        onPanResponderGrant: (_, gesture) => {
+          dragStartDyRef.current = gesture?.dy ?? 0;
           (dragY as any).stopAnimation?.();
+          if ((gesture?.dy ?? 0) < 0) {
+            onInfoDragStart?.();
+          }
         },
         onPanResponderMove: (_, gesture) => {
-          if (gesture.dy > 0) {
-            dragY.setValue(gesture.dy);
+          const deltaY = gesture.dy - (dragStartDyRef.current ?? 0);
+          if (deltaY > 0) {
+            dragY.setValue(deltaY);
+            onInfoDragMove?.(0);
           } else {
-            dragY.setValue(Math.max(-48, gesture.dy * 0.25));
+            dragY.setValue(Math.max(-24, deltaY * 0.08));
+            onInfoDragMove?.(deltaY);
           }
         },
         onPanResponderRelease: (_, gesture) => {
+          const startDy = dragStartDyRef.current ?? 0;
+          dragStartDyRef.current = null;
+          const deltaY = gesture.dy - startDy;
           if (
-            (gesture.dy > 90 || (gesture.dy > 40 && gesture.vy > 0.65)) &&
+            (deltaY > 75 || (deltaY > 28 && gesture.vy > 0.45)) &&
             !dismissingRef.current
           ) {
             dismissingRef.current = true;
+            onInfoDragEnd?.(false);
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             Animated.timing(dragY, {
               toValue: screenHeight,
-              duration: 170,
+              duration: 130,
               useNativeDriver: true,
             }).start(() => {
-              onClose();
+              onClose(true);
             });
-          } else if (gesture.dy < -65 || (gesture.dy < -30 && gesture.vy < -0.6)) {
+          } else if (deltaY < -48 || gesture.vy < -0.4) {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             Animated.spring(dragY, {
               toValue: 0,
-              damping: 24,
-              stiffness: 280,
+              damping: 28,
+              stiffness: 320,
               useNativeDriver: true,
             }).start();
-            onOpenDetails();
+            if (onInfoDragEnd) {
+              onInfoDragEnd(true);
+            } else {
+              onOpenDetails();
+            }
           } else {
+            onInfoDragEnd?.(false);
             Animated.spring(dragY, {
               toValue: 0,
-              damping: 24,
-              stiffness: 280,
+              damping: 28,
+              stiffness: 320,
               useNativeDriver: true,
             }).start();
           }
         },
         onPanResponderTerminate: () => {
+          dragStartDyRef.current = null;
+          onInfoDragEnd?.(false);
           Animated.spring(dragY, {
             toValue: 0,
-            damping: 24,
-            stiffness: 280,
+            damping: 28,
+            stiffness: 320,
             useNativeDriver: true,
           }).start();
         },
         onPanResponderTerminationRequest: (_, gesture) => gesture.numberActiveTouches > 1,
       }),
-    [dragY, post.sourceId, screenHeight, onClose, onOpenDetails]
+    [dragY, post.sourceId, screenHeight, onClose, onOpenDetails, onInfoDragStart, onInfoDragMove, onInfoDragEnd]
   );
 
   const dragScale =
     typeof (dragY as any).interpolate === 'function'
       ? dragY.interpolate({
-          inputRange: [0, 280],
-          outputRange: [1, 0.88],
+          inputRange: [-120, 0, 280],
+          outputRange: [0.96, 1, 0.86],
+          extrapolate: 'clamp',
+        })
+      : 1;
+  const dragOpacity =
+    typeof (dragY as any).interpolate === 'function'
+      ? dragY.interpolate({
+          inputRange: [0, 260],
+          outputRange: [1, 0.25],
           extrapolate: 'clamp',
         })
       : 1;
@@ -1853,6 +1966,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
       <Animated.View
         style={{
           flex: 1,
+          opacity: dragOpacity,
           transform: [{ translateY: dragY }, { scale: dragScale }],
         }}
         {...verticalPanResponder.panHandlers}
