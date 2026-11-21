@@ -58,6 +58,9 @@ const STACK_SCREEN_OPTIONS = {
 const VIEWER_SCREEN_OPTIONS = {
   headerShown: false,
   animation: 'slide_from_right' as const,
+  fullScreenGestureEnabled: true,
+  gestureResponseDistance: { start: 48 },
+  animationMatchesGesture: true,
 };
 
 const SEARCH_DETAIL_SCREEN_OPTIONS = {

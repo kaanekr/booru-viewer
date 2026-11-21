@@ -64,3 +64,39 @@ test('suspended viewer does not keep adding recent views', async () => {
   await act(() => root.root.findByType('Viewer').props.onIndexChange(1));
   assert.equal(recent.length, 1);
 });
+
+test('immediate close disables stack pop animation to avoid double-slide after gesture', async () => {
+  const setOptionsCalls = [];
+  let backCount = 0;
+  const load = createLoader({
+    react: React,
+    '@react-navigation/native': { useIsFocused: () => true },
+    '../navigation/postsCache': { getCachedPosts: () => [{ id: '1', sourceId: 'a' }], deleteCachedPosts() {} },
+    '../navigation/rootNavigation': { pushSearchDetail() {} },
+    '../components/ImageViewerModal': { ImageViewerModal: 'Viewer' },
+    '../services/storage': { StorageService: { addRecentView: async () => {} } },
+    '../utils/media': { isVideoPost: () => false },
+    '../context/MediaPlaybackContext': { useMediaPlaybackAllowed: () => true },
+    '../services/sources': { AVAILABLE_SOURCES: [{ id: 'a' }] },
+  });
+  const { ViewerScreen } = load(path.resolve(__dirname, '../src/screens/ViewerScreen.tsx'));
+  const origRaf = global.requestAnimationFrame;
+  global.requestAnimationFrame = (cb) => { cb(); return 1; };
+  try {
+    await act(() => {
+      root = create(React.createElement(ViewerScreen, {
+        route: { params: { postsKey: 'k', initialIndex: 0 } },
+        navigation: {
+          canGoBack: () => true,
+          goBack: () => { backCount++; },
+          setOptions: (opts) => setOptionsCalls.push(opts),
+        },
+      }));
+    });
+    await act(() => { root.root.findByType('Viewer').props.onClose(true); });
+    assert.ok(setOptionsCalls.some((o) => o && o.animation === 'none'));
+    assert.equal(backCount, 1);
+  } finally {
+    global.requestAnimationFrame = origRaf;
+  }
+});

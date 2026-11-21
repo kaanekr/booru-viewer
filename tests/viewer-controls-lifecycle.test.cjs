@@ -535,3 +535,115 @@ test('nhentai manga uses real aspect ratio and deduplicates page indicator updat
     await act(async () => { pageRoot.unmount(); });
   }
 });
+
+test('interactive edge-swipe, vertical pull-to-dismiss, and 1:1 pull-up info sheet work without Modal lag', async () => {
+  const panConfigs = [];
+  const closeCalls = [];
+  const load = createLoader({
+    react: React,
+    'react-native': {
+      ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'Modal', 'ScrollView', 'Text', 'TextInput', 'TouchableOpacity', 'TouchableWithoutFeedback', 'View'].map((n) => [n, n])),
+      Dimensions: { get: () => ({ width: 400, height: 800 }) },
+      useWindowDimensions: () => ({ width: 400, height: 800 }),
+      StyleSheet: { create: (v) => v, absoluteFill: {} },
+      Animated: {
+        Value: class {
+          constructor(v) { this._value = v; }
+          setValue(v) { this._value = v; }
+          stopAnimation() {}
+          interpolate() { return 1; }
+        },
+        View: 'AnimatedView',
+        timing: (val, cfg) => ({ start: (cb) => { val.setValue(cfg.toValue); cb?.({ finished: true }); } }),
+        spring: (val, cfg) => ({ start: (cb) => { val.setValue(cfg.toValue); cb?.({ finished: true }); } }),
+      },
+      PanResponder: {
+        create: (cfg) => {
+          panConfigs.push(cfg);
+          return { panHandlers: { __panCfg: cfg } };
+        },
+      },
+      BackHandler: { addEventListener: () => ({ remove() {} }) },
+      Platform: { OS: 'android' },
+      Alert: { alert() {} },
+      Linking: {},
+    },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) },
+    'expo-screen-orientation': { lockAsync: async () => {}, OrientationLock: { PORTRAIT_UP: 'portrait' } },
+    expo: {}, 'expo-image': { Image: 'Image' }, 'expo-video': {},
+    'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
+    'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
+    '../services/proxyService': {}, '../theme/colors': { Colors: { dark: {} } },
+    '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    '../utils/media': {
+      isVideoPost: () => false, getMediaUrl: (u) => u, getMediaHeaders: () => ({}),
+      isImageMediaUrl: () => true, getImageUris: () => ({ sampleUri: 'https://x.test/s.jpg', fullUri: 'https://x.test/f.jpg', placeholderUri: 'https://x.test/p.jpg' }),
+      getVideoCandidates: () => [], isUnsupportedOnIOS: () => false,
+      resolveGelbooruOriginalUrl: async () => null, resolveRealbooruVideoUrls: async () => null,
+      selectRealbooruPlayable: () => null, resolveRealDimensions: async () => null,
+      resolveXVideosVideoUrls: async () => null, resolveXHamsterVideoUrls: async () => null,
+      resolvePornhubVideoUrls: async () => null, selectPrimaryVideoCandidate: () => null,
+      checkMp4UpgradeAvailable: async () => null,
+    },
+    '../services/sexcom': {}, '../services/hentaihavens': {},
+    '../services/nhentai': { resolveNHentaiGalleryDetail: async () => null, rotateNhentaiImageHost: () => null },
+  });
+  const Viewer = load(path.resolve(__dirname, '../src/components/ImageViewerModal.tsx')).ImageViewerModal;
+  const post = {
+    id: 'g1', sourceId: 'danbooru', sourceName: 'Danbooru',
+    previewUrl: 'https://x.test/p.jpg', sampleUrl: 'https://x.test/s.jpg', originalUrl: 'https://x.test/f.jpg',
+    width: 800, height: 1000, aspectRatio: 0.8,
+  };
+  await act(async () => {
+    root = create(React.createElement(Viewer, {
+      posts: [post], initialIndex: 0, visible: true, asScreen: true,
+      onClose: (immediate) => closeCalls.push(immediate), onTagPress() {},
+    }));
+  });
+
+  // 1. PostInfoModal uses inline layer (useModal=false) + shared externalTranslateY
+  const info = root.root.findByType('PostInfo');
+  assert.equal(info.props.useModal, false);
+  assert.ok(info.props.externalTranslateY);
+
+  // 2. Android shows 44px leftEdgeGestureArea even for photos, doesn't steal start tap, and calls onClose(true) on swipe
+  const edgeCfg = panConfigs[0];
+  assert.equal(edgeCfg.onStartShouldSetPanResponder(), false);
+  assert.equal(edgeCfg.onMoveShouldSetPanResponderCapture({}, { dx: 10, dy: 0 }), true);
+  edgeCfg.onPanResponderGrant({}, { dx: 10, dy: 0 });
+  edgeCfg.onPanResponderMove({}, { dx: 120, dy: 0 });
+  await act(async () => { edgeCfg.onPanResponderRelease({}, { dx: 120, dy: 0, vx: 0.5 }); });
+  assert.deepEqual(closeCalls, [true]);
+
+  // 3. Upward pull on PostPageItem immediately enters peeking & moves sheet translateY 1:1 before release
+  const item = root.root.findByType('FlatList').props.renderItem({ item: post, index: 0 });
+  let pageRoot;
+  await act(async () => { pageRoot = create(item); });
+  try {
+    const vertView = pageRoot.root.findAllByType('AnimatedView').find((v) => v.props.__panCfg);
+    const vertCfg = vertView.props.__panCfg;
+    assert.equal(vertCfg.onMoveShouldSetPanResponderCapture({}, { dx: 0, dy: -8, numberActiveTouches: 1 }), true);
+    await act(async () => {
+      vertCfg.onPanResponderGrant({}, { dx: 0, dy: -8 });
+      vertCfg.onPanResponderMove({}, { dx: 0, dy: -60 });
+    });
+    assert.equal(root.root.findByType('PostInfo').props.isPeeking, true);
+    assert.ok(root.root.findByType('PostInfo').props.externalTranslateY._value < Math.round(800 * 0.92));
+
+    await act(async () => {
+      vertCfg.onPanResponderRelease({}, { dx: 0, dy: -80, vy: -0.5 });
+    });
+    assert.equal(root.root.findByType('PostInfo').props.visible, true);
+
+    // 4. Downward pull-to-dismiss calls onClose(true)
+    await act(async () => {
+      vertCfg.onPanResponderGrant({}, { dx: 0, dy: 8 });
+      vertCfg.onPanResponderMove({}, { dx: 0, dy: 110 });
+      vertCfg.onPanResponderRelease({}, { dx: 0, dy: 110, vy: 0.6 });
+    });
+    assert.deepEqual(closeCalls, [true, true]);
+  } finally {
+    await act(async () => { pageRoot.unmount(); });
+  }
+});
