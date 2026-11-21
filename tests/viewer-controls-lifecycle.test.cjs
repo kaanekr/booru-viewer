@@ -29,7 +29,7 @@ function setup(storageOverrides = {}) {
     },
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) },
     'expo-screen-orientation': { lockAsync: async () => {}, OrientationLock: { PORTRAIT_UP: 'portrait' } },
-    expo: {}, 'expo-image': { Image: { prefetch: async () => {} } }, 'expo-video': {},
+    expo: {}, 'expo-file-system': {}, 'expo-image': { Image: { prefetch: async () => {} } }, 'expo-video': {},
     'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
     'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
     '../services/proxyService': {}, '../theme/colors': { Colors: { dark: {} } },
@@ -222,7 +222,7 @@ test('asScreen video edge-swipe tracks horizontal finger movement and springs ba
     },
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 44, right: 44 }) },
     'expo-screen-orientation': { lockAsync: async () => {}, OrientationLock: { PORTRAIT_UP: 'portrait' } },
-    expo: {}, 'expo-image': { Image: 'Image' }, 'expo-video': {},
+    expo: {}, 'expo-file-system': {}, 'expo-image': { Image: 'Image' }, 'expo-video': {},
     'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
     'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
     '../services/proxyService': {}, '../theme/colors': { Colors: { dark: {} } },
@@ -310,6 +310,7 @@ test('unified video controls auto-hide and toggle together with viewer chrome wi
       },
       useEventListener: (_p, eventName, fn) => { eventHandlers.set(eventName, fn); },
     },
+    'expo-file-system': {},
     'expo-image': { Image: 'Image' },
     'expo-video': { useVideoPlayer: () => mockPlayer, VideoView: 'VideoView' },
     'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
@@ -476,7 +477,7 @@ test('nhentai manga uses real aspect ratio and deduplicates page indicator updat
     },
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) },
     'expo-screen-orientation': { lockAsync: async () => {}, OrientationLock: { PORTRAIT_UP: 'portrait' } },
-    expo: {}, 'expo-image': { Image: 'Image' }, 'expo-video': {},
+    expo: {}, 'expo-file-system': {}, 'expo-image': { Image: 'Image' }, 'expo-video': {},
     'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
     'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
     '../services/proxyService': {}, '../theme/colors': { Colors: { dark: {} } },
@@ -570,7 +571,7 @@ test('interactive edge-swipe, vertical pull-to-dismiss, and 1:1 pull-up info she
     },
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) },
     'expo-screen-orientation': { lockAsync: async () => {}, OrientationLock: { PORTRAIT_UP: 'portrait' } },
-    expo: {}, 'expo-image': { Image: 'Image' }, 'expo-video': {},
+    expo: {}, 'expo-file-system': {}, 'expo-image': { Image: 'Image' }, 'expo-video': {},
     'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
     'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
     '../services/proxyService': {}, '../theme/colors': { Colors: { dark: {} } },
@@ -643,6 +644,107 @@ test('interactive edge-swipe, vertical pull-to-dismiss, and 1:1 pull-up info she
       vertCfg.onPanResponderRelease({}, { dx: 0, dy: 110, vy: 0.6 });
     });
     assert.deepEqual(closeCalls, [true, true]);
+  } finally {
+    await act(async () => { pageRoot.unmount(); });
+  }
+});
+
+test('VideoPlayerView falls back to local File.downloadFileAsync when streaming fails without a proxy worker', async () => {
+  const eventHandlers = new Map();
+  const replacedSources = [];
+  const downloadCalls = [];
+  let playCalls = 0;
+  const mockPlayer = {
+    loop: false, muted: false, playing: false, duration: 10, currentTime: 0, timeUpdateEventInterval: 0.25,
+    play() { playCalls++; }, pause() {}, seekBy() {}, release() {},
+    replaceAsync: async (src) => { replacedSources.push(src); },
+  };
+  class MockDirectory {
+    constructor() {}
+    create() {}
+    list() { return []; }
+  }
+  class MockFile {
+    constructor(_dir, name) { this.uri = `file:///cache/video-fallback/${name}`; this.exists = false; this.size = 0; }
+    static async downloadFileAsync(url, target, opts) {
+      downloadCalls.push({ url, uri: target.uri, headers: opts.headers });
+      opts.onProgress?.({ bytesWritten: 50, totalBytes: 100 });
+      return { uri: target.uri };
+    }
+  }
+  const load = createLoader({
+    react: React,
+    'react-native': {
+      ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'Modal', 'ScrollView', 'Text', 'TextInput', 'TouchableOpacity', 'TouchableWithoutFeedback', 'View'].map((n) => [n, n])),
+      Dimensions: { get: () => ({ width: 390, height: 844 }) },
+      useWindowDimensions: () => ({ width: 390, height: 844 }),
+      StyleSheet: { create: (v) => v, absoluteFill: {} },
+      Animated: { Value: class { setValue() {} stopAnimation() {} interpolate() { return 1; } }, View: 'AnimatedView', timing: () => ({ start: (cb) => cb?.() }), spring: () => ({ start: (cb) => cb?.() }) },
+      PanResponder: { create: () => ({ panHandlers: {} }) },
+      BackHandler: { addEventListener: () => ({ remove() {} }) },
+      Platform: { OS: 'ios' }, Alert: { alert() {} }, Linking: {},
+    },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) },
+    'expo-screen-orientation': { lockAsync: async () => {}, OrientationLock: { PORTRAIT_UP: 'portrait' } },
+    expo: {
+      useEvent: (_t, _e, init) => init,
+      useEventListener: (_t, event, fn) => { eventHandlers.set(event, fn); },
+    },
+    'expo-file-system': { Directory: MockDirectory, File: MockFile, Paths: { cache: 'file:///cache' } },
+    'expo-image': { Image: 'Image' },
+    'expo-video': {
+      useVideoPlayer: (_src, init) => { init?.(mockPlayer); return mockPlayer; },
+      VideoView: 'VideoView',
+    },
+    'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
+    'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
+    '../services/proxyService': { proxyService: { hasWorker: () => false, isProxiedUrl: () => false, forceProxyUrl: (u) => u } },
+    '../theme/colors': { Colors: { dark: { primary: '#6366F1' } } },
+    '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    '../utils/media': {
+      isVideoPost: () => true, getMediaUrl: (u) => u,
+      getMediaHeaders: () => ({ Referer: 'https://realbooru.com/' }),
+      isImageMediaUrl: () => false, getImageUris: () => ({ sampleUri: '', fullUri: '', placeholderUri: '' }),
+      getVideoCandidates: (p) => [p.originalUrl], isUnsupportedOnIOS: () => false,
+      resolveGelbooruOriginalUrl: async () => null, resolveRealbooruVideoUrls: async () => null,
+      selectRealbooruPlayable: () => null, resolveRealDimensions: async () => null,
+      resolveXVideosVideoUrls: async () => null, resolveXHamsterVideoUrls: async () => null,
+      resolvePornhubVideoUrls: async () => null, selectPrimaryVideoCandidate: (r, c) => r || (Array.isArray(c) ? c[0] : null),
+      checkMp4UpgradeAvailable: async () => null,
+    },
+    '../services/sexcom': {}, '../services/hentaihavens': {}, '../services/nhentai': {},
+  });
+  const Viewer = load(path.resolve(__dirname, '../src/components/ImageViewerModal.tsx')).ImageViewerModal;
+  const videoPost = {
+    id: 'rb_v1', sourceId: 'realbooru', sourceName: 'Realbooru',
+    previewUrl: 'https://realbooru.com/t.jpg', sampleUrl: 'https://realbooru.com/v.mp4', originalUrl: 'https://realbooru.com/v.mp4',
+    width: 720, height: 1280, aspectRatio: 720 / 1280,
+  };
+  await act(async () => {
+    root = create(React.createElement(Viewer, {
+      posts: [videoPost], initialIndex: 0, visible: true, asScreen: true, onClose() {}, onTagPress() {},
+    }));
+  });
+  const item = root.root.findByType('FlatList').props.renderItem({ item: videoPost, index: 0 });
+  let pageRoot;
+  await act(async () => { pageRoot = create(item); });
+  try {
+    assert.equal(replacedSources.length, 1);
+    assert.equal(replacedSources[0].uri, 'https://realbooru.com/v.mp4');
+
+    // Simulate AVPlayer failing with -1202 (no Worker registered)
+    await act(async () => {
+      eventHandlers.get('statusChange')({ status: 'error' });
+    });
+
+    assert.equal(downloadCalls.length, 1);
+    assert.equal(downloadCalls[0].url, 'https://realbooru.com/v.mp4');
+    assert.equal(downloadCalls[0].headers.Referer, 'https://realbooru.com/');
+    assert.equal(replacedSources.length, 2);
+    assert.ok(replacedSources[1].uri.startsWith('file:///cache/video-fallback/v_'));
+    assert.ok(replacedSources[1].uri.endsWith('.mp4'));
+    assert.ok(playCalls >= 2);
   } finally {
     await act(async () => { pageRoot.unmount(); });
   }

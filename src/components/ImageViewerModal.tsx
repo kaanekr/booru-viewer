@@ -47,6 +47,7 @@ import { Colors } from '../theme/colors';
 import { StorageService, ImageQuality } from '../services/storage';
 import { getPostKey } from '../utils/postIdentity';
 import { isGifMediaPost } from '../utils/gifMedia';
+import { downloadVideoViaAppSession } from '../utils/videoFallbackCache';
 import { TagChip } from './TagChip';
 import { PostInfoModal } from './PostInfoModal';
 import { PornhubWebViewResolver } from './PornhubWebViewResolver';
@@ -2602,10 +2603,18 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
   );
   // On a TLS drop (e.g. api-cdn-mp4.rule34.xxx NSURLError -1200) a one-shot
   // selective proxy fallback: only this video is retried via the Worker,
-  // the other candidates stay direct.
+  // the other candidates stay direct. If no Worker is configured (or Worker
+  // also fails), fall back to downloading via the app's NSURLSession into
+  // Paths.cache and playing the local file:// URI (bypasses iOS mediaserverd
+  // AVFoundation TLS/cert rejections like realbooru.com -1202 without a Worker).
   const proxyFallbackDoneRef = useRef(false);
-  // If the proxy fallback also dies, go to a terminal error state instead of a black screen.
+  const localFallbackDoneRef = useRef(false);
+  const localDownloadAbortRef = useRef<AbortController | null>(null);
+  const activeMediaUriRef = useRef(url);
+  // If fallbacks die, go to a terminal error state instead of a black screen.
   const [loadFailed, setLoadFailed] = useState(false);
+  const [isLocalDownloading, setIsLocalDownloading] = useState(false);
+  const [localDownloadProgress, setLocalDownloadProgress] = useState<number | null>(null);
   // Async continuations finishing after unmount must not touch the released player
   // (NotFoundException noise + setState after unmount).
   const mountedRef = useRef(true);
@@ -2613,14 +2622,22 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      localDownloadAbortRef.current?.abort();
+      localDownloadAbortRef.current = null;
     };
   }, []);
   // A format iOS AVPlayer cannot open (WebM) is never handed to the player:
   // show the error card directly instead of a -11828 warning storm.
   const blockedUrl = Platform.OS === 'ios' && isUnsupportedOnIOS(url);
   useEffect(() => {
+    localDownloadAbortRef.current?.abort();
+    localDownloadAbortRef.current = null;
     proxyFallbackDoneRef.current = false;
+    localFallbackDoneRef.current = false;
+    activeMediaUriRef.current = url;
     setLoadFailed(false);
+    setIsLocalDownloading(false);
+    setLocalDownloadProgress(null);
   }, [url]);
 
   const player = useVideoPlayer(null, (p) => {
@@ -2641,28 +2658,76 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
   }, [player]);
 
   useEventListener(player, 'statusChange', (payload) => {
-    if (payload.status === 'error' && proxyFallbackDoneRef.current) {
-      setLoadFailed(true);
-      return;
-    }
-    if (payload.status !== 'error' || proxyFallbackDoneRef.current) return;
-    if (!proxyService.hasWorker() || proxyService.isProxiedUrl(url)) {
-      // No fallback left: show the error card instead of staying on a silent black screen.
-      setLoadFailed(true);
-      return;
-    }
-    proxyFallbackDoneRef.current = true;
-    const viaProxy = proxyService.forceProxyUrl(url);
-    if (!viaProxy || viaProxy === url) return;
-    (async () => {
-      try {
-        await player.replaceAsync({ uri: viaProxy, headers: getMediaHeaders(viaProxy) });
-        if (!mountedRef.current) return;
-        if (!suspendedRef.current) player.play();
-      } catch (e) {
-        if (mountedRef.current) console.warn('[VideoPlayerView] Proxy fallback failed:', e);
+    if (payload.status !== 'error') return;
+
+    if (
+      proxyService.hasWorker() &&
+      !proxyService.isProxiedUrl(url) &&
+      !proxyFallbackDoneRef.current
+    ) {
+      proxyFallbackDoneRef.current = true;
+      const viaProxy = proxyService.forceProxyUrl(url);
+      if (viaProxy && viaProxy !== url) {
+        activeMediaUriRef.current = viaProxy;
+        (async () => {
+          try {
+            await player.replaceAsync({ uri: viaProxy, headers: getMediaHeaders(viaProxy) });
+            if (!mountedRef.current) return;
+            if (!suspendedRef.current) player.play();
+          } catch (e) {
+            if (mountedRef.current) console.warn('[VideoPlayerView] Proxy fallback failed:', e);
+          }
+        })();
+        return;
       }
-    })();
+    }
+
+    const canTryLocalDownload =
+      !blockedUrl &&
+      !localFallbackDoneRef.current &&
+      Platform.OS !== 'web' &&
+      /^https?:\/\//i.test(url) &&
+      !proxyService.isProxiedUrl(url);
+
+    if (canTryLocalDownload) {
+      localFallbackDoneRef.current = true;
+      localDownloadAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      localDownloadAbortRef.current = ctrl;
+      setIsLocalDownloading(true);
+      setLocalDownloadProgress(null);
+
+      (async () => {
+        try {
+          const localUri = await downloadVideoViaAppSession(
+            url,
+            getMediaHeaders(url),
+            ctrl.signal,
+            (ratio) => {
+              if (mountedRef.current && !ctrl.signal.aborted) {
+                setLocalDownloadProgress(ratio);
+              }
+            }
+          );
+          if (!mountedRef.current || ctrl.signal.aborted) return;
+          activeMediaUriRef.current = localUri;
+          setIsLocalDownloading(false);
+          setLocalDownloadProgress(null);
+          await player.replaceAsync({ uri: localUri });
+          if (!mountedRef.current || ctrl.signal.aborted) return;
+          if (!suspendedRef.current) player.play();
+        } catch (e: any) {
+          if (!mountedRef.current || ctrl.signal.aborted || e?.name === 'AbortError') return;
+          console.warn('[VideoPlayerView] Local download fallback failed:', e);
+          setIsLocalDownloading(false);
+          setLocalDownloadProgress(null);
+          setLoadFailed(true);
+        }
+      })();
+      return;
+    }
+
+    setLoadFailed(true);
   });
 
   useEffect(() => {
@@ -2806,8 +2871,14 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
 
   const handleRetryLoad = useCallback(() => {
     if (!mountedRef.current || blockedUrl) return;
+    localDownloadAbortRef.current?.abort();
+    localDownloadAbortRef.current = null;
     setLoadFailed(false);
+    setIsLocalDownloading(false);
+    setLocalDownloadProgress(null);
     proxyFallbackDoneRef.current = false;
+    localFallbackDoneRef.current = false;
+    activeMediaUriRef.current = url;
     (async () => {
       try {
         await player.replaceAsync(videoSource);
@@ -2819,7 +2890,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
         setLoadFailed(true);
       }
     })();
-  }, [player, videoSource, blockedUrl]);
+  }, [player, videoSource, blockedUrl, url]);
 
   return (
     <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>
@@ -2833,6 +2904,17 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
         startsPictureInPictureAutomatically={false}
         pointerEvents="none"
       />
+
+      {isLocalDownloading && !loadFailed && (
+        <View style={styles.loaderCenter} pointerEvents="none">
+          <ActivityIndicator size="large" color={Colors.dark.primary} />
+          <Text style={styles.loaderProgressText}>
+            {localDownloadProgress !== null
+              ? `Buffering video %${Math.round(localDownloadProgress * 100)}`
+              : 'Buffering video...'}
+          </Text>
+        </View>
+      )}
 
       {/* If loading dies on both paths show an error card + retry instead of a black screen */}
       {loadFailed && (
