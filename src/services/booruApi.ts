@@ -2238,11 +2238,24 @@ export class BooruApiService {
         if (!att || !att.sha256) continue;
 
         const isVideo = att.kind === 'video' || (typeof att.mimeType === 'string' && att.mimeType.startsWith('video/'));
+        const variants = Array.isArray(att.variants)
+          ? att.variants.filter((v: any) => v && typeof v.name === 'string' && v.name.trim())
+          : [];
+        const originalVariant = variants.find((v: any) => /^original\./i.test(v.name));
+        const streamVariant = isVideo
+          ? variants.find((v: any) => /^720p\.mp4$/i.test(v.name)) ||
+            variants.find((v: any) => /\.mp4$/i.test(v.name) && !/^original\./i.test(v.name))
+          : undefined;
         const ext =
+          (originalVariant ? originalVariant.name.split('.').pop() : '') ||
           (typeof att.originalFilename === 'string' ? att.originalFilename.split('.').pop() : '') ||
           (isVideo ? 'mp4' : att.kind === 'gif' ? 'gif' : 'jpg');
+        const originalFileName = originalVariant ? originalVariant.name : `original.${ext}`;
         const thumbUrl = ensureAbsoluteUrl(`https://img.cum.st/thumbnail/${att.sha256}/preview.webp`, source.baseUrl);
-        const fullMediaUrl = ensureAbsoluteUrl(`https://e1.cum.st/media/${att.sha256}/original.${ext}`, source.baseUrl);
+        const fullMediaUrl = ensureAbsoluteUrl(`https://cdn.cum.st/media/${att.sha256}/${originalFileName}`, source.baseUrl);
+        const sampleMediaUrl = streamVariant
+          ? ensureAbsoluteUrl(`https://cdn.cum.st/media/${att.sha256}/${streamVariant.name}`, source.baseUrl)
+          : fullMediaUrl;
 
         const width = att.width || 800;
         const height = att.height || 1000;
@@ -2271,7 +2284,7 @@ export class BooruApiService {
           sourceId: source.id,
           sourceName: source.name,
           previewUrl: thumbUrl,
-          sampleUrl: fullMediaUrl,
+          sampleUrl: sampleMediaUrl,
           originalUrl: fullMediaUrl,
           width,
           height,
