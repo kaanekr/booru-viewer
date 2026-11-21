@@ -342,30 +342,48 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
       c.match(/data-mediabook="([^"]+)"/i);
     const previewVideo = webmM ? webmM[1].replace(/&amp;/g, '&').trim() : undefined;
 
-    const pickAttr = (...names: string[]): string => {
+    const normalizeImageUrl = (raw: string, allowTemplate: boolean): string => {
+      let val = raw.replace(/&amp;/g, '&').trim();
+      if (!val) return '';
+      if (val.startsWith('//')) val = `https:${val}`;
+      if (!/^https?:\/\//i.test(val)) return '';
+      const lower = val.toLowerCase();
+      if (lower.includes('blank.gif') || lower.includes('placeholder') || lower.startsWith('data:')) {
+        return '';
+      }
+      if (/\{index\}|%7bindex%7d/i.test(val)) {
+        return allowTemplate ? val.replace(/\{index\}|%7bindex%7d/gi, '1') : '';
+      }
+      return val;
+    };
+
+    const pickAttr = (allowTemplate: boolean, ...names: string[]): string => {
       for (const name of names) {
         const m = c.match(new RegExp(`${name}="([^"]+)"`, 'i'));
         if (m) {
-          const val = m[1].replace(/&amp;/g, '&').trim();
-          if (val && !val.includes('blank.gif')) return val;
+          const normalized = normalizeImageUrl(m[1], allowTemplate);
+          if (normalized) return normalized;
         }
       }
       return '';
     };
 
-    const poster = pickAttr('data-poster', 'data-thumb_url', 'data-mediumthumb');
-    let thumb = pickAttr('data-path', 'data-image', 'data-src');
-    if (!thumb && poster) thumb = poster;
-    if (!thumb) {
-      const imgM =
-        c.match(/<img[^>]*class="[^"]*videoThumb[^"]*"[^>]*src="([^"]+)"/i) ||
-        c.match(/<img[^>]*src="([^"]+)"/i);
-      if (imgM) {
-        const candidate = imgM[1].replace(/&amp;/g, '&').trim();
-        if (candidate && !candidate.includes('blank.gif')) thumb = candidate;
-      }
-    }
+    // Real poster/thumb attributes first; Pornhub's `data-path` is often a `{index}` frame
+    // template that 404s when passed raw to expo-image.
+    const poster = pickAttr(false, 'data-poster', 'data-thumb_url', 'data-mediumthumb', 'data-image', 'data-src');
+    const dataPathDirect = pickAttr(false, 'data-path');
+    const dataPathResolved = dataPathDirect || pickAttr(true, 'data-path');
+    const imgM =
+      c.match(/<img[^>]*class="[^"]*videoThumb[^"]*"[^>]*src="([^"]+)"/i) ||
+      c.match(/<img[^>]*src="([^"]+)"/i);
+    const imgSrc = imgM ? normalizeImageUrl(imgM[1], false) : '';
+
+    const thumb = poster || imgSrc || dataPathResolved;
     if (!thumb) continue;
+
+    const previewFallbackUrl =
+      [dataPathDirect, imgSrc, dataPathResolved, pickAttr(false, 'data-mediumthumb', 'data-src', 'data-image')]
+        .find((u) => !!u && u !== thumb);
 
     const titleM =
       c.match(/<a[^>]*class="thumbnailTitle"[^>]*>([^<]+)<\/a>/i) ||
@@ -383,7 +401,7 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
     const previewThumbs =
       generatePornhubSequentialThumbs(poster) ||
       generatePornhubSequentialThumbs(thumb) ||
-      generatePornhubSequentialThumbs(pickAttr('data-thumb_url', 'data-mediumthumb', 'data-src', 'data-path', 'data-image'));
+      generatePornhubSequentialThumbs(pickAttr(true, 'data-thumb_url', 'data-mediumthumb', 'data-src', 'data-path', 'data-image'));
 
     seen.add(vkey);
     posts.push({
@@ -392,6 +410,7 @@ export function parsePornhubHtmlListing(html: string, source: BooruSource): Boor
       sourceName: source.name,
       title,
       previewUrl: thumb,
+      previewFallbackUrl,
       previewVideoUrl: previewVideo,
       previewThumbUrl: previewThumbs ? previewThumbs[previewThumbs.length - 1] : (poster || undefined),
       previewThumbs: previewThumbs && previewThumbs.length > 1 ? previewThumbs : undefined,

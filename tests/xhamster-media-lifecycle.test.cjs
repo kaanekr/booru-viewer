@@ -107,6 +107,35 @@ test('parsePornhubHtmlListing generates 8 sequential previewThumbs from poster U
   assert.equal(p.previewThumbs[7], 'https://ci.phncdn.com/videos/202401/10/446211231/thumbs_5/(m=eaAaGwObaaaa)(mh=...)15.jpg');
 });
 
+test('parsePornhubHtmlListing skips {index} data-path templates and data: placeholders in favor of real poster URLs', () => {
+  const { parsePornhubHtmlListing } = loadPornhub();
+  const html = `
+    <li data-video-vkey="ph999888">
+      <a class="thumbnailTitle" title="Lazy Card">Lazy Card</a>
+      <img
+        class="videoThumb"
+        src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+        data-path="https://ei.phncdn.com/videos/202601/01/999888/original/{index}.jpg"
+        data-thumb_url="https://ei.phncdn.com/videos/202601/01/999888/original/12.jpg"
+        data-webm="https://ew.phncdn.com/videos/202601/01/999888/preview_fb.mp4"
+      />
+    </li>
+    <li data-video-vkey="ph999889">
+      <a class="thumbnailTitle" title="Template Only Card">Template Only Card</a>
+      <img
+        class="videoThumb"
+        src="https://ei.phncdn.com/blank.gif"
+        data-path="https://ei.phncdn.com/videos/202601/01/999889/original/{index}.jpg"
+      />
+    </li>
+  `;
+  const posts = parsePornhubHtmlListing(html, { id: 'pornhub', name: 'Pornhub', baseUrl: 'https://pornhub.com' });
+  assert.equal(posts.length, 2);
+  assert.equal(posts[0].previewUrl, 'https://ei.phncdn.com/videos/202601/01/999888/original/12.jpg');
+  assert.equal(posts[0].previewFallbackUrl, 'https://ei.phncdn.com/videos/202601/01/999888/original/1.jpg');
+  assert.equal(posts[1].previewUrl, 'https://ei.phncdn.com/videos/202601/01/999889/original/1.jpg');
+});
+
 test('generatePornhubSequentialThumbs handles _medium, medium, hashes, default, and webp', () => {
   const { generatePornhubSequentialThumbs, mapPornhubVideoToPost } = loadPornhub();
 
