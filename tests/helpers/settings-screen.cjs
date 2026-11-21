@@ -27,7 +27,6 @@ exports.setupSettings = function setupSettings({ saved = { userId: '', apiKey: '
     StorageService: service,
     DEFAULT_CACHE_LIMIT_MB: 512,
     MIN_CACHE_LIMIT_MB: 50,
-    MAX_CACHE_LIMIT_MB: 4096,
     CACHE_LIMIT_PRESETS_MB: [128, 256, 512, 1024, 2048],
   };
   const security = { SecurityService: {

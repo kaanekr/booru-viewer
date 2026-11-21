@@ -56,15 +56,16 @@ async function writeIndex(dir: Directory, index: VideoIndexMap): Promise<void> {
   } catch {}
 }
 
-export function getVideoBudgetBytes(limitMb: number): number {
-  const safeMb = Number.isFinite(limitMb) && limitMb > 0 ? limitMb : DEFAULT_CACHE_LIMIT_MB;
+export function getVideoBudgetBytes(limitMb: number | null): number {
+  if (limitMb === null) return Infinity;
   // Allocate 60% of the user's manual cache budget (min 50 MB) to local video cache
-  const videoMb = Math.max(50, Math.round(safeMb * 0.6));
-  return videoMb * 1024 * 1024;
+  const videoMb = Math.max(50, Math.round(limitMb * 0.6));
+  return Math.min(Number.MAX_SAFE_INTEGER, videoMb * 1024 * 1024);
 }
 
-export async function enforceVideoCacheLimit(limitMb: number, protectedFilename?: string): Promise<void> {
+export async function enforceVideoCacheLimit(limitMb: number | null, protectedFilename?: string): Promise<void> {
   await syncNativeVideoCacheSize(limitMb);
+  if (limitMb === null) return;
   const dir = getVideoDir();
   if (!dir) return;
 
@@ -145,6 +146,11 @@ function getFileVideoBudgetBytes(limitMb: number): number {
   return getHlsVideoCacheApi() ? Math.floor(budget / 4) : budget;
 }
 
+function getHlsBudgetBytes(limitMb: number | null): number {
+  // The HLS module recognizes -1 as unlimited.
+  return limitMb === null ? -1 : Math.floor(getVideoBudgetBytes(limitMb) / 2);
+}
+
 function getExpoVideoCacheApi(): ExpoVideoCacheApi | null {
   try {
     // Lazy require keeps pure-Node tests without expo-video mocks working cleanly.
@@ -180,22 +186,24 @@ export function canUseExpoVideoCache(url: string | null | undefined): boolean {
   return !isHlsVideoUrl(trimmed) && !/\.mpd(?:$|[?#&])/i.test(unwrapWorkerMediaUrl(trimmed));
 }
 
-export async function syncNativeVideoCacheSize(limitMb?: number): Promise<void> {
+export async function syncNativeVideoCacheSize(limitMb?: number | null): Promise<void> {
   const api = getExpoVideoCacheApi();
   const hls = getHlsVideoCacheApi();
   if (!api?.setVideoCacheSizeAsync && !hls) return;
   try {
     const effectiveMb =
-      typeof limitMb === 'number'
+      limitMb !== undefined
         ? limitMb
         : typeof StorageService?.getCacheLimitMb === 'function'
           ? await StorageService.getCacheLimitMb()
           : DEFAULT_CACHE_LIMIT_MB;
     const budget = getVideoBudgetBytes(effectiveMb);
+    // Expo requires a finite byte count even for the unlimited setting.
+    const expoBudget = effectiveMb === null ? Number.MAX_SAFE_INTEGER : hls ? Math.floor(budget / 4) : budget;
     // In a native pilot build reserve half for HLS and split the remainder between the existing stores.
     await Promise.all([
-      api?.setVideoCacheSizeAsync?.(hls ? Math.floor(budget / 4) : budget),
-      hls?.setLimit(Math.floor(budget / 2)),
+      api?.setVideoCacheSizeAsync?.(expoBudget),
+      hls?.setLimit(getHlsBudgetBytes(effectiveMb)),
     ]);
   } catch {
     // expo-video throws if a VideoPlayer instance is currently active; ignore safely.
@@ -210,7 +218,7 @@ export async function openHlsCachePlayback(
   if (!hls) return null;
   try {
     const limit = await StorageService.getCacheLimitMb();
-    const session = await hls.open(uri, asset, headers, Math.floor(getVideoBudgetBytes(limit) / 2));
+    const session = await hls.open(uri, asset, headers, getHlsBudgetBytes(limit));
     if (session && /^http:\/\/127\.0\.0\.1:\d+\/[a-f0-9-]+\/master\.m3u8$/i.test(session.uri)) return session;
     if (session?.id) await hls.close(session.id);
     return null;

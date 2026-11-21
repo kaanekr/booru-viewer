@@ -74,10 +74,10 @@ async function writeIndex(dir: Directory, index: ListIndexMap): Promise<void> {
   } catch {}
 }
 
-export function getListBudgetBytes(limitMb: number): number {
-  const safeMb = Number.isFinite(limitMb) && limitMb > 0 ? limitMb : DEFAULT_CACHE_LIMIT_MB;
+export function getListBudgetBytes(limitMb: number | null): number {
+  if (limitMb === null) return Infinity;
   // Allocate 10% of the user's manual cache budget (clamped 8–50 MB) to list JSON
-  const listMb = Math.min(50, Math.max(8, Math.round(safeMb * 0.1)));
+  const listMb = Math.min(50, Math.max(8, Math.round(limitMb * 0.1)));
   return listMb * 1024 * 1024;
 }
 
@@ -166,7 +166,8 @@ export async function setListCache(
   } catch {}
 }
 
-export async function enforceListCacheLimit(limitMb: number): Promise<void> {
+export async function enforceListCacheLimit(limitMb: number | null): Promise<void> {
+  if (limitMb === null) return;
   const dir = getListDir();
   if (!dir) return;
 

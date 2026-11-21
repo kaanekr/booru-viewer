@@ -6,7 +6,6 @@ import { useFocusEffect, StackActions } from '@react-navigation/native';
 import type { BooruSource } from '../../types/booru';
 import {
   DEFAULT_CACHE_LIMIT_MB,
-  MAX_CACHE_LIMIT_MB,
   MIN_CACHE_LIMIT_MB,
   StorageService,
   ImageQuality,
@@ -46,8 +45,8 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
   const [hasBiometrics, setHasBiometrics] = useState(false);
   const [passcodeModalVisible, setPasscodeModalVisible] = useState(false);
   const [passcodeModalMode, setPasscodeModalMode] = useState<PasscodeModalMode>('setup');
-  const [cacheLimitMb, setCacheLimitMb] = useState<number>(DEFAULT_CACHE_LIMIT_MB);
-  const [cacheLimitInput, setCacheLimitInput] = useState<string>(String(DEFAULT_CACHE_LIMIT_MB));
+  const [cacheLimitMb, setCacheLimitMb] = useState<number | null>(DEFAULT_CACHE_LIMIT_MB);
+  const [cacheLimitInput, setCacheLimitInput] = useState('');
   const [cacheStats, setCacheStats] = useState({ videoBytes: 0, videoFiles: 0, listBytes: 0, listEntries: 0 });
   const cacheStatsRequest = useRef(0);
 
@@ -85,7 +84,7 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
       proxyService.setConfig(proxy.enabled, proxy.workerUrl);
       setImageQuality(quality); setGridPreviews(previews); setGridPreviewsEnabled(previews);
       setGelbooruAuth(gelbooru); setRule34Auth(rule34); setSavedAuth({ gelbooru, rule34 });
-      setCacheLimitMb(limitMb); setCacheLimitInput(String(limitMb));
+      setCacheLimitMb(limitMb); setCacheLimitInput(limitMb === null ? '' : String(limitMb));
       void refreshCacheStats();
     }).catch(() => Alert.alert('Settings unavailable', 'Could not load your preferences. Please reopen Settings.'))
       .finally(() => { if (alive) setLoading(false); });
@@ -176,10 +175,10 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
     finally { setIsTestingProxy(false); }
   };
 
-  const changeCacheLimit = async (mb: number) => run('cacheLimit', async () => {
+  const changeCacheLimit = async (mb: number | null) => run('cacheLimit', async () => {
     const saved = await StorageService.setCacheLimitMb(mb);
     setCacheLimitMb(saved);
-    setCacheLimitInput(String(saved));
+    setCacheLimitInput(saved === null ? '' : String(saved));
     await Promise.all([
       typeof enforceVideoCacheLimit === 'function' ? enforceVideoCacheLimit(saved) : Promise.resolve(),
       typeof enforceListCacheLimit === 'function' ? enforceListCacheLimit(saved) : Promise.resolve(),
@@ -191,8 +190,8 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
   const saveCustomCacheLimit = async () => {
     const trimmed = cacheLimitInput.trim();
     const parsed = Number(trimmed);
-    if (!/^\d+$/.test(trimmed) || !Number.isFinite(parsed) || parsed < MIN_CACHE_LIMIT_MB || parsed > MAX_CACHE_LIMIT_MB) {
-      Alert.alert('Invalid cache size', `Enter a size between ${MIN_CACHE_LIMIT_MB} and ${MAX_CACHE_LIMIT_MB} MB.`);
+    if (!/^\d+$/.test(trimmed) || !Number.isSafeInteger(parsed) || parsed < MIN_CACHE_LIMIT_MB) {
+      Alert.alert('Invalid cache size', `Enter a whole number of MB, at least ${MIN_CACHE_LIMIT_MB}.`);
       return;
     }
     await changeCacheLimit(parsed);

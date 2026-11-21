@@ -6,7 +6,7 @@ private actor HlsPlaybackSessions {
   private var sessions: [String: HlsLoopbackServer] = [:]
 
   func open(_ source: String, asset: String, headers: [String: String], budget: Int) async -> [String: String]? {
-    guard sessions.count < 3, budget > 0, !asset.isEmpty, asset.count < 200,
+    guard sessions.count < 3, budget == -1 || budget > 0, !asset.isEmpty, asset.count < 200,
       source.count < 8192, let url = URL(string: source), let origin = try? HlsOrigin(source: url) else { return nil }
     let server = HlsLoopbackServer(asset: asset, origin: origin, headers: headers)
     sessions[server.id] = server

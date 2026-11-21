@@ -25,14 +25,13 @@ const FEED_ORDER_KEY = '@booru_feed_order_v2';
 const HH_LAST_EPISODES_KEY = '@booru_hh_last_episodes_v1';
 const CACHE_LIMIT_MB_KEY = '@booru_cache_limit_mb_v1';
 
-export const DEFAULT_CACHE_LIMIT_MB = 512;
+export const DEFAULT_CACHE_LIMIT_MB = null;
 export const MIN_CACHE_LIMIT_MB = 50;
-export const MAX_CACHE_LIMIT_MB = 4096;
 export const CACHE_LIMIT_PRESETS_MB = [128, 256, 512, 1024, 2048] as const;
 
-export function clampCacheLimitMb(value: number): number {
-  if (!Number.isFinite(value)) return DEFAULT_CACHE_LIMIT_MB;
-  return Math.min(MAX_CACHE_LIMIT_MB, Math.max(MIN_CACHE_LIMIT_MB, Math.round(value)));
+export function clampCacheLimitMb(value: number | null): number | null {
+  if (value === null || !Number.isSafeInteger(Math.round(value))) return DEFAULT_CACHE_LIMIT_MB;
+  return Math.max(MIN_CACHE_LIMIT_MB, Math.round(value));
 }
 
 const VALID_SORT: SortOption[] = ['default', 'id', 'score', 'rating', 'user', 'height', 'width'];
@@ -52,7 +51,7 @@ let cachedRecentViews: BooruPost[] | null = null;
 let cachedFavorites: BooruPost[] | null = null;
 let cachedFavoriteKeys: Set<string> | null = null;
 let cachedBlacklistedTags: string[] | null = null;
-let cachedCacheLimitMb: number | null = null;
+let cachedCacheLimitMb: number | null | undefined;
 
 function setFavoritesMemoryCache(items: BooruPost[]): void {
   cachedFavorites = items;
@@ -171,8 +170,8 @@ export const StorageService = {
     }
   },
 
-  async getCacheLimitMb(): Promise<number> {
-    if (cachedCacheLimitMb !== null) return cachedCacheLimitMb;
+  async getCacheLimitMb(): Promise<number | null> {
+    if (cachedCacheLimitMb !== undefined) return cachedCacheLimitMb;
     try {
       const data = await AsyncStorage.getItem(CACHE_LIMIT_MB_KEY);
       if (data == null) {
@@ -188,7 +187,7 @@ export const StorageService = {
     }
   },
 
-  async setCacheLimitMb(mb: number): Promise<number> {
+  async setCacheLimitMb(mb: number | null): Promise<number | null> {
     const clamped = clampCacheLimitMb(mb);
     await AsyncStorage.setItem(CACHE_LIMIT_MB_KEY, JSON.stringify(clamped));
     cachedCacheLimitMb = clamped;

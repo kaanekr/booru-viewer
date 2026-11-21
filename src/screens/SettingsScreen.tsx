@@ -9,7 +9,7 @@ import { SourceCatalog, SourceMark, sourcePresentation } from '../components/Sou
 import { PasscodeModal } from '../components/PasscodeModal';
 import { SettingsButton, SettingsRow, SettingsSection, settingsStyles as ui } from './settings/SettingsUI';
 import { useSettings } from './settings/useSettings';
-import { CACHE_LIMIT_PRESETS_MB, MAX_CACHE_LIMIT_MB, MIN_CACHE_LIMIT_MB } from '../services/storage';
+import { CACHE_LIMIT_PRESETS_MB, MIN_CACHE_LIMIT_MB } from '../services/storage';
 import { Colors } from '../theme/colors';
 
 function formatCacheBytes(bytes: number): string {
@@ -223,26 +223,25 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: pr
   </>;
 
   const renderStorage = () => {
-    const videoBudgetMb = Math.max(50, Math.round(settings.cacheLimitMb * 0.6));
-    const listBudgetMb = Math.min(50, Math.max(8, Math.round(settings.cacheLimitMb * 0.1)));
     return <>
       <Text style={styles.pageIntro}>Back up your library and manage local cache limits.</Text>
-      <SettingsSection title="Cache limit" hint={`Controls how much disk space local video and list caches can use (${MIN_CACHE_LIMIT_MB}–${MAX_CACHE_LIMIT_MB} MB). Lowering the limit frees older files immediately.`}>
+      <SettingsSection title="Cache limit" hint="Choose Unlimited or set a disk limit for video and list caches. Lowering the limit frees older files.">
         <View style={styles.cachePresetRow}>
-          {CACHE_LIMIT_PRESETS_MB.map((mb) => {
+          {[null, ...CACHE_LIMIT_PRESETS_MB].map((mb) => {
             const selected = settings.cacheLimitMb === mb;
+            const label = mb === null ? 'Unlimited' : formatLimitLabel(mb);
             return (
               <TouchableOpacity
-                key={mb}
+                key={label}
                 accessibilityRole="radio"
-                accessibilityLabel={`Cache limit ${formatLimitLabel(mb)}`}
+                accessibilityLabel={`Cache limit ${label}`}
                 accessibilityState={{ selected, disabled: !!settings.busy }}
                 disabled={!!settings.busy}
                 onPress={() => settings.changeCacheLimit(mb)}
                 style={[styles.cachePresetChip, selected && styles.cachePresetChipActive]}
               >
                 <Text style={[styles.cachePresetText, selected && styles.cachePresetTextActive]}>
-                  {formatLimitLabel(mb)}
+                  {label}
                 </Text>
               </TouchableOpacity>
             );
@@ -253,7 +252,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: pr
             <Text style={ui.label}>Custom limit (MB)</Text>
             <TextInput
               accessibilityLabel="Custom cache size MB"
-              placeholder={`${MIN_CACHE_LIMIT_MB}–${MAX_CACHE_LIMIT_MB}`}
+              placeholder={`At least ${MIN_CACHE_LIMIT_MB} MB`}
               placeholderTextColor={Colors.dark.textMuted}
               value={settings.cacheLimitInput}
               onChangeText={settings.setCacheLimitInput}
@@ -270,7 +269,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: pr
             />
           </View>
           <Text style={ui.status}>
-            Active limit: {formatLimitLabel(settings.cacheLimitMb)} (Video ~{videoBudgetMb} MB · Lists ~{listBudgetMb} MB)
+            {settings.cacheLimitMb === null ? 'Cache storage is unlimited' : `Active limit: ${formatLimitLabel(settings.cacheLimitMb)}`}
           </Text>
         </View>
       </SettingsSection>

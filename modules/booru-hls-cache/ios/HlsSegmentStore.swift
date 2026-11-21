@@ -24,7 +24,7 @@ actor HlsSegmentStore {
   }
 
   private let directory: URL
-  private var budget = 0
+  private var budget: Int?
   private var revision = 0
   private var entries: [String: Entry]?
   private var bytes = 0
@@ -60,9 +60,11 @@ actor HlsSegmentStore {
   }
 
   func setLimit(_ bytes: Int) {
-    budget = max(0, bytes)
-    loadIndex()
-    evict(to: budget)
+    budget = bytes < 0 ? nil : bytes
+    if let budget {
+      loadIndex()
+      evict(to: budget)
+    }
   }
 
   func lookup(asset: String, identity: String) -> (revision: Int, response: HlsResponse?) {
@@ -86,9 +88,12 @@ actor HlsSegmentStore {
       response.status == 200 || response.status == 206 else { return }
     loadIndex()
     let name = filename(asset: asset, identity: identity)
-    guard entries?[name] == nil, let data = try? PropertyListEncoder().encode(response), data.count <= budget else { return }
-    evict(to: budget - data.count)
-    guard bytes + data.count <= budget else { return }
+    guard entries?[name] == nil, let data = try? PropertyListEncoder().encode(response) else { return }
+    if let budget {
+      guard data.count <= budget else { return }
+      evict(to: budget - data.count)
+      guard bytes + data.count <= budget else { return }
+    }
     do {
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
       try data.write(to: directory.appendingPathComponent(name), options: .atomic)

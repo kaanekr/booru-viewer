@@ -161,15 +161,12 @@ test('getImageCacheKey unwraps proxy Worker URLs and strips ephemeral auth/expir
 
 test('listCache serves fresh/stale SWR entries, tracks stats, and clears memory and disk', async () => {
   const fs = createFakeFileSystem();
-  let cacheLimitMb = 512;
   const load = createLoader({
     'expo-file-system': fs.module,
     './lruCache': createLoader()(path.resolve(__dirname, '../src/utils/lruCache.ts')),
     '../services/storage': {
-      DEFAULT_CACHE_LIMIT_MB: 512,
-      StorageService: {
-        getCacheLimitMb: async () => cacheLimitMb,
-      },
+      DEFAULT_CACHE_LIMIT_MB: null,
+      StorageService: { getCacheLimitMb: async () => null },
     },
   });
   const listCache = load(path.resolve(__dirname, '../src/utils/listCache.ts'));
@@ -195,6 +192,15 @@ test('listCache serves fresh/stale SWR entries, tracks stats, and clears memory 
   const stats = listCache.getListCacheStats();
   assert.equal(stats.entries, 2);
   assert.ok(stats.bytes > 0);
+
+  // Use simulated sizes so the test can exceed the old list budget without writing large files.
+  for (const [name, file] of fs.files) {
+    if (!name.endsWith('/index.json')) file.size = 40 * 1024 * 1024;
+  }
+  await listCache.setListCache('feed|new', postsA, 60_000);
+  assert.equal(listCache.getListCacheStats().entries, 3);
+  await listCache.enforceListCacheLimit(500);
+  assert.ok(listCache.getListCacheStats().bytes <= 50 * 1024 * 1024);
 
   // Clear removes both memory and disk entries
   await listCache.clearListCache();
@@ -236,14 +242,19 @@ test('videoFallbackCache evicts least-recently-used videos by byte budget and re
   assert.equal(statsAfterThird.files, 2);
   assert.equal(statsAfterThird.bytes, 50 * MB);
 
-  // Shrinking manual limit further via enforceVideoCacheLimit evicts oldest down to budget
-  // (minimum video budget is 50 MB, so 2 files * 25 MB = 50 MB fits; clearing frees all)
+  // Unlimited retains both existing and newly downloaded videos over the previous app ceiling.
+  cacheLimitMb = null;
+  fs.module.File.nextDownloadSize = 5000 * MB;
+  await videoCache.downloadVideoViaAppSession('https://cdn.test/large.mp4', {}, controller.signal);
+  assert.equal(videoCache.getVideoCacheStats().bytes, 5050 * MB);
+  assert.equal(videoCache.getVideoCacheStats().files, 3);
+
   await videoCache.clearVideoCache();
   assert.equal(videoCache.getVideoCacheStats().files, 0);
   assert.equal(videoCache.getVideoCacheStats().bytes, 0);
 });
 
-test('StorageService persists clamped cacheLimitMb and serves O(1) isFavorite in sync with updates', async () => {
+test('StorageService persists unlimited and custom cache limits and serves O(1) isFavorite', async () => {
   const store = new Map();
   let getItemCalls = 0;
   const asyncStorageMock = {
@@ -272,17 +283,21 @@ test('StorageService persists clamped cacheLimitMb and serves O(1) isFavorite in
     StorageService,
     DEFAULT_CACHE_LIMIT_MB,
     MIN_CACHE_LIMIT_MB,
-    MAX_CACHE_LIMIT_MB,
   } = load(path.resolve(__dirname, '../src/services/storage.ts'));
 
   // Default & clamping
   assert.equal(await StorageService.getCacheLimitMb(), DEFAULT_CACHE_LIMIT_MB);
   assert.equal(await StorageService.setCacheLimitMb(10), MIN_CACHE_LIMIT_MB);
   assert.equal(await StorageService.getCacheLimitMb(), MIN_CACHE_LIMIT_MB);
-  assert.equal(await StorageService.setCacheLimitMb(99999), MAX_CACHE_LIMIT_MB);
-  assert.equal(await StorageService.getCacheLimitMb(), MAX_CACHE_LIMIT_MB);
-  assert.equal(await StorageService.setCacheLimitMb(1024), 1024);
-  assert.equal(await StorageService.getCacheLimitMb(), 1024);
+  assert.equal(await StorageService.setCacheLimitMb(8192), 8192);
+  assert.equal(await StorageService.getCacheLimitMb(), 8192);
+  assert.equal(await StorageService.setCacheLimitMb(null), null);
+  assert.equal(await StorageService.getCacheLimitMb(), null);
+  assert.equal(store.get('@booru_cache_limit_mb_v1'), 'null');
+  const reloaded = createLoader({
+    '@react-native-async-storage/async-storage': { __esModule: true, default: asyncStorageMock },
+  })(path.resolve(__dirname, '../src/services/storage.ts')).StorageService;
+  assert.equal(await reloaded.getCacheLimitMb(), null);
 
   // O(1) favorites index: prime once, subsequent isFavorite calls do not re-read AsyncStorage
   const samplePost = { id: 'p1', sourceId: 'danbooru', previewUrl: 'https://cdn.test/p1.jpg', fileUrl: 'https://cdn.test/p1.jpg', tags: {} };
@@ -297,8 +312,8 @@ test('StorageService persists clamped cacheLimitMb and serves O(1) isFavorite in
   assert.equal(await StorageService.isFavorite({ id: 'p1', sourceId: 'danbooru' }), false);
 });
 
-test('SettingsScreen Storage & backup lets user pick preset, enter custom MB limit, reject invalid values, and clear individual caches', async () => {
-  const { Screen, cacheLimitWrites, cacheClears, alerts } = setupSettings({ cacheLimitMb: 512 });
+test('SettingsScreen accepts unlimited, presets and custom limits above 4096 MB and clears caches', async () => {
+  const { Screen, cacheLimitWrites, cacheClears, alerts } = setupSettings({ cacheLimitMb: 4096 });
   await act(async () => {
     root = create(React.createElement(Screen));
   });
@@ -306,6 +321,8 @@ test('SettingsScreen Storage & backup lets user pick preset, enter custom MB lim
   // Navigate to Storage & backup page
   const storageRow = root.root.findByProps({ accessibilityLabel: 'Storage & backup' });
   await act(async () => storageRow.props.onPress());
+  const customInput = root.root.findByProps({ accessibilityLabel: 'Custom cache size MB' });
+  assert.equal(customInput.props.value, '4096');
 
   // 1. Select preset 1 GB (1024 MB)
   const preset1Gb = root.root.findByProps({ accessibilityLabel: 'Cache limit 1 GB' });
@@ -313,17 +330,23 @@ test('SettingsScreen Storage & backup lets user pick preset, enter custom MB lim
   assert.deepEqual(cacheLimitWrites, [1024]);
 
   // 2. Enter custom limit 750 MB and save
-  const customInput = root.root.findByProps({ accessibilityLabel: 'Custom cache size MB' });
-  await act(async () => customInput.props.onChangeText('750'));
+  assert.equal(customInput.props.value, '1024');
+  await act(async () => customInput.props.onChangeText('8192'));
   const saveLimitBtn = root.root.findByProps({ accessibilityLabel: 'Save limit' });
   await act(async () => saveLimitBtn.props.onPress());
-  assert.deepEqual(cacheLimitWrites, [1024, 750]);
+  assert.deepEqual(cacheLimitWrites, [1024, 8192]);
 
   // 3. Reject out-of-range custom input (20 MB < 50 MB minimum)
   await act(async () => customInput.props.onChangeText('20'));
   await act(async () => saveLimitBtn.props.onPress());
-  assert.deepEqual(cacheLimitWrites, [1024, 750]);
+  assert.deepEqual(cacheLimitWrites, [1024, 8192]);
   assert.ok(alerts.some((a) => String(a[0]).includes('Invalid cache size')));
+
+  const unlimited = root.root.findByProps({ accessibilityLabel: 'Cache limit Unlimited' });
+  await act(async () => unlimited.props.onPress());
+  assert.deepEqual(cacheLimitWrites, [1024, 8192, null]);
+  assert.equal(unlimited.props.accessibilityState.selected, true);
+  assert.equal(customInput.props.value, '');
 
   // Helper to confirm the latest Alert dialog's destructive/Clear button
   const confirmLatestAlert = async () => {
@@ -412,6 +435,7 @@ test('canUseExpoVideoCache enables caching for direct/proxied MP4s, disables for
 test('the optional iOS HLS module opens Worker-wrapped playlists and shares existing cache controls', async () => {
   const fs = createFakeFileSystem();
   const calls = [];
+  let limitMb = 500;
   const session = { id: 'a1', uri: 'http://127.0.0.1:30001/a1/master.m3u8' };
   const native = {
     open: async (...args) => { calls.push(['open', ...args]); return session; },
@@ -424,7 +448,7 @@ test('the optional iOS HLS module opens Worker-wrapped playlists and shares exis
     'expo-file-system': fs.module,
     expo: { requireOptionalNativeModule: (name) => name === 'BooruHlsCache' ? native : null },
     'expo-video': { setVideoCacheSizeAsync: async (size) => { calls.push(['progressive', size]); } },
-    '../services/storage': { DEFAULT_CACHE_LIMIT_MB: 512, StorageService: { getCacheLimitMb: async () => 500 } },
+    '../services/storage': { DEFAULT_CACHE_LIMIT_MB: null, StorageService: { getCacheLimitMb: async () => limitMb } },
   });
   const cache = load(path.resolve(__dirname, '../src/utils/videoFallbackCache.ts'));
   const playlist = 'https://ev.phncdn.com/hls/test/master.m3u8';
@@ -438,6 +462,11 @@ test('the optional iOS HLS module opens Worker-wrapped playlists and shares exis
   assert.deepEqual({ ...(await cache.getHlsVideoCacheStats()) }, { bytes: 8192, files: 1 });
   await cache.enforceVideoCacheLimit(500);
   assert.deepEqual(calls.slice(2), [['progressive', 75 * 1024 * 1024], ['limit', 150 * 1024 * 1024]]);
+  limitMb = null;
+  await cache.syncNativeVideoCacheSize();
+  assert.deepEqual(calls.slice(-2), [['progressive', Number.MAX_SAFE_INTEGER], ['limit', -1]]);
+  await cache.openHlsCachePlayback(wrapped, 'ph:1', headers);
+  assert.deepEqual(calls.at(-1), ['open', wrapped, 'ph:1', headers, -1]);
   await cache.clearVideoCache();
   assert.deepEqual(calls.at(-1), ['clear']);
 });
