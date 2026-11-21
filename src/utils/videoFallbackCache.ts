@@ -78,7 +78,7 @@ export async function enforceVideoCacheLimit(limitMb: number, protectedFilename?
 
     for (const item of rawEntries) {
       const name = (item as any).name as string | undefined;
-      if (!name || name === 'index.json') continue;
+      if (!name || name === 'index.json' || name === NATIVE_TRACKED_FILE) continue;
       const size = (item as any).size || 0;
       if (size <= 0 || name.endsWith('.tmp')) {
         try { item.delete(); } catch {}
@@ -175,6 +175,63 @@ export async function syncNativeVideoCacheSize(limitMb?: number): Promise<void> 
   }
 }
 
+const NATIVE_TRACKED_FILE = 'native-tracked.json';
+let nativeTrackedKeys: Set<string> | null = null;
+
+function loadNativeTracked(dir: Directory | null): Set<string> {
+  if (nativeTrackedKeys !== null) return nativeTrackedKeys;
+  const loaded = new Set<string>();
+  if (dir) {
+    try {
+      const f = new File(dir, NATIVE_TRACKED_FILE);
+      if (f.exists) {
+        const parsed = JSON.parse(f.textSync());
+        if (Array.isArray(parsed)) {
+          for (const k of parsed) {
+            if (typeof k === 'string' && k) loaded.add(k);
+          }
+        }
+      }
+    } catch {}
+  }
+  nativeTrackedKeys = loaded;
+  return loaded;
+}
+
+function saveNativeTracked(dir: Directory | null, keys: Set<string>): void {
+  if (!dir) return;
+  try {
+    const f = new File(dir, NATIVE_TRACKED_FILE);
+    f.write(JSON.stringify(Array.from(keys)));
+  } catch {}
+}
+
+function normalizeVideoTrackKey(url: string): string {
+  let candidate = url.trim();
+  try {
+    const parsed = new URL(candidate);
+    const wrapped = parsed.searchParams.get('url');
+    if (wrapped && /^https?:\/\//i.test(wrapped)) {
+      candidate = wrapped;
+    }
+  } catch {}
+  return hashVideoCacheKey(candidate.split('#')[0]);
+}
+
+/**
+ * Records a video URL that became playable with expo-video `useCaching: true`
+ * so Settings can display an accurate cached-video count alongside native bytes.
+ */
+export function recordCachedVideo(url: string | null | undefined): void {
+  if (!url || !canUseExpoVideoCache(url)) return;
+  const dir = getVideoDir();
+  const keys = loadNativeTracked(dir);
+  const key = normalizeVideoTrackKey(url);
+  if (keys.has(key)) return;
+  keys.add(key);
+  saveNativeTracked(dir, keys);
+}
+
 export function getVideoCacheStats(): { bytes: number; files: number } {
   let bytes = 0;
   let files = 0;
@@ -183,7 +240,7 @@ export function getVideoCacheStats(): { bytes: number; files: number } {
     try {
       for (const item of dir.list()) {
         const name = (item as any).name as string | undefined;
-        if (!name || name === 'index.json') continue;
+        if (!name || name === 'index.json' || name === NATIVE_TRACKED_FILE) continue;
         const size = (item as any).size || 0;
         if (size > 0) {
           bytes += size;
@@ -199,6 +256,14 @@ export function getVideoCacheStats(): { bytes: number; files: number } {
       const nativeBytes = api.getCurrentVideoCacheSize();
       if (typeof nativeBytes === 'number' && Number.isFinite(nativeBytes) && nativeBytes > 0) {
         bytes += nativeBytes;
+        const tracked = loadNativeTracked(dir);
+        files += tracked.size;
+      } else {
+        const tracked = loadNativeTracked(dir);
+        if (tracked.size > 0) {
+          tracked.clear();
+          saveNativeTracked(dir, tracked);
+        }
       }
     } catch {}
   }
@@ -207,6 +272,11 @@ export function getVideoCacheStats(): { bytes: number; files: number } {
 }
 
 export async function clearVideoCache(): Promise<void> {
+  if (nativeTrackedKeys) {
+    nativeTrackedKeys.clear();
+  } else {
+    nativeTrackedKeys = new Set();
+  }
   const dir = getVideoDir();
   if (dir) {
     try {

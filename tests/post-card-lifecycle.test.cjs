@@ -70,7 +70,10 @@ function loadCard(options = {}) {
       getImageCacheKey: (url) => url || '',
       isUnsupportedOnIOS: (url) => /\.webm(?:\?|$)/i.test(url),
     },
-    '../utils/videoFallbackCache': { canUseExpoVideoCache: (url) => /^https?:\/\//i.test(String(url || '')) && !/\.m3u8/i.test(String(url || '')) },
+    '../utils/videoFallbackCache': {
+      canUseExpoVideoCache: (url) => /^https?:\/\//i.test(String(url || '')) && !/\.m3u8/i.test(String(url || '')),
+      recordCachedVideo: () => {},
+    },
     '../utils/guards': { urlEndsWith: (url, ...extensions) =>
       typeof url === 'string' && extensions.some((ext) => url.split('?')[0].toLowerCase().endsWith(ext)) },
     '../services/proxyService': { proxyService: {
@@ -417,4 +420,15 @@ test('isFavorite boolean prop controls favorite badge cleanly without Set scans'
   assert.equal(root.root.findAllByType('Heart').length, 0);
   await act(async () => root.update(React.createElement(PostCard, { post, onPress, isFavorite: true })));
   assert.equal(root.root.findAllByType('Heart').length, 1);
+});
+
+test('grid cover prefers crisp static sampleUrl over tiny previewUrl, but skips GIF and video sampleUrl', async () => {
+  const { PostCard } = loadCard();
+  const crispPost = { ...imagePost('10'), previewUrl: 'https://cdn.test/thumb_150.jpg', sampleUrl: 'https://cdn.test/sample_850.jpg' };
+  await act(async () => { root = create(React.createElement(PostCard, { post: crispPost, onPress })); });
+  assert.equal(root.root.findByType('Image').props.source.uri, 'https://cdn.test/sample_850.jpg');
+
+  const gifPost = { ...imagePost('11'), previewUrl: 'https://cdn.test/thumb_150.jpg', sampleUrl: 'https://cdn.test/anim.gif' };
+  await act(async () => root.update(React.createElement(PostCard, { post: gifPost, onPress })));
+  assert.equal(root.root.findByType('Image').props.source.uri, 'https://cdn.test/thumb_150.jpg');
 });
