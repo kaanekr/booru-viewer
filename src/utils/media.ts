@@ -755,6 +755,22 @@ export function getVideoCandidates(
 
   const videoUrls = uniqueUrls.filter(isVideoUrl);
 
+  // Saved/imported favorite video posts sometimes only store the thumbnail JPEG URL
+  // (e.g. .../thumbnails/ab/cd/thumbnail_<hash>.jpg) with fileExt="webm"/"mp4".
+  // Derive the canonical /images/ab/cd/<hash>.<ext> candidate so the viewer can
+  // probe the MP4 upgrade or play the WebM fallback instead of seeing 0 video candidates.
+  if (videoUrls.length === 0 && isVideoPost(post as any)) {
+    for (const u of uniqueUrls) {
+      const m = u.match(/^(https?:\/\/[^/]+)\/(?:thumbnails|samples)\/([a-f0-9]{2})\/([a-f0-9]{2})\/(?:thumbnail_|sample_)?([a-f0-9]{16,64})\.[a-z0-9]+/i);
+      if (m) {
+        const [, origin, d1, d2, hash] = m;
+        const ext = typeof post.fileExt === 'string' && post.fileExt.toLowerCase() === 'webm' ? 'webm' : 'mp4';
+        videoUrls.push(`${origin}/images/${d1}/${d2}/${hash}.${ext}`);
+        break;
+      }
+    }
+  }
+
   const getPriority = (url: string) => {
     const clean = url.split('?')[0].toLowerCase();
     if (clean.endsWith('.mp4') || clean.endsWith('.mov') || clean.endsWith('.m4v')) {
@@ -799,15 +815,37 @@ export function selectPrimaryVideoCandidate(
  */
 export function getMp4UpgradeUrl(webmUrl: string | undefined): string | null {
   if (!webmUrl || typeof webmUrl !== 'string') return null;
-  const trimmed = webmUrl.trim();
-  if (!trimmed) return null;
+  let candidate = webmUrl.trim();
+  if (!candidate) return null;
 
-  const match = trimmed.match(/^([^?#]+)\.webm([?#].*)?$/i);
-  if (!match) return null;
+  // Unwrap proxy Worker URL if the saved favorite stored a proxied URL
+  try {
+    const parsed = new URL(candidate);
+    const wrapped = parsed.searchParams.get('url');
+    if (wrapped && /^https?:\/\//i.test(wrapped)) {
+      candidate = wrapped.trim();
+    }
+  } catch {}
 
-  const base = match[1];
-  const queryOrHash = match[2] || '';
-  return `${base}.mp4${queryOrHash}`;
+  candidate = normalizeBooruMediaUrl(candidate) || candidate;
+
+  const match = candidate.match(/^([^?#]+)\.webm([?#].*)?$/i);
+  if (match) {
+    const base = match[1];
+    const queryOrHash = match[2] || '';
+    return `${base}.mp4${queryOrHash}`;
+  }
+
+  // Also derive /images/ab/cd/<hash>.mp4 when a saved favorite only has a thumbnail/sample image URL
+  const thumbMatch = candidate.match(
+    /^(https?:\/\/[^/]+)\/(?:thumbnails|samples)\/([a-f0-9]{2})\/([a-f0-9]{2})\/(?:thumbnail_|sample_)?([a-f0-9]{16,64})\.[a-z0-9]+([?#].*)?$/i
+  );
+  if (thumbMatch) {
+    const [, origin, d1, d2, hash, queryOrHash = ''] = thumbMatch;
+    return `${origin}/images/${d1}/${d2}/${hash}.mp4${queryOrHash}`;
+  }
+
+  return null;
 }
 
 const mp4UpgradeCache = new LruCache<string, string | null>(RESOLVE_CACHE_MAX);
@@ -864,6 +902,21 @@ export async function checkMp4UpgradeAvailable(
         mp4UpgradeCache.set(trimmed, mp4Url);
         return mp4Url;
       }
+
+      // Some booru CDNs/relays reject HEAD (403/405) even when the MP4 exists;
+      // probe the first 64 bytes via GET Range before giving up.
+      if (response.status !== 404 && !controller.signal.aborted) {
+        const rangeRes = await proxyService.fetchWithFallback(targetUrl, {
+          method: 'GET',
+          headers: { ...headers, Range: 'bytes=0-63' },
+          signal: controller.signal,
+        });
+        if (rangeRes.status >= 200 && rangeRes.status < 300) {
+          mp4UpgradeCache.set(trimmed, mp4Url);
+          return mp4Url;
+        }
+      }
+
       mp4UpgradeCache.set(trimmed, null, NEGATIVE_RESOLVE_TTL_MS);
       return null;
     } catch {

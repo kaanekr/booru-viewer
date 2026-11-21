@@ -1091,8 +1091,15 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
 
     // Skip the fetch when the post already owns a real originalUrl different from sample
     // Note: XHamster, XVideos, Sex.com and HentaiHaven always re-resolve fresh from detail
-    // because they carry expiring tokens/temporary previews
-    const needsFreshVideoResolution = post.sourceId === 'realbooru' || post.sourceId === 'xvideos' || post.sourceId === 'xhamster' || post.sourceId === 'sexcom' || post.sourceId === 'hentaihaven';
+    // because they carry expiring tokens/temporary previews. On iOS, also re-resolve when
+    // originalUrl is an unsupported .webm so detail pages that offer an MP4 sibling can win.
+    const needsFreshVideoResolution =
+      post.sourceId === 'realbooru' ||
+      post.sourceId === 'xvideos' ||
+      post.sourceId === 'xhamster' ||
+      post.sourceId === 'sexcom' ||
+      post.sourceId === 'hentaihaven' ||
+      (Platform.OS === 'ios' && isUnsupportedOnIOS(post.originalUrl));
     if (post.originalUrl && post.originalUrl !== post.sampleUrl && !needsFreshVideoResolution) {
       setResolvedOriginalUrl(post.originalUrl);
       return () => {
@@ -1101,11 +1108,29 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
       };
     }
 
+    let effectiveSourceLink = post.sourceLink;
+    if (!effectiveSourceLink && typeof post.id === 'string') {
+      const numericId = post.id.replace(/^[a-z0-9]+_/i, '');
+      if (/^\d+$/.test(numericId)) {
+        if (post.sourceId === 'realbooru') {
+          effectiveSourceLink = `https://realbooru.com/index.php?page=post&s=view&id=${numericId}`;
+        } else if (post.sourceId === 'gelbooru') {
+          effectiveSourceLink = `https://gelbooru.com/index.php?page=post&s=view&id=${numericId}`;
+        } else if (post.sourceId === 'rule34') {
+          effectiveSourceLink = `https://rule34.xxx/index.php?page=post&s=view&id=${numericId}`;
+        }
+      }
+    }
+    const postForResolve =
+      effectiveSourceLink && effectiveSourceLink !== post.sourceLink
+        ? { ...post, sourceLink: effectiveSourceLink }
+        : post;
+
     // For Gelbooru/Realbooru/XVideos or scrape posts missing originalUrl,
     // resolve from the post detail (XVideos mp4s carry expiring tokens, resolve fresh)
-    if (post.sourceLink) {
+    if (effectiveSourceLink) {
       if (post.sourceId === 'xvideos') {
-        resolveXVideosVideoUrls(post, abortCtrl.signal)
+        resolveXVideosVideoUrls(postForResolve, abortCtrl.signal)
           .then((files) => {
             if (alive && files) {
               setResolvedOriginalUrl(files.high || files.low || files.hls || null);
@@ -1207,15 +1232,15 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
         // Listing tags carry no file extension (the scraper guesses .mp4),
         // so resolve the real mp4/webm/gif from the detail page.
         // GIFs land on the detail image and render as an animated image.
-        resolveRealbooruVideoUrls(post, abortCtrl.signal)
+        resolveRealbooruVideoUrls(postForResolve, abortCtrl.signal)
           .then((files) => {
             if (!alive || !files) return;
             const playable = selectRealbooruPlayable(files);
             if (playable) setResolvedOriginalUrl(playable);
           })
           .catch(() => {});
-      } else if (post.sourceId === 'gelbooru' || post.sourceId === 'realbooru' || !post.originalUrl) {
-        resolveGelbooruOriginalUrl(post, abortCtrl.signal)
+      } else if (post.sourceId === 'gelbooru' || post.sourceId === 'realbooru' || !post.originalUrl || (Platform.OS === 'ios' && isUnsupportedOnIOS(post.originalUrl))) {
+        resolveGelbooruOriginalUrl(postForResolve, abortCtrl.signal)
           .then((url) => {
             if (alive && url) {
               setResolvedOriginalUrl(url);
@@ -1451,14 +1476,17 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
       ? videoCandidates.every(isUnsupportedOnIOS)
       : (post.fileExt?.toLowerCase() === 'webm' || isUnsupportedOnIOS(primaryCandidate)));
 
+  const mp4UpgradeProbeTarget =
+    primaryCandidate || post.originalUrl || post.sampleUrl || post.previewUrl || '';
+
   useEffect(() => {
     setUpgradedMp4Url(null);
     setWebmWebViewFailed(false);
-  }, [primaryCandidate]);
+  }, [mp4UpgradeProbeTarget]);
 
   useEffect(() => {
     // Only try on iOS (Platform.OS check)
-    if (Platform.OS !== 'ios' || !isWebmOnlyOnIOS || !primaryCandidate) {
+    if (Platform.OS !== 'ios' || !isWebmOnlyOnIOS || !mp4UpgradeProbeTarget) {
       setUpgradedMp4Url(null);
       setIsCheckingUpgrade(false);
       return;
@@ -1471,7 +1499,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
     let isMounted = true;
     setIsCheckingUpgrade(true);
 
-    checkMp4UpgradeAvailable(primaryCandidate)
+    checkMp4UpgradeAvailable(mp4UpgradeProbeTarget)
       .then((mp4) => {
         if (!isMounted) return;
         setUpgradedMp4Url(mp4);
@@ -1486,10 +1514,10 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
     return () => {
       isMounted = false;
     };
-  }, [isActive, isWebmOnlyOnIOS, primaryCandidate]);
+  }, [isActive, isWebmOnlyOnIOS, mp4UpgradeProbeTarget]);
 
   const canPlayVideo =
-    isVideo && videoCandidates.length > 0 && (!isWebmOnlyOnIOS || Boolean(upgradedMp4Url));
+    isVideo && (Boolean(upgradedMp4Url) || (videoCandidates.length > 0 && !isWebmOnlyOnIOS));
   const activeVideoUrl = upgradedMp4Url ? getMediaUrl(upgradedMp4Url) : mediaUrl;
   const isResolvingPornhubVideo =
     post.sourceId === 'pornhub' &&
