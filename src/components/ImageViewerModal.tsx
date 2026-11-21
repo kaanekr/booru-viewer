@@ -246,9 +246,6 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   const currentPostKey = currentPost ? getPostKey(currentPost) : '';
   const currentPostKeyRef = useRef(currentPostKey);
   currentPostKeyRef.current = currentPostKey;
-  // Dedicated edge back-area is live on video pages (native gesture off);
-  // on photos the native gesture works and this area is off.
-  const currentIsVideo = isVideoPost(currentPost);
 
   useEffect(() => {
     if (!visible || suspended || !showPageJump) return;
@@ -610,10 +607,10 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             },
           ]}
         >
-          {/* Left-edge back area: active in modal mode, on Android, and on
-              video pages (while native iOS stack gesture is off). Excludes the
-              bottom 150px video timeline strip so seeking never exits. */}
-          {(!asScreen || currentIsVideo || Platform.OS === 'android') && (
+          {/* Left-edge back area: active in modal mode and on Android (where
+              native stack swipe-back doesn't exist). On iOS asScreen, native
+              stack handles both photos and videos identically. */}
+          {(!asScreen || Platform.OS === 'android') && (
             <View
               style={[
                 styles.leftEdgeGestureArea,
