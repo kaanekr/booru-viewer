@@ -107,6 +107,7 @@ final class HlsLoopbackServer: @unchecked Sendable {
         do {
           let parameters = NWParameters.tcp
           parameters.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
+          parameters.requiredInterfaceType = .loopback
           let listener = try NWListener(using: parameters)
           self.listener = listener
           listener.stateUpdateHandler = { [weak self, weak listener] state in

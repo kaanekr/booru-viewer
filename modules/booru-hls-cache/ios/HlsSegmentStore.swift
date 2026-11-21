@@ -26,7 +26,7 @@ actor HlsSegmentStore {
   private let directory: URL
   private var budget = 0
   private var revision = 0
-  private var entries: [URL: Entry]?
+  private var entries: [String: Entry]?
   private var bytes = 0
 
   init(directory: URL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -38,21 +38,22 @@ actor HlsSegmentStore {
     SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
   }
 
-  private func location(asset: String, identity: String) -> URL {
-    directory.appendingPathComponent(Self.digest(asset) + "-" + Self.digest(identity) + ".segment")
+  private func filename(asset: String, identity: String) -> String {
+    Self.digest(asset) + "-" + Self.digest(identity) + ".segment"
   }
 
   private func loadIndex() {
     guard entries == nil else { return }
     let fm = FileManager.default
     let keys: Set<URLResourceKey> = [.fileSizeKey, .contentModificationDateKey, .isRegularFileKey]
-    var loaded: [URL: Entry] = [:]
+    var loaded: [String: Entry] = [:]
     try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
     for url in (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: Array(keys))) ?? [] {
       guard url.pathExtension == "segment", let values = try? url.resourceValues(forKeys: keys),
         values.isRegularFile == true, let size = values.fileSize else { continue }
-      let asset = String(url.lastPathComponent.prefix(64))
-      loaded[url] = Entry(size: size, date: values.contentModificationDate ?? .distantPast, asset: asset)
+      let name = url.lastPathComponent
+      let asset = String(name.prefix(64))
+      loaded[name] = Entry(size: size, date: values.contentModificationDate ?? .distantPast, asset: asset)
       bytes += size
     }
     entries = loaded
@@ -66,15 +67,16 @@ actor HlsSegmentStore {
 
   func lookup(asset: String, identity: String) -> (revision: Int, response: HlsResponse?) {
     loadIndex()
-    let file = location(asset: asset, identity: identity)
-    guard var entry = entries?[file] else { return (revision, nil) }
+    let name = filename(asset: asset, identity: identity)
+    guard var entry = entries?[name] else { return (revision, nil) }
+    let file = directory.appendingPathComponent(name)
     guard let data = try? Data(contentsOf: file),
       let response = try? PropertyListDecoder().decode(HlsResponse.self, from: data) else {
-      remove(file)
+      remove(name)
       return (revision, nil)
     }
     entry.date = Date()
-    entries?[file] = entry
+    entries?[name] = entry
     try? FileManager.default.setAttributes([.modificationDate: entry.date], ofItemAtPath: file.path)
     return (revision, response)
   }
@@ -83,15 +85,15 @@ actor HlsSegmentStore {
     guard expectedRevision == revision, !response.body.isEmpty, response.body.count <= Self.maxSegmentBytes,
       response.status == 200 || response.status == 206 else { return }
     loadIndex()
-    let file = location(asset: asset, identity: identity)
-    guard entries?[file] == nil, let data = try? PropertyListEncoder().encode(response), data.count <= budget else { return }
+    let name = filename(asset: asset, identity: identity)
+    guard entries?[name] == nil, let data = try? PropertyListEncoder().encode(response), data.count <= budget else { return }
     evict(to: budget - data.count)
     guard bytes + data.count <= budget else { return }
     do {
       try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-      try data.write(to: file, options: .atomic)
+      try data.write(to: directory.appendingPathComponent(name), options: .atomic)
       let date = Date()
-      entries?[file] = Entry(size: data.count, date: date, asset: String(file.lastPathComponent.prefix(64)))
+      entries?[name] = Entry(size: data.count, date: date, asset: String(name.prefix(64)))
       bytes += data.count
     } catch {
       // Cache IO is optional for playback.
@@ -111,17 +113,18 @@ actor HlsSegmentStore {
 
   private func evict(to limit: Int) {
     guard bytes > limit, let entries else { return }
-    for (file, _) in entries.sorted(by: { $0.value.date < $1.value.date }) {
+    for (name, _) in entries.sorted(by: { $0.value.date < $1.value.date }) {
       if bytes <= limit { break }
-      remove(file)
+      remove(name)
     }
   }
 
-  private func remove(_ file: URL) {
+  private func remove(_ name: String) {
     let fm = FileManager.default
+    let file = directory.appendingPathComponent(name)
     if fm.fileExists(atPath: file.path) {
       do { try fm.removeItem(at: file) } catch { return }
     }
-    if let removed = entries?.removeValue(forKey: file) { bytes -= removed.size }
+    if let removed = entries?.removeValue(forKey: name) { bytes -= removed.size }
   }
 }

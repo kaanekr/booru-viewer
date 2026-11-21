@@ -67,7 +67,7 @@ struct HlsOrigin: Sendable {
     let query = components.queryItems ?? []
     let signingFields: Set<String> = ["validfrom", "validto", "hash"]
     if signingFields.isSubset(of: query.map(\.name)) {
-      let transient = signingFields.union(["ip", "rate", "burst"])
+      let transient = signingFields.union(["ip", "ipa", "rate", "burst"])
       let retained = query.filter { !transient.contains($0.name) }
       components.queryItems = retained.isEmpty ? nil : retained
     }

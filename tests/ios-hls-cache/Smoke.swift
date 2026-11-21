@@ -63,8 +63,8 @@ struct Smoke {
       throw SmokeFailure.assertion("Encrypted stream should fall back to normal playback")
     } catch HlsCacheError.unsupportedSource {}
 
-    let a = URL(string: "https://ev.phncdn.com/a.ts?validfrom=1&validto=2&hash=abc&quality=480")!
-    let renewed = URL(string: "https://ev.phncdn.com/a.ts?validfrom=3&validto=4&hash=xyz&quality=480")!
+    let a = URL(string: "https://ev.phncdn.com/a.ts?validfrom=1&validto=2&ipa=one&hash=abc&quality=480")!
+    let renewed = URL(string: "https://ev.phncdn.com/a.ts?validfrom=3&validto=4&ipa=two&hash=xyz&quality=480")!
     let other = URL(string: "https://ev.phncdn.com/a.ts?validfrom=3&validto=4&hash=xyz&quality=720")!
     try check(HlsOrigin.cacheIdentity(for: a) == HlsOrigin.cacheIdentity(for: renewed), "Recognized CDN signature renewal should reuse a segment")
     try check(HlsOrigin.cacheIdentity(for: other) != HlsOrigin.cacheIdentity(for: renewed), "Quality query must remain in the cache key")
@@ -78,11 +78,13 @@ struct Smoke {
     let revision = await cache.lookup(asset: "video-1", identity: "first").revision
     let response = HlsResponse(206, headers: ["Content-Range": "bytes 0-3/4"], body: Data([1, 2, 3, 4]))
     await cache.store(response, asset: "video-1", identity: "first", revision: revision)
+    let stored = await cache.lookup(asset: "video-1", identity: "first")
+    try check(stored.response?.body == response.body, "A completed range should be readable after writing it")
     let reopened = HlsSegmentStore(directory: dir)
+    let stats = await reopened.stats()
+    try check(stats["files"] == 1 && (stats["bytes"] ?? 0) > 0, "A cold cache should index the saved segment")
     let lookup = await reopened.lookup(asset: "video-1", identity: "first")
     try check(lookup.response?.body == response.body && lookup.response?.status == 206, "A completed range should persist on disk")
-    let stats = await reopened.stats()
-    try check(stats["files"] == 1 && (stats["bytes"] ?? 0) > 0, "Disk usage and distinct video count")
     await cache.clear()
     await cache.store(response, asset: "video-1", identity: "second", revision: revision)
     let clearest = await cache.stats()
