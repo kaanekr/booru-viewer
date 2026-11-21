@@ -750,3 +750,432 @@ test('VideoPlayerView falls back to local File.downloadFileAsync when streaming 
     await act(async () => { pageRoot.unmount(); });
   }
 });
+
+test('VideoPlayerView guards stale replaceAsync against URL change and shows Retry UI when replaceAsync rejects', async () => {
+  const eventHandlers = new Map();
+  let playCalls = 0;
+  let proxyResolve;
+  const mockPlayer = {
+    loop: false, muted: false, playing: false, duration: 10, currentTime: 0, timeUpdateEventInterval: 0.25,
+    play() { playCalls++; }, pause() {}, seekBy() {}, release() {},
+    replaceAsync: async (src) => {
+      if (src.uri.startsWith('https://proxy.example/')) {
+        return new Promise((r) => { proxyResolve = r; });
+      }
+      if (src.uri.includes('reject-me')) {
+        throw new Error('AVPlayer failed');
+      }
+    },
+  };
+  const load = createLoader({
+    react: React,
+    'react-native': {
+      ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'Modal', 'ScrollView', 'Text', 'TextInput', 'TouchableOpacity', 'TouchableWithoutFeedback', 'View'].map((n) => [n, n])),
+      Dimensions: { get: () => ({ width: 390, height: 844 }) },
+      useWindowDimensions: () => ({ width: 390, height: 844 }),
+      StyleSheet: { create: (v) => v, absoluteFill: {} },
+      Animated: { Value: class { setValue() {} stopAnimation() {} interpolate() { return 1; } }, View: 'AnimatedView', timing: () => ({ start: (cb) => cb?.() }), spring: () => ({ start: (cb) => cb?.() }) },
+      PanResponder: { create: () => ({ panHandlers: {} }) },
+      BackHandler: { addEventListener: () => ({ remove() {} }) },
+      Platform: { OS: 'web' }, Alert: { alert() {} }, Linking: {},
+    },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) },
+    'expo-screen-orientation': { lockAsync: async () => {}, OrientationLock: { PORTRAIT_UP: 'portrait' } },
+    expo: {
+      useEvent: (_t, _e, init) => init,
+      useEventListener: (_t, event, fn) => { eventHandlers.set(event, fn); },
+    },
+    'expo-file-system': {},
+    'expo-image': { Image: 'Image' },
+    'expo-video': {
+      useVideoPlayer: (_src, init) => { init?.(mockPlayer); return mockPlayer; },
+      VideoView: 'VideoView',
+    },
+    'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
+    'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
+    '../services/proxyService': {
+      proxyService: {
+        hasWorker: () => true,
+        isProxiedUrl: (u) => String(u).startsWith('https://proxy.example/'),
+        forceProxyUrl: (u) => `https://proxy.example/?url=${encodeURIComponent(u)}`,
+      },
+    },
+    '../theme/colors': { Colors: { dark: { primary: '#6366F1' } } },
+    '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    '../utils/media': {
+      isVideoPost: () => true, getMediaUrl: (u) => u, getMediaHeaders: () => ({}),
+      isImageMediaUrl: () => false, getImageUris: () => ({ sampleUri: '', fullUri: '', placeholderUri: '' }),
+      getVideoCandidates: (p) => [p.originalUrl], isUnsupportedOnIOS: () => false,
+      resolveGelbooruOriginalUrl: async () => null, resolveRealbooruVideoUrls: async () => null,
+      selectRealbooruPlayable: () => null, resolveRealDimensions: async () => null,
+      resolveXVideosVideoUrls: async () => null, resolveXHamsterVideoUrls: async () => null,
+      resolvePornhubVideoUrls: async () => null, selectPrimaryVideoCandidate: (r, c) => r || (Array.isArray(c) ? c[0] : null),
+      checkMp4UpgradeAvailable: async () => null,
+    },
+    '../services/sexcom': {}, '../services/hentaihavens': {}, '../services/nhentai': {},
+  });
+  const Viewer = load(path.resolve(__dirname, '../src/components/ImageViewerModal.tsx')).ImageViewerModal;
+  const post1 = {
+    id: 'v1', sourceId: 'gelbooru', sourceName: 'Gelbooru',
+    previewUrl: 'https://ex.com/1.jpg', sampleUrl: 'https://ex.com/1.mp4', originalUrl: 'https://ex.com/1.mp4',
+    width: 720, height: 1280, aspectRatio: 720 / 1280,
+  };
+  const post2 = {
+    id: 'v2', sourceId: 'gelbooru', sourceName: 'Gelbooru',
+    previewUrl: 'https://ex.com/2.jpg', sampleUrl: 'https://ex.com/reject-me.mp4', originalUrl: 'https://ex.com/reject-me.mp4',
+    width: 720, height: 1280, aspectRatio: 720 / 1280,
+  };
+  await act(async () => {
+    root = create(React.createElement(Viewer, {
+      posts: [post1, post2], initialIndex: 0, visible: true, asScreen: true, onClose() {}, onTagPress() {},
+    }));
+  });
+  const flatList = root.root.findByType('FlatList');
+  let pageRoot;
+  await act(async () => { pageRoot = create(flatList.props.renderItem({ item: post1, index: 0 })); });
+  try {
+    const playsBefore = playCalls;
+    // Trigger proxy fallback for post1, then switch URL before proxy resolves
+    await act(async () => { eventHandlers.get('statusChange')({ status: 'error' }); });
+    assert.ok(proxyResolve, 'proxy fallback should be in flight');
+
+    // Update page to post2 whose replaceAsync rejects -> must show Retry UI (not silent black screen)
+    await act(async () => {
+      pageRoot.update(flatList.props.renderItem({ item: post2, index: 0 }));
+    });
+    // Resolve stale proxy fallback from post1 -> must NOT call play()
+    const playsAfterSwitch = playCalls;
+    await act(async () => { proxyResolve(); await Promise.resolve(); });
+    assert.equal(playCalls, playsAfterSwitch);
+    assert.ok(playsBefore >= 1);
+    assert.ok(
+      pageRoot.root.findAllByType('Text').some((t) => String(t.props.children).includes('Retry')),
+      'rejected replaceAsync should surface Retry UI'
+    );
+  } finally {
+    await act(async () => { pageRoot.unmount(); });
+  }
+});
+
+test('VideoTimelineBar unmount mid-scrub releases scrubbing lock via onScrubbingChange(false)', async () => {
+  const scrubbingEvents = [];
+  const panConfigs = [];
+  const mockPlayer = {
+    loop: false, muted: false, playing: false, duration: 30, currentTime: 5, timeUpdateEventInterval: 0.25,
+    play() {}, pause() {}, seekBy() {}, release() {}, replaceAsync: async () => {},
+  };
+  const load = createLoader({
+    react: React,
+    'react-native': {
+      ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'Modal', 'ScrollView', 'Text', 'TextInput', 'TouchableOpacity', 'TouchableWithoutFeedback', 'View'].map((n) => [n, n])),
+      Dimensions: { get: () => ({ width: 390, height: 844 }) },
+      useWindowDimensions: () => ({ width: 390, height: 844 }),
+      StyleSheet: { create: (v) => v, absoluteFill: {} },
+      Animated: { Value: class { setValue() {} stopAnimation() {} interpolate() { return 1; } }, View: 'AnimatedView', timing: () => ({ start: (cb) => cb?.() }), spring: () => ({ start: (cb) => cb?.() }) },
+      PanResponder: {
+        create: (cfg) => {
+          panConfigs.push(cfg);
+          return { panHandlers: { __panCfg: cfg } };
+        },
+      },
+      BackHandler: { addEventListener: () => ({ remove() {} }) },
+      Platform: { OS: 'ios' }, Alert: { alert() {} }, Linking: {},
+    },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) },
+    'expo-screen-orientation': { lockAsync: async () => {}, OrientationLock: { PORTRAIT_UP: 'portrait' } },
+    expo: { useEvent: (_t, _e, init) => init, useEventListener() {} },
+    'expo-file-system': {},
+    'expo-image': { Image: 'Image' },
+    'expo-video': { useVideoPlayer: (_s, init) => { init?.(mockPlayer); return mockPlayer; }, VideoView: 'VideoView' },
+    'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
+    'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
+    '../services/proxyService': { proxyService: { hasWorker: () => false, isProxiedUrl: () => false, forceProxyUrl: (u) => u } },
+    '../theme/colors': { Colors: { dark: { primary: '#6366F1' } } },
+    '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    '../utils/media': {
+      isVideoPost: () => true, getMediaUrl: (u) => u, getMediaHeaders: () => ({}),
+      isImageMediaUrl: () => false, getImageUris: () => ({ sampleUri: '', fullUri: '', placeholderUri: '' }),
+      getVideoCandidates: (p) => [p.originalUrl], isUnsupportedOnIOS: () => false,
+      resolveGelbooruOriginalUrl: async () => null, resolveRealbooruVideoUrls: async () => null,
+      selectRealbooruPlayable: () => null, resolveRealDimensions: async () => null,
+      resolveXVideosVideoUrls: async () => null, resolveXHamsterVideoUrls: async () => null,
+      resolvePornhubVideoUrls: async () => null, selectPrimaryVideoCandidate: (r, c) => r || (Array.isArray(c) ? c[0] : null),
+      checkMp4UpgradeAvailable: async () => null,
+    },
+    '../services/sexcom': {}, '../services/hentaihavens': {}, '../services/nhentai': {},
+  });
+  const Viewer = load(path.resolve(__dirname, '../src/components/ImageViewerModal.tsx')).ImageViewerModal;
+  const videoPost = {
+    id: 'scrub1', sourceId: 'gelbooru', sourceName: 'Gelbooru',
+    previewUrl: 'https://ex.com/s.jpg', sampleUrl: 'https://ex.com/s.mp4', originalUrl: 'https://ex.com/s.mp4',
+    width: 720, height: 1280, aspectRatio: 720 / 1280,
+  };
+  await act(async () => {
+    root = create(React.createElement(Viewer, {
+      posts: [videoPost], initialIndex: 0, visible: true, asScreen: true,
+      onClose() {}, onTagPress() {},
+      onScrubbingChange: (v) => scrubbingEvents.push(v),
+    }));
+  });
+  const item = root.root.findByType('FlatList').props.renderItem({ item: videoPost, index: 0 });
+  let pageRoot;
+  await act(async () => { pageRoot = create(item); });
+  try {
+    // Scrubber PanResponder has onStartShouldSetPanResponder returning true
+    const scrubCfg = panConfigs.find((c) => c.onStartShouldSetPanResponder && c.onStartShouldSetPanResponder() === true);
+    assert.ok(scrubCfg, 'scrubber PanResponder should exist');
+    await act(async () => { scrubCfg.onPanResponderGrant({ nativeEvent: { pageX: 100 } }); });
+    assert.equal(scrubbingEvents.at(-1), true);
+  } finally {
+    // Unmount mid-scrub without firing Release/Terminate
+    await act(async () => { pageRoot.unmount(); });
+  }
+  assert.equal(scrubbingEvents.at(-1), false);
+});
+
+test('PostInfoModal fixes nhentai hyphenated tag exclusion, cancels stale tag status reads, and receives stable callbacks', async () => {
+  const excludedQueries = [];
+  const pendingFav = [];
+  const loadInfo = createLoader({
+    react: React,
+    'react-native': {
+      Animated: { Value: class { setValue() {} stopAnimation() {} interpolate() { return 0.5; } }, View: 'AnimatedView', timing: () => ({ start: (cb) => cb?.() }), spring: () => ({ start: (cb) => cb?.() }) },
+      Linking: { canOpenURL: async () => false, openURL: async () => {} },
+      Modal: 'Modal',
+      PanResponder: { create: () => ({ panHandlers: {} }) },
+      ScrollView: 'ScrollView',
+      StyleSheet: { create: (v) => v, absoluteFill: {} },
+      Text: 'Text',
+      TouchableOpacity: 'TouchableOpacity',
+      TouchableWithoutFeedback: 'TouchableWithoutFeedback',
+      useWindowDimensions: () => ({ width: 390, height: 844 }),
+      View: 'View',
+    },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) },
+    'lucide-react-native': new Proxy({}, { get: (_, n) => String(n) }),
+    'expo-haptics': { impactAsync() {}, notificationAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {}, NotificationFeedbackType: {} },
+    'expo-clipboard': { setStringAsync: async () => {} },
+    '../services/storage': {
+      StorageService: {
+        isFavoriteTag: (tag) => new Promise((r) => pendingFav.push({ tag, resolve: r })),
+        isBlacklistedTag: async () => false,
+        getImageQuality: async () => 'auto',
+      },
+    },
+    '../services/nhentai': { nhentaiTagQuery: (t, c) => `${c === 'artist' ? 'artist' : 'tag'}:"${t}"` },
+    '../services/hentaihavens': { hentaiHavenTagQuery: (t) => t, isHentaiHavenOfficialGenre: () => false },
+    '../utils/media': { resolveRealDimensions: async () => null },
+    '../utils/guards': { onlyStrings: (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []) },
+  });
+  const { PostInfoModal } = loadInfo(path.resolve(__dirname, '../src/components/PostInfoModal.tsx'));
+  const nhPost = {
+    id: 'nh_1', sourceId: 'nhentai', sourceName: 'nhentai',
+    previewUrl: 'https://t.nh/1.jpg', sampleUrl: 'https://t.nh/1.jpg', originalUrl: 'https://t.nh/1.jpg',
+    width: 800, height: 1200, aspectRatio: 800 / 1200,
+    tags: { copyright: [], character: [], artist: [], general: ['big-breasts', 'solo'], meta: [] },
+    allTags: ['big-breasts', 'solo'],
+  };
+  await act(async () => {
+    root = create(React.createElement(PostInfoModal, {
+      visible: true, useModal: false, post: nhPost,
+      onClose() {}, onSearchTag() {},
+      onExcludeTagFromSearch: (q) => excludedQueries.push(q),
+    }));
+  });
+  // Open menu for 'big-breasts' then immediately switch to 'solo' before first isFavoriteTag resolves
+  const tagRows = root.root.findAllByType('TouchableOpacity').filter((n) =>
+    n.findAllByType('Text').some((t) => t.props.children === 'big-breasts' || t.props.children === 'solo')
+  );
+  await act(async () => { tagRows[0].props.onLongPress({ nativeEvent: { pageY: 200 } }); });
+  await act(async () => { tagRows[1].props.onLongPress({ nativeEvent: { pageY: 240 } }); });
+  // Stale response for 'big-breasts' says true; fresh response for 'solo' says false
+  await act(async () => {
+    pendingFav[0].resolve(true);
+    pendingFav[1].resolve(false);
+    await Promise.resolve();
+  });
+  assert.ok(root.root.findAllByType('Text').some((t) => t.props.children === 'Pin to...'));
+
+  // Now open menu for 'big-breasts' and tap Exclude from Search -> must emit -tag:"big-breasts"
+  await act(async () => { tagRows[0].props.onLongPress({ nativeEvent: { pageY: 200 } }); });
+  const excludeBtn = root.root.findAllByType('TouchableOpacity').find((n) =>
+    n.findAllByType('Text').some((t) => t.props.children === 'Exclude from Search')
+  );
+  assert.ok(excludeBtn);
+  await act(async () => { excludeBtn.props.onPress(); });
+  assert.deepEqual(excludedQueries, ['-tag:"big-breasts"']);
+});
+
+test('PornhubWebViewResolver resets doneRef on pageUrl change and ignores late events after unmount', async () => {
+  const results = [];
+  const loadPh = createLoader({
+    react: React,
+    'react-native-webview': { WebView: 'WebView' },
+    '../services/pornhub': {
+      parsePornhubDetail: (chunk) => ({ high: chunk.includes('ok2') ? 'https://cdn.ph/2.mp4' : 'https://cdn.ph/1.mp4', hls: null, low: null }),
+    },
+  });
+  const { PornhubWebViewResolver } = loadPh(path.resolve(__dirname, '../src/components/PornhubWebViewResolver.tsx'));
+  await act(async () => {
+    root = create(React.createElement(PornhubWebViewResolver, {
+      pageUrl: 'https://www.pornhub.com/view_video.php?viewkey=1',
+      onResolve: (f) => results.push(['first', f?.high ?? null]),
+    }));
+  });
+  const wv1 = root.root.findByType('WebView');
+  await act(async () => {
+    wv1.props.onMessage({ nativeEvent: { data: JSON.stringify({ ok: true, chunk: 'ok1' }) } });
+  });
+  assert.deepEqual(results, [['first', 'https://cdn.ph/1.mp4']]);
+
+  // Changing pageUrl must reset doneRef and use updated onResolve callback
+  await act(async () => {
+    root.update(React.createElement(PornhubWebViewResolver, {
+      pageUrl: 'https://www.pornhub.com/view_video.php?viewkey=2',
+      onResolve: (f) => results.push(['second', f?.high ?? null]),
+    }));
+  });
+  const wv2 = root.root.findByType('WebView');
+  await act(async () => {
+    wv2.props.onMessage({ nativeEvent: { data: JSON.stringify({ ok: true, chunk: 'ok2' }) } });
+  });
+  assert.deepEqual(results, [['first', 'https://cdn.ph/1.mp4'], ['second', 'https://cdn.ph/2.mp4']]);
+
+  // Change URL again, unmount before message arrives -> late message must be ignored
+  await act(async () => {
+    root.update(React.createElement(PornhubWebViewResolver, {
+      pageUrl: 'https://www.pornhub.com/view_video.php?viewkey=3',
+      onResolve: (f) => results.push(['third', f?.high ?? null]),
+    }));
+  });
+  const staleOnMessage = root.root.findByType('WebView').props.onMessage;
+  await act(async () => { root.unmount(); });
+  root = null;
+  staleOnMessage({ nativeEvent: { data: JSON.stringify({ ok: true, chunk: 'ok3' }) } });
+  assert.equal(results.length, 2);
+});
+
+test('PostPageItem Pornhub rejection triggers WebView immediately and HentaiHaven failed EP switch allows retry', async () => {
+  let hhCalls = 0;
+  const load = createLoader({
+    react: React,
+    'react-native': {
+      ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'Modal', 'ScrollView', 'Text', 'TextInput', 'TouchableOpacity', 'TouchableWithoutFeedback', 'View'].map((n) => [n, n])),
+      Dimensions: { get: () => ({ width: 390, height: 844 }) },
+      useWindowDimensions: () => ({ width: 390, height: 844 }),
+      StyleSheet: { create: (v) => v, absoluteFill: {} },
+      Animated: { Value: class { setValue() {} stopAnimation() {} interpolate() { return 1; } }, View: 'AnimatedView', timing: () => ({ start: (cb) => cb?.() }), spring: () => ({ start: (cb) => cb?.() }) },
+      PanResponder: { create: () => ({ panHandlers: {} }) },
+      BackHandler: { addEventListener: () => ({ remove() {} }) },
+      Platform: { OS: 'ios' }, Alert: { alert() {} }, Linking: {},
+    },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) },
+    'expo-screen-orientation': { lockAsync: async () => {}, OrientationLock: { PORTRAIT_UP: 'portrait' } },
+    expo: { useEvent: (_t, _e, init) => init, useEventListener() {} },
+    'expo-file-system': {},
+    'expo-image': { Image: 'Image' },
+    'expo-video': {
+      useVideoPlayer: () => ({ loop: false, muted: false, playing: false, duration: 0, currentTime: 0, play() {}, pause() {}, seekBy() {}, release() {}, replaceAsync: async () => {} }),
+      VideoView: 'VideoView',
+    },
+    'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
+    'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
+    '../services/proxyService': { proxyService: { hasWorker: () => false, isProxiedUrl: () => false, forceProxyUrl: (u) => u } },
+    '../theme/colors': { Colors: { dark: { primary: '#6366F1' } } },
+    '../services/storage': {
+      StorageService: {
+        isFavorite: async () => false,
+        getImageQuality: async () => 'auto',
+        getLastWatchedEpisode: async () => null,
+        setLastWatchedEpisode: async () => {},
+      },
+    },
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' },
+    './PornhubWebViewResolver': { PornhubWebViewResolver: 'PornhubWebViewResolver' },
+    '../utils/media': {
+      isVideoPost: () => true, getMediaUrl: (u) => u, getMediaHeaders: () => ({}),
+      isImageMediaUrl: () => false, getImageUris: () => ({ sampleUri: '', fullUri: '', placeholderUri: '' }),
+      getVideoCandidates: () => [], isUnsupportedOnIOS: () => false,
+      resolveGelbooruOriginalUrl: async () => null, resolveRealbooruVideoUrls: async () => null,
+      selectRealbooruPlayable: () => null, resolveRealDimensions: async () => null,
+      resolveXVideosVideoUrls: async () => null, resolveXHamsterVideoUrls: async () => null,
+      resolvePornhubVideoUrls: async () => { throw new Error('network failed'); },
+      selectPrimaryVideoCandidate: (r) => r || null,
+      checkMp4UpgradeAvailable: async () => null,
+    },
+    '../services/sexcom': {},
+    '../services/hentaihavens': {
+      resolveHentaiHavenEpisodeUrls: async () => ({
+        hls: 'https://hh.cdn/ep1.m3u8',
+        episodes: [
+          { ep: 1, url: 'https://hentaihaven.xxx/ep-1' },
+          { ep: 2, url: 'https://hentaihaven.xxx/ep-2' },
+        ],
+      }),
+      listHentaiHavenEpisodes: async () => [],
+      resolveHentaiHavenEpisodeUrl: async () => {
+        hhCalls += 1;
+        if (hhCalls === 1) return null; // First tap fails
+        return { hls: 'https://hh.cdn/ep2.m3u8' }; // Retry succeeds
+      },
+    },
+    '../services/nhentai': {},
+  });
+  const Viewer = load(path.resolve(__dirname, '../src/components/ImageViewerModal.tsx')).ImageViewerModal;
+  const phPost = {
+    id: 'ph1', sourceId: 'pornhub', sourceName: 'Pornhub',
+    sourceLink: 'https://www.pornhub.com/view_video.php?viewkey=abc',
+    previewUrl: 'https://ph.cdn/t.jpg', sampleUrl: 'https://ph.cdn/t.jpg', originalUrl: '',
+    width: 640, height: 360, aspectRatio: 640 / 360,
+  };
+  await act(async () => {
+    root = create(React.createElement(Viewer, {
+      posts: [phPost], initialIndex: 0, visible: true, asScreen: true, onClose() {}, onTagPress() {},
+    }));
+  });
+  const phItem = root.root.findByType('FlatList').props.renderItem({ item: phPost, index: 0 });
+  let pageRoot;
+  await act(async () => { pageRoot = create(phItem); });
+  try {
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    assert.equal(pageRoot.root.findAllByType('PornhubWebViewResolver').length, 1);
+  } finally {
+    await act(async () => { pageRoot.unmount(); });
+  }
+
+  // HentaiHaven failed EP switch allows retrying same episode
+  const hhPost = {
+    id: 'hh1', sourceId: 'hentaihaven', sourceName: 'HentaiHaven',
+    sourceLink: 'https://hentaihaven.xxx/watch/series-1',
+    previewUrl: 'https://hh.cdn/cover.jpg', sampleUrl: 'https://hh.cdn/cover.jpg', originalUrl: '',
+    width: 640, height: 360, aspectRatio: 640 / 360,
+  };
+  await act(async () => {
+    root.update(React.createElement(Viewer, {
+      posts: [hhPost], initialIndex: 0, visible: true, asScreen: true, onClose() {}, onTagPress() {},
+    }));
+  });
+  const hhItem = root.root.findByType('FlatList').props.renderItem({ item: hhPost, index: 0 });
+  await act(async () => { pageRoot = create(hhItem); });
+  try {
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    const textOf = (t) => (Array.isArray(t.props.children) ? t.props.children.join('') : String(t.props.children));
+    const ep2Btn = pageRoot.root.findAllByType('TouchableOpacity').find((n) =>
+      n.findAllByType('Text').some((t) => textOf(t).includes('EP 2'))
+    );
+    assert.ok(ep2Btn, 'EP 2 button should render');
+    // First tap fails (returns null)
+    await act(async () => { ep2Btn.props.onPress(); await Promise.resolve(); await Promise.resolve(); });
+    assert.equal(hhCalls, 1);
+    // Second tap on EP 2 must NOT be locked out and should retry + succeed
+    const ep2BtnRetry = pageRoot.root.findAllByType('TouchableOpacity').find((n) =>
+      n.findAllByType('Text').some((t) => textOf(t).includes('EP 2'))
+    );
+    await act(async () => { ep2BtnRetry.props.onPress(); await Promise.resolve(); await Promise.resolve(); });
+    assert.equal(hhCalls, 2);
+  } finally {
+    await act(async () => { pageRoot.unmount(); });
+  }
+});

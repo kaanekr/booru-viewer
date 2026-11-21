@@ -202,3 +202,77 @@ test('PasscodeModal + LockScreen completes multi-step setup and keeps Modal moun
   });
   assert.equal(root.root.findByType('Modal').props.visible, false);
 });
+
+test('LockScreen auto-prompt uses fresh biometryType, blocks concurrent prompts, and guards delete during error/submit', async () => {
+  const bioPrompts = [];
+  let resolveBio;
+  let resolveVerify;
+  const animatedStub = {
+    Value: class { constructor(v) { this.v = v; } },
+    View: 'AnimatedView',
+    timing: () => ({ start: (cb) => cb?.() }),
+    sequence: () => ({ start: (cb) => cb?.() }),
+  };
+  const { LockScreen } = createLoader({
+    react: React,
+    'react-native': {
+      Animated: animatedStub,
+      StyleSheet: { create: (v) => v },
+      Text: 'Text',
+      TouchableOpacity: 'TouchableOpacity',
+      View: 'View',
+    },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) },
+    'expo-status-bar': { StatusBar: 'ExpoStatusBar' },
+    'lucide-react-native': new Proxy({}, { get: (_, n) => String(n) }),
+    'expo-haptics': { impactAsync: async () => {}, notificationAsync: async () => {}, ImpactFeedbackStyle: {}, NotificationFeedbackType: {} },
+    '../services/securityService': {
+      SecurityService: {
+        getConfig: async () => ({ enabled: true, useBiometrics: true }),
+        getBiometricStatus: async () => ({ hasHardware: true, isEnrolled: true, biometryType: 'Face ID' }),
+        authenticateWithBiometrics: (msg) => {
+          bioPrompts.push(msg);
+          return new Promise((r) => { resolveBio = r; });
+        },
+        verifyPasscode: () => new Promise((r) => { resolveVerify = r; }),
+      },
+    },
+    '../theme/colors': { Colors: { dark: { textMuted: '#888' } } },
+  })(path.resolve(__dirname, '../src/components/LockScreen.tsx'));
+
+  await act(async () => {
+    root = create(React.createElement(LockScreen, { mode: 'unlock', onSuccess() {} }));
+  });
+  await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+  assert.deepEqual(bioPrompts, ['Unlock with Face ID']);
+
+  // Tapping biometric button while prompt is already in-flight must not start a concurrent prompt
+  const bioBtn = root.root.findAllByType('TouchableOpacity').find((n) => n.findAllByType('ScanFace').length > 0);
+  assert.ok(bioBtn);
+  await act(async () => { bioBtn.props.onPress({ nativeEvent: {} }); });
+  assert.equal(bioPrompts.length, 1);
+
+  await act(async () => { resolveBio(false); await Promise.resolve(); });
+
+  // Enter 4 digits -> in-flight verification -> delete must be ignored while submitting
+  const pressDigit = async (digit) => {
+    const btn = root.root.findAllByType('TouchableOpacity').find((n) =>
+      n.findAllByType('Text').some((t) => t.props.children === digit)
+    );
+    await act(async () => { btn.props.onPress(); });
+  };
+  for (const d of ['1', '2', '3', '4']) await pressDigit(d);
+  const delBtnWhileSubmitting = root.root.findAllByType('TouchableOpacity').find((n) => n.findAllByType('Delete').length > 0);
+  assert.ok(delBtnWhileSubmitting);
+  await act(async () => { delBtnWhileSubmitting.props.onPress(); });
+
+  // Complete verification as failed -> enters error state -> delete must remain blocked during error shake/timer
+  await act(async () => { resolveVerify(false); await Promise.resolve(); });
+  assert.ok(root.root.findAllByType('Text').some((t) => t.props.children === 'Incorrect Passcode'));
+  const delBtnDuringError = root.root.findAllByType('TouchableOpacity').find((n) => n.findAllByType('Delete').length > 0);
+  if (delBtnDuringError) {
+    await act(async () => { delBtnDuringError.props.onPress(); });
+  }
+  // Still shows error message because delete was ignored during error state
+  assert.ok(root.root.findAllByType('Text').some((t) => t.props.children === 'Incorrect Passcode'));
+});

@@ -58,7 +58,7 @@ interface TagItemData {
   category: TagCategory;
 }
 
-export const PostInfoModal: React.FC<PostInfoModalProps> = ({
+export const PostInfoModal: React.FC<PostInfoModalProps> = React.memo(({
   visible,
   post,
   onClose,
@@ -112,10 +112,23 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   }, [visible]);
 
   useEffect(() => {
-    if (selectedTag) {
-      StorageService.isFavoriteTag(selectedTag.name).then(setIsTagFav);
-      StorageService.isBlacklistedTag(selectedTag.name).then(setIsTagBlacklisted);
-    }
+    setIsTagFav(false);
+    setIsTagBlacklisted(false);
+    if (!selectedTag) return;
+    let active = true;
+    StorageService.isFavoriteTag(selectedTag.name)
+      .then((val) => {
+        if (active) setIsTagFav(val);
+      })
+      .catch(() => {});
+    StorageService.isBlacklistedTag(selectedTag.name)
+      .then((val) => {
+        if (active) setIsTagBlacklisted(val);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
   }, [selectedTag]);
 
   // Show which quality mode matches the on-screen image:
@@ -123,9 +136,16 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   const [viewQuality, setViewQuality] = useState<ImageQuality>('auto');
 
   useEffect(() => {
-    if (visible) {
-      StorageService.getImageQuality().then(setViewQuality);
-    }
+    if (!visible) return;
+    let active = true;
+    StorageService.getImageQuality()
+      .then((q) => {
+        if (active) setViewQuality(q);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
   }, [visible]);
 
   const showToast = useCallback((msg: string) => {
@@ -256,44 +276,52 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     [translateY, dismissThen, setNativeScrollEnabled]
   );
 
-  const backdropOpacity = translateY.interpolate({
-    inputRange: [0, Math.max(1, sheetMaxHeight)],
-    outputRange: [0.55, 0],
-    extrapolate: 'clamp',
-  });
+  const backdropOpacity = useMemo(
+    () =>
+      translateY.interpolate({
+        inputRange: [0, Math.max(1, sheetMaxHeight)],
+        outputRange: [0.55, 0],
+        extrapolate: 'clamp',
+      }),
+    [translateY, sheetMaxHeight]
+  );
 
   // Build ordered tag list with categories
-  const allTagItems: TagItemData[] = [];
-  const seen = new Set<string>();
+  const allTagItems = useMemo<TagItemData[]>(() => {
+    const items: TagItemData[] = [];
+    const seen = new Set<string>();
 
-  const addCategoryTags = (tags: unknown, category: TagCategory) => {
-    onlyStrings(tags).forEach((t) => {
-      const clean = t.trim();
-      if (clean && !seen.has(clean)) {
-        seen.add(clean);
-        allTagItems.push({ name: clean, category });
-      }
-    });
-  };
-
-  if (post) {
-    addCategoryTags(post.tags?.copyright || [], 'copyright');
-    addCategoryTags(post.tags?.character || [], 'character');
-    addCategoryTags(post.tags?.artist || [], 'artist');
-    addCategoryTags(post.tags?.general || [], 'general');
-    addCategoryTags(post.tags?.meta || [], 'meta');
-
-    // Fallback for uncategorized
-    if (allTagItems.length === 0 && post.allTags && post.allTags.length > 0) {
-      onlyStrings(post.allTags).forEach((t) => {
+    const addCategoryTags = (tags: unknown, category: TagCategory) => {
+      onlyStrings(tags).forEach((t) => {
         const clean = t.trim();
         if (clean && !seen.has(clean)) {
           seen.add(clean);
-          allTagItems.push({ name: clean, category: 'general' });
+          items.push({ name: clean, category });
         }
       });
+    };
+
+    if (post) {
+      addCategoryTags(post.tags?.copyright || [], 'copyright');
+      addCategoryTags(post.tags?.character || [], 'character');
+      addCategoryTags(post.tags?.artist || [], 'artist');
+      addCategoryTags(post.tags?.general || [], 'general');
+      addCategoryTags(post.tags?.meta || [], 'meta');
+
+      // Fallback for uncategorized
+      if (items.length === 0 && post.allTags && post.allTags.length > 0) {
+        onlyStrings(post.allTags).forEach((t) => {
+          const clean = t.trim();
+          if (clean && !seen.has(clean)) {
+            seen.add(clean);
+            items.push({ name: clean, category: 'general' });
+          }
+        });
+      }
     }
-  }
+
+    return items;
+  }, [post]);
 
   const getTagColor = (category: TagCategory, name?: string) => {
     // HentaiHaven official genres (/genres/) stand apart from other general tags
@@ -431,7 +459,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     const isHentaiHavenEx = post?.sourceId === 'hentaihaven' && !/^(-|[a-z][a-z-]*:)/i.test(tag);
     const query = isRedGifsArtist(tag, category)
       ? `-user:${tag}`
-      : post?.sourceId === 'nhentai' && !/^[a-z][a-z-]*:|-/i.test(tag)
+      : post?.sourceId === 'nhentai' && !/^(-|[a-z][a-z-]*:)/i.test(tag)
         ? `-${nhentaiTagQuery(tag, category)}`
         : isHentaiHavenEx
           ? `-${hentaiHavenTagQuery(tag, category)}`
@@ -952,7 +980,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
       {sheetContent}
     </Modal>
   );
-};
+});
 
 const styles = StyleSheet.create({
   backdropContainer: {
