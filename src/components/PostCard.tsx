@@ -69,8 +69,6 @@ const isCrispCoverCandidate = (u: string | undefined) =>
 const coverVisibleStyle = { opacity: 1 };
 const coverHiddenStyle = { opacity: 0 };
 const EMPTY_FAILED_FRAMES: Set<string> = new Set();
-const MEASURED_ASPECT_CACHE = new Map<string, number>();
-const MAX_MEASURED_ASPECT_ENTRIES = 600;
 
 const PostCardComponent: React.FC<PostCardProps> = ({
   post,
@@ -98,20 +96,12 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     const t = setTimeout(releaseSlot, 8000);
     return () => clearTimeout(t);
   }, [canLoad, releaseSlot]);
-  const postKey = React.useMemo(() => getPostKey(post), [post.sourceId, post.id]);
-  const [measuredAspect, setMeasuredAspect] = React.useState<number | undefined>(() =>
-    MEASURED_ASPECT_CACHE.get(postKey)
-  );
-  React.useEffect(() => {
-    const cached = MEASURED_ASPECT_CACHE.get(postKey);
-    setMeasuredAspect((prev) => (prev === cached ? prev : cached));
-  }, [postKey]);
-
-  // Clamp aspect ratio between 0.6 and 1.4 for balanced Gelbooru-style masonry presentation.
-  // Sources that scrape HTML without width/height (e.g. Realbooru, Pornhub, Sex.com) update
-  // smoothly to their real image ratio on first cover load and stay cached across scrolls.
-  const safeAspectRatio = Math.max(0.6, Math.min(1.4, measuredAspect ?? (post.aspectRatio || 0.75)));
+  // Clamp aspect ratio between 0.6 and 1.4 for balanced masonry presentation.
+  // Keep card height fixed to post.aspectRatio (matching layoutMap placeholders) so
+  // image loads never cause mid-scroll column jumps or stutter.
+  const safeAspectRatio = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75));
   const cardHeight = fixedHeight ?? resolvedColumnWidth / safeAspectRatio;
+  const postKey = React.useMemo(() => getPostKey(post), [post.sourceId, post.id]);
 
   const isWebm = React.useMemo(
     () =>
@@ -241,35 +231,6 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     setImageFailed(false);
   }, [primaryRaw, post.sourceId, post.id]);
 
-  const handleImageLoad = React.useCallback(
-    (e: any) => {
-      if (fixedHeight !== undefined) return;
-      const w = e?.source?.width;
-      const h = e?.source?.height;
-      if (typeof w !== 'number' || typeof h !== 'number' || w <= 0 || h <= 0) return;
-      const ratio = w / h;
-      if (!Number.isFinite(ratio) || ratio < 0.2 || ratio > 5) return;
-      const clampedNew = Math.max(0.6, Math.min(1.4, ratio));
-      const clampedBase = Math.max(0.6, Math.min(1.4, post.aspectRatio || 0.75));
-      if (Math.abs(clampedNew - clampedBase) <= 0.03) return;
-      if (MEASURED_ASPECT_CACHE.size >= MAX_MEASURED_ASPECT_ENTRIES && !MEASURED_ASPECT_CACHE.has(postKey)) {
-        const oldest = MEASURED_ASPECT_CACHE.keys().next().value;
-        if (oldest !== undefined) MEASURED_ASPECT_CACHE.delete(oldest);
-      }
-      MEASURED_ASPECT_CACHE.set(postKey, ratio);
-      const apply = () =>
-        setMeasuredAspect((prev) =>
-          prev !== undefined && Math.abs(Math.max(0.6, Math.min(1.4, prev)) - clampedNew) <= 0.01 ? prev : ratio
-        );
-      if (typeof React.startTransition === 'function') {
-        React.startTransition(apply);
-      } else {
-        apply();
-      }
-    },
-    [fixedHeight, post.aspectRatio, postKey]
-  );
-
   const handleImageError = React.useCallback(() => {
     releaseSlot();
     const tried = triedUrisRef.current;
@@ -382,7 +343,6 @@ const PostCardComponent: React.FC<PostCardProps> = ({
           autoplay={false}
           cachePolicy="memory-disk"
           allowDownscaling={true}
-          onLoad={handleImageLoad}
           onLoadEnd={releaseSlot}
           onError={handleImageError}
         />
