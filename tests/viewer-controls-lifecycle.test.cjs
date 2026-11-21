@@ -38,6 +38,7 @@ function setup(storageOverrides = {}) {
     '../utils/media': {
       isVideoPost: () => false,
       getMediaUrl: (url) => url,
+      getImageCacheKey: (url) => url,
       getMediaHeaders: () => ({}),
       isImageMediaUrl: () => true,
       getImageUris: () => [],
@@ -484,7 +485,7 @@ test('nhentai manga uses real aspect ratio and deduplicates page indicator updat
     '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
     './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
     '../utils/media': {
-      isVideoPost: () => false, getMediaUrl: (u) => u, getMediaHeaders: () => ({}),
+      isVideoPost: () => false, getMediaUrl: (u) => u, getImageCacheKey: (u) => u, getMediaHeaders: () => ({}),
       isImageMediaUrl: () => true, getImageUris: () => ({ sampleUri: '', fullUri: '', placeholderUri: '' }),
       getVideoCandidates: () => [], isUnsupportedOnIOS: () => false,
       resolveGelbooruOriginalUrl: async () => null, resolveRealbooruVideoUrls: async () => null,
@@ -578,7 +579,7 @@ test('interactive edge-swipe, vertical pull-to-dismiss, and 1:1 pull-up info she
     '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
     './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
     '../utils/media': {
-      isVideoPost: () => false, getMediaUrl: (u) => u, getMediaHeaders: () => ({}),
+      isVideoPost: () => false, getMediaUrl: (u) => u, getImageCacheKey: (u) => u, getMediaHeaders: () => ({}),
       isImageMediaUrl: () => true, getImageUris: () => ({ sampleUri: 'https://x.test/s.jpg', fullUri: 'https://x.test/f.jpg', placeholderUri: 'https://x.test/p.jpg' }),
       getVideoCandidates: () => [], isUnsupportedOnIOS: () => false,
       resolveGelbooruOriginalUrl: async () => null, resolveRealbooruVideoUrls: async () => null,

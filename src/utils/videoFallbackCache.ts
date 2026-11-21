@@ -64,6 +64,7 @@ export function getVideoBudgetBytes(limitMb: number): number {
 }
 
 export async function enforceVideoCacheLimit(limitMb: number, protectedFilename?: string): Promise<void> {
+  await syncNativeVideoCacheSize(limitMb);
   const dir = getVideoDir();
   if (!dir) return;
 
@@ -114,37 +115,116 @@ export async function enforceVideoCacheLimit(limitMb: number, protectedFilename?
   } catch {}
 }
 
-export function getVideoCacheStats(): { bytes: number; files: number } {
-  const dir = getVideoDir();
-  if (!dir) return { bytes: 0, files: 0 };
+type ExpoVideoCacheApi = {
+  setVideoCacheSizeAsync?: (sizeBytes: number) => Promise<void>;
+  clearVideoCacheAsync?: () => Promise<void>;
+  getCurrentVideoCacheSize?: () => number;
+};
+
+function getExpoVideoCacheApi(): ExpoVideoCacheApi | null {
   try {
-    let bytes = 0;
-    let files = 0;
-    for (const item of dir.list()) {
-      const name = (item as any).name as string | undefined;
-      if (!name || name === 'index.json') continue;
-      const size = (item as any).size || 0;
-      if (size > 0) {
-        bytes += size;
-        files++;
-      }
-    }
-    return { bytes, files };
+    // Lazy require keeps pure-Node tests without expo-video mocks working cleanly.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    return require('expo-video') as ExpoVideoCacheApi;
   } catch {
-    return { bytes: 0, files: 0 };
+    return null;
   }
+}
+
+/**
+ * Returns true when a video URL is safe to pass `useCaching: true` to expo-video.
+ * Per Expo SDK 58 docs, iOS AVPlayer cannot cache HLS (.m3u8) streams, and local
+ * file:// URIs are already on disk.
+ */
+export function canUseExpoVideoCache(url: string | null | undefined): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return false;
+
+  let candidate = trimmed;
+  try {
+    const parsed = new URL(trimmed);
+    const wrapped = parsed.searchParams.get('url');
+    if (wrapped && /^https?:\/\//i.test(wrapped)) {
+      candidate = wrapped;
+    }
+  } catch {
+    // fall through with trimmed URL
+  }
+
+  const lower = candidate.toLowerCase();
+  if (/\.m3u8(?:$|[?#&])|\.mpd(?:$|[?#&])|\/hls\/|[?&](?:format|type)=hls(?:$|&)/i.test(lower)) {
+    return false;
+  }
+  return true;
+}
+
+export async function syncNativeVideoCacheSize(limitMb?: number): Promise<void> {
+  const api = getExpoVideoCacheApi();
+  if (typeof api?.setVideoCacheSizeAsync !== 'function') return;
+  try {
+    const effectiveMb =
+      typeof limitMb === 'number'
+        ? limitMb
+        : typeof StorageService?.getCacheLimitMb === 'function'
+          ? await StorageService.getCacheLimitMb()
+          : DEFAULT_CACHE_LIMIT_MB;
+    await api.setVideoCacheSizeAsync(getVideoBudgetBytes(effectiveMb));
+  } catch {
+    // expo-video throws if a VideoPlayer instance is currently active; ignore safely.
+  }
+}
+
+export function getVideoCacheStats(): { bytes: number; files: number } {
+  let bytes = 0;
+  let files = 0;
+  const dir = getVideoDir();
+  if (dir) {
+    try {
+      for (const item of dir.list()) {
+        const name = (item as any).name as string | undefined;
+        if (!name || name === 'index.json') continue;
+        const size = (item as any).size || 0;
+        if (size > 0) {
+          bytes += size;
+          files++;
+        }
+      }
+    } catch {}
+  }
+
+  const api = getExpoVideoCacheApi();
+  if (typeof api?.getCurrentVideoCacheSize === 'function') {
+    try {
+      const nativeBytes = api.getCurrentVideoCacheSize();
+      if (typeof nativeBytes === 'number' && Number.isFinite(nativeBytes) && nativeBytes > 0) {
+        bytes += nativeBytes;
+      }
+    } catch {}
+  }
+
+  return { bytes, files };
 }
 
 export async function clearVideoCache(): Promise<void> {
   const dir = getVideoDir();
-  if (!dir) return;
-  try {
-    for (const entry of dir.list()) {
-      try {
-        entry.delete();
-      } catch {}
+  if (dir) {
+    try {
+      for (const entry of dir.list()) {
+        try {
+          entry.delete();
+        } catch {}
+      }
+    } catch {}
+  }
+  const api = getExpoVideoCacheApi();
+  if (typeof api?.clearVideoCacheAsync === 'function') {
+    try {
+      await api.clearVideoCacheAsync();
+    } catch {
+      // Ignored if a VideoPlayer instance is still alive.
     }
-  } catch {}
+  }
 }
 
 /**

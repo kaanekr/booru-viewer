@@ -55,6 +55,7 @@ function setup({ onNavRender } = {}) {
       useSource: () => React.useContext(SourceCtx),
     },
     './src/utils/gridPreviews': { setGridPreviewsEnabled() {} },
+    './src/utils/videoFallbackCache': { syncNativeVideoCacheSize: async () => {} },
     './src/utils/freezeProbe': { startFreezeProbe() {}, updateFreezeProbe() {}, recordFreezeEvent() {}, recordRootTouch() {} },
   };
   for (const name of ['Viewer', 'SearchDetail', 'Feed', 'Search', 'Favorites', 'Settings']) mocks[`./src/screens/${name}Screen`] = { [`${name}Screen`]: name };

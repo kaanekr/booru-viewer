@@ -353,3 +353,54 @@ test('SettingsScreen Storage & backup lets user pick preset, enter custom MB lim
   assert.ok(cacheClears.includes('resolve'));
   assert.ok(cacheClears.includes('posts'));
 });
+
+test('canUseExpoVideoCache enables caching for direct/proxied MP4s, disables for HLS/DASH/file, and syncs native expo-video cache', async () => {
+  const fs = createFakeFileSystem();
+  let nativeSizeBytes = 12 * 1024 * 1024;
+  const setSizeCalls = [];
+  let clearCalls = 0;
+
+  const load = createLoader({
+    'expo-file-system': fs.module,
+    'expo-video': {
+      setVideoCacheSizeAsync: async (bytes) => { setSizeCalls.push(bytes); },
+      getCurrentVideoCacheSize: () => nativeSizeBytes,
+      clearVideoCacheAsync: async () => { clearCalls += 1; nativeSizeBytes = 0; },
+    },
+    '../services/storage': {
+      DEFAULT_CACHE_LIMIT_MB: 512,
+      StorageService: {
+        getCacheLimitMb: async () => 500,
+      },
+    },
+  });
+  const videoCache = load(path.resolve(__dirname, '../src/utils/videoFallbackCache.ts'));
+
+  // Direct MP4 / MOV / proxied MP4 -> cacheable
+  assert.equal(videoCache.canUseExpoVideoCache('https://api-cdn-mp4.rule34.xxx/images/1/a.mp4'), true);
+  assert.equal(videoCache.canUseExpoVideoCache('https://media.redgifs.com/FooBar.mp4'), true);
+  assert.equal(
+    videoCache.canUseExpoVideoCache(`https://my-worker.workers.dev/?url=${encodeURIComponent('https://realbooru.com/images/1/a.mp4')}`),
+    true
+  );
+
+  // HLS / DASH / proxied HLS / local file -> NOT cacheable via expo-video
+  assert.equal(videoCache.canUseExpoVideoCache('https://cdn.test/video/master.m3u8?token=abc'), false);
+  assert.equal(
+    videoCache.canUseExpoVideoCache(`https://my-worker.workers.dev/?url=${encodeURIComponent('https://cdn.test/video/master.m3u8')}`),
+    false
+  );
+  assert.equal(videoCache.canUseExpoVideoCache('https://cdn.test/video/manifest.mpd'), false);
+  assert.equal(videoCache.canUseExpoVideoCache('file:///cache/video-fallback/v_123.mp4'), false);
+  assert.equal(videoCache.canUseExpoVideoCache(''), false);
+
+  // Native expo-video cache size is included in getVideoCacheStats and synced via enforceVideoCacheLimit
+  assert.equal(videoCache.getVideoCacheStats().bytes, 12 * 1024 * 1024);
+  await videoCache.enforceVideoCacheLimit(500); // 60% of 500 MB = 300 MB
+  assert.deepEqual(setSizeCalls, [300 * 1024 * 1024]);
+
+  // clearVideoCache also clears native expo-video cache
+  await videoCache.clearVideoCache();
+  assert.equal(clearCalls, 1);
+  assert.equal(videoCache.getVideoCacheStats().bytes, 0);
+});

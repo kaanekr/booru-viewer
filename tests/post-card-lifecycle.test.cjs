@@ -67,8 +67,10 @@ function loadCard(options = {}) {
     '../theme/colors': { Colors: { dark: {} } },
     '../utils/media': {
       getMediaUrl: (url) => url || '', getMediaHeaders: () => ({}),
+      getImageCacheKey: (url) => url || '',
       isUnsupportedOnIOS: (url) => /\.webm(?:\?|$)/i.test(url),
     },
+    '../utils/videoFallbackCache': { canUseExpoVideoCache: (url) => /^https?:\/\//i.test(String(url || '')) && !/\.m3u8/i.test(String(url || '')) },
     '../utils/guards': { urlEndsWith: (url, ...extensions) =>
       typeof url === 'string' && extensions.some((ext) => url.split('?')[0].toLowerCase().endsWith(ext)) },
     '../services/proxyService': { proxyService: {

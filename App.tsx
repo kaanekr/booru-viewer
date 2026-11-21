@@ -27,6 +27,7 @@ import type { RootStackParamList, TabParamList } from './src/navigation/types';
 import { SourceProvider, useSource } from './src/context/SourceContext';
 import { MediaPlaybackContext, useAppForeground } from './src/context/MediaPlaybackContext';
 import { setGridPreviewsEnabled } from './src/utils/gridPreviews';
+import { syncNativeVideoCacheSize } from './src/utils/videoFallbackCache';
 import { ViewerScreen } from './src/screens/ViewerScreen';
 import { SearchDetailScreen } from './src/screens/SearchDetailScreen';
 
@@ -246,6 +247,7 @@ function MainApp() {
         const [, isPasscodeSet] = await Promise.all([
           proxyService.init(),
           SecurityService.isPasscodeEnabled(),
+          syncNativeVideoCacheSize(),
         ]);
 
         if (isPasscodeSet) {
