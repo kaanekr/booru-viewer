@@ -26,7 +26,6 @@ class ProxyService {
     /videos\d*\.sex\.com/i,
     /premium-videos\d*\.sex\.com/i,
     /nhentai\.net/i,
-    /e\d*\.cum\.st/i,
   ];
 
   /** Does the raw URL point to a TLS-fragile CDN? */

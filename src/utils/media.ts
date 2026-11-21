@@ -216,6 +216,11 @@ export function normalizeBooruMediaUrl(url: string | undefined): string {
     u = u.replace(/([._-])av1([._-])/gi, '$1h264$2').replace(/\.av1\./gi, '.h264.');
   }
 
+  // 3. Cum.st CDN migration: e1.cum.st DNS is retired (530); active media CDN is cdn.cum.st
+  if (/^https?:\/\/e\d*\.cum\.st\//i.test(u)) {
+    u = u.replace(/^https?:\/\/e\d*\.cum\.st\//i, 'https://cdn.cum.st/');
+  }
+
   return u;
 }
 
