@@ -15,6 +15,7 @@ import { GridColumn, useLoadGate } from '../utils/imageLoadGate';
 import { trackGridPlayer, recordFreezeEvent } from '../utils/freezeProbe';
 import { useGridPreviewsEnabled, markPreviewFailure, isPreviewBlocked, clearPreviewFailure } from '../utils/gridPreviews';
 import { getGridPreviewVideoCandidates, getGridPreviewFrames } from '../utils/gridPreviewMedia';
+import { canUseExpoVideoCache } from '../utils/videoFallbackCache';
 
 interface PostCardProps {
   post: BooruPost;
@@ -419,13 +420,14 @@ const CardVideoPreview: React.FC<{
   onError: (failedUri: string, proxyAttempted: boolean) => void;
 }> = React.memo(({ url, onReady, onFirstFrame, onError }) => {
   React.useEffect(() => trackGridPlayer(), []);
-  const videoSource = React.useMemo(
-    () => ({
-      uri: getMediaUrl(url) || url,
+  const videoSource = React.useMemo(() => {
+    const uri = getMediaUrl(url) || url;
+    return {
+      uri,
       headers: getMediaHeaders(url),
-    }),
-    [url]
-  );
+      useCaching: canUseExpoVideoCache(uri),
+    };
+  }, [url]);
 
   const player = useVideoPlayer(videoSource, (p) => {
     p.loop = true;
@@ -474,7 +476,12 @@ const CardVideoPreview: React.FC<{
       onError(currentUri, true);
       return;
     }
-    player.replaceAsync({ uri: getMediaUrl(viaProxy) || viaProxy, headers: getMediaHeaders(viaProxy) })
+    const proxyUri = getMediaUrl(viaProxy) || viaProxy;
+    player.replaceAsync({
+      uri: proxyUri,
+      headers: getMediaHeaders(viaProxy),
+      useCaching: canUseExpoVideoCache(proxyUri),
+    })
       .catch(() => { if (mountedRef.current) onError(currentUri, true); });
   });
 

@@ -47,7 +47,7 @@ import { Colors } from '../theme/colors';
 import { StorageService, ImageQuality } from '../services/storage';
 import { getPostKey } from '../utils/postIdentity';
 import { isGifMediaPost } from '../utils/gifMedia';
-import { downloadVideoViaAppSession } from '../utils/videoFallbackCache';
+import { canUseExpoVideoCache, downloadVideoViaAppSession } from '../utils/videoFallbackCache';
 import { TagChip } from './TagChip';
 import { PostInfoModal } from './PostInfoModal';
 import { PornhubWebViewResolver } from './PornhubWebViewResolver';
@@ -893,7 +893,7 @@ const MangaPageImage: React.FC<{
           source={{
             uri: getMediaUrl(src) || src,
             headers: getMediaHeaders(src),
-            cacheKey: `${src}:manga-page`,
+            cacheKey: `${getImageCacheKey(src)}:manga-page`,
           }}
           style={{ width, height }}
           contentFit="contain"
@@ -2601,6 +2601,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
     () => ({
       uri: url,
       headers: getMediaHeaders(url),
+      useCaching: canUseExpoVideoCache(url),
     }),
     [url]
   );
@@ -2674,7 +2675,11 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
         activeMediaUriRef.current = viaProxy;
         (async () => {
           try {
-            await player.replaceAsync({ uri: viaProxy, headers: getMediaHeaders(viaProxy) });
+            await player.replaceAsync({
+              uri: viaProxy,
+              headers: getMediaHeaders(viaProxy),
+              useCaching: canUseExpoVideoCache(viaProxy),
+            });
             if (!mountedRef.current) return;
             if (!suspendedRef.current) player.play();
           } catch (e) {
