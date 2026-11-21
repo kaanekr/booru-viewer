@@ -1737,7 +1737,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
     }
 
     const now = Date.now();
-    const DOUBLE_TAP_DELAY = 190;
+    const DOUBLE_TAP_DELAY = 300;
 
     if (now - lastTapRef.current < DOUBLE_TAP_DELAY) {
       // Clear pending single tap timer
@@ -1797,7 +1797,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
 
   const handleMangaDoubleTap = (event: any) => {
     const now = Date.now();
-    const DOUBLE_TAP_DELAY = 190;
+    const DOUBLE_TAP_DELAY = 300;
 
     if (now - mangaLastTapRef.current < DOUBLE_TAP_DELAY) {
       if (mangaSingleTapTimerRef.current) {
