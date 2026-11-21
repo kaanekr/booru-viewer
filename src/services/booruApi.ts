@@ -1,5 +1,6 @@
 import { BooruPost, BooruSource, BooruTagGroups, BooruTagSuggestion, RedGifsNiche, RedGifsTrendingTag, TagCategory, SearchFilterConfig } from '../types/booru';
 import { asTagList } from '../utils/guards';
+import { LruCache } from '../utils/lruCache';
 import { DEFAULT_SOURCE } from './sources';
 import { proxyService } from './proxyService';
 import { StorageService } from './storage';
@@ -82,14 +83,13 @@ async function fetchBooru(url: string, init?: RequestInit): Promise<Response> {
 /** Gelbooru-engine timed popular: cache of the period's first post id (lower bound).
  *  The engine doesn't support date filters, so the bound is found by walking
  *  backwards through recent additions; the real query sorts server-side via `id:>BOUND sort:score:desc`. */
-interface GelbooruBoundEntry {
-  bound: number | null; // null = no posts in the window
-  at: number;
-}
-const gelbooruBoundCache = new Map<string, GelbooruBoundEntry>();
 const BOUND_CACHE_TTL_MS = 5 * 60 * 1000;
+const gelbooruBoundCache = new LruCache<string, number | null>(100, BOUND_CACHE_TTL_MS);
 const BOUND_WALK_LIMIT = 100;
 const BOUND_MAX_PAGES = 15;
+
+const CUMST_TAGS_CACHE_TTL_MS = 15 * 60 * 1000;
+let cumStTagsCache: { baseUrl: string; tags: any[]; at: number } | null = null;
 
 function mapDanbooruCategory(catNum: number): TagCategory {
   switch (catNum) {
@@ -522,7 +522,7 @@ export class BooruApiService {
       } else if (source.type === 'redgifs') {
         // Deduplication belongs to each screen's query session. A shared seen
         // set made browsing one list consume results from another open list.
-        return await this.fetchRedGifsPosts(source, page, limit, tags, filter);
+        return await this.fetchRedGifsPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else if (source.type === 'xvideos') {
         return await this.fetchXVideosPosts(source, page, limit, tags, includeBlacklisted, filter);
       } else if (source.type === 'xhamster') {
@@ -717,11 +717,10 @@ export class BooruApiService {
     windowDays: number
   ): Promise<number | null> {
     const key = `${source.id}|${walkTags}|${windowDays}`;
-    const now = Date.now();
     const cached = gelbooruBoundCache.get(key);
-    if (cached && now - cached.at < BOUND_CACHE_TTL_MS) return cached.bound;
+    if (cached !== undefined) return cached;
 
-    const cutoff = now - windowDays * 86400000;
+    const cutoff = Date.now() - windowDays * 86400000;
     let bound: number | null = null;
     for (let pid = 0; pid < BOUND_MAX_PAGES; pid++) {
       const batch = await this.fetchGelbooruPage(
@@ -745,7 +744,7 @@ export class BooruApiService {
       const lastT = new Date(batch[batch.length - 1].createdAt).getTime();
       if (Number.isFinite(lastT) && lastT < cutoff) break;
     }
-    gelbooruBoundCache.set(key, { bound, at: now });
+    gelbooruBoundCache.set(key, bound);
     return bound;
   }
 
@@ -1312,6 +1311,7 @@ export class BooruApiService {
     page: number,
     limit: number,
     tags: string,
+    includeBlacklisted: boolean = false,
     filter?: SearchFilterConfig
   ): Promise<BooruPost[]> {
     let cleanTags = tags.trim();
@@ -1410,19 +1410,21 @@ export class BooruApiService {
     const filterTokens = nicheId ? remainingTokens : includeTokens;
     const needsClientFilter =
       excludeTags.length > 0 || ((searchUsername || nicheId) && filterTokens.length > 0);
-    if (!needsClientFilter) return posts;
-
-    const includeNorm = filterTokens.map(normTag).filter(Boolean);
-    return posts.filter((p) => {
-      const hay = p.allTags.map(normTag);
-      if (excludeTags.some((t) => hay.includes(t))) return false;
-      if ((searchUsername || nicheId) && includeNorm.some((t) => !hay.includes(t))) return false;
-      // '-niche:<id>' exclusion: drop posts in this category
-      if (nicheExcludes.length > 0 && p.niches?.some((n) => nicheExcludes.includes(normTag(n)))) return false;
-      // '-user:<name>' exclusion: drop posts from this account
-      if (userExcludes.length > 0 && p.tags.artist?.some((a) => userExcludes.includes(a.trim().toLowerCase()))) return false;
-      return true;
-    });
+    let filtered = posts;
+    if (needsClientFilter) {
+      const includeNorm = filterTokens.map(normTag).filter(Boolean);
+      filtered = posts.filter((p) => {
+        const hay = p.allTags.map(normTag);
+        if (excludeTags.some((t) => hay.includes(t))) return false;
+        if ((searchUsername || nicheId) && includeNorm.some((t) => !hay.includes(t))) return false;
+        // '-niche:<id>' exclusion: drop posts in this category
+        if (nicheExcludes.length > 0 && p.niches?.some((n) => nicheExcludes.includes(normTag(n)))) return false;
+        // '-user:<name>' exclusion: drop posts from this account
+        if (userExcludes.length > 0 && p.tags.artist?.some((a) => userExcludes.includes(a.trim().toLowerCase()))) return false;
+        return true;
+      });
+    }
+    return await this.filterBlacklistedPosts(filtered, includeBlacklisted);
   }
 
   /** Converts raw gif records from the RedGifs API into BooruPosts. */
@@ -2300,7 +2302,7 @@ export class BooruApiService {
       }
     }
 
-    return result;
+    return await this.filterBlacklistedPosts(result, includeBlacklisted);
   }
 
   async searchTags(query: string, limit: number = 12, source: BooruSource = this.currentSource): Promise<BooruTagSuggestion[]> {
@@ -2475,13 +2477,26 @@ export class BooruApiService {
 
           // 2. Search tags if suggestions still has capacity
           if (suggestions.length < limit) {
-            const url = `${source.baseUrl}/api/v1/tags`;
-            const response = await fetchBooru(url, {
-              headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-            });
-            if (response.ok) {
-              const data = await response.json();
-              const tagsList = Array.isArray(data.tags) ? data.tags : [];
+            let tagsList: any[] | null = null;
+            if (
+              cumStTagsCache &&
+              cumStTagsCache.baseUrl === source.baseUrl &&
+              Date.now() - cumStTagsCache.at < CUMST_TAGS_CACHE_TTL_MS
+            ) {
+              tagsList = cumStTagsCache.tags;
+            } else {
+              const url = `${source.baseUrl}/api/v1/tags`;
+              const response = await fetchBooru(url, {
+                headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+              });
+              if (response.ok) {
+                const data = await response.json();
+                const fetchedTags: any[] = Array.isArray(data.tags) ? data.tags : [];
+                tagsList = fetchedTags;
+                cumStTagsCache = { baseUrl: source.baseUrl, tags: fetchedTags, at: Date.now() };
+              }
+            }
+            if (tagsList) {
               const matchedTags = tagsList
                 .filter(
                   (t: any) =>

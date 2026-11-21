@@ -51,6 +51,7 @@ const VALID_HH_SECTION: HentaiHavenFeedSection[] = [
 let cachedRecentViews: BooruPost[] | null = null;
 let cachedFavorites: BooruPost[] | null = null;
 let cachedFavoriteKeys: Set<string> | null = null;
+let cachedBlacklistedTags: string[] | null = null;
 let cachedCacheLimitMb: number | null = null;
 
 function setFavoritesMemoryCache(items: BooruPost[]): void {
@@ -79,11 +80,17 @@ async function readArray(key: string): Promise<unknown[]> {
   return value;
 }
 
-function updateList<T>(key: string, decode: (value: unknown) => T[], update: (items: T[]) => T[]): Promise<T[]> {
+function updateList<T>(
+  key: string,
+  decode: (value: unknown) => T[],
+  update: (items: T[]) => T[],
+  onCommit?: (next: T[]) => void
+): Promise<T[]> {
   return queueWrite(key, async () => {
     const current = decode(await readArray(key));
     const next = update(current);
     if (next !== current) await AsyncStorage.setItem(key, JSON.stringify(next));
+    onCommit?.(next);
     return next;
   });
 }
@@ -168,7 +175,10 @@ export const StorageService = {
     if (cachedCacheLimitMb !== null) return cachedCacheLimitMb;
     try {
       const data = await AsyncStorage.getItem(CACHE_LIMIT_MB_KEY);
-      if (data == null) return DEFAULT_CACHE_LIMIT_MB;
+      if (data == null) {
+        cachedCacheLimitMb = DEFAULT_CACHE_LIMIT_MB;
+        return DEFAULT_CACHE_LIMIT_MB;
+      }
       const parsed = JSON.parse(data);
       const limit = typeof parsed === 'number' ? clampCacheLimitMb(parsed) : DEFAULT_CACHE_LIMIT_MB;
       cachedCacheLimitMb = limit;
@@ -188,11 +198,11 @@ export const StorageService = {
   async getFavorites(): Promise<BooruPost[]> {
     try {
       await pendingWrites.get(FAVORITES_KEY);
-      if (cachedFavorites !== null) return cachedFavorites;
+      if (cachedFavorites !== null) return [...cachedFavorites];
       const data = await AsyncStorage.getItem(FAVORITES_KEY);
       const parsed = data ? asPostArray(JSON.parse(data)) : [];
       setFavoritesMemoryCache(parsed);
-      return parsed;
+      return [...parsed];
     } catch {
       return [];
     }
@@ -221,10 +231,8 @@ export const StorageService = {
   },
 
   /** Also used by backup repair/import so a stale snapshot cannot erase a toggle. */
-  async updateFavorites(update: (items: BooruPost[]) => BooruPost[]): Promise<BooruPost[]> {
-    const next = await updateList(FAVORITES_KEY, asPostArray, update);
-    setFavoritesMemoryCache(next);
-    return next;
+  updateFavorites(update: (items: BooruPost[]) => BooruPost[]): Promise<BooruPost[]> {
+    return updateList(FAVORITES_KEY, asPostArray, update, setFavoritesMemoryCache);
   },
 
   updateFavoriteTags(update: (tags: string[]) => string[]): Promise<string[]> {
@@ -236,7 +244,9 @@ export const StorageService = {
   },
 
   updateBlacklistedTags(update: (tags: string[]) => string[]): Promise<string[]> {
-    return updateList(BLACKLISTED_TAGS_KEY, asStringArray, update);
+    return updateList(BLACKLISTED_TAGS_KEY, asStringArray, update, (next) => {
+      cachedBlacklistedTags = next;
+    });
   },
 
   async getSearchHistory(): Promise<string[]> {
@@ -328,8 +338,11 @@ export const StorageService = {
   async getBlacklistedTags(): Promise<string[]> {
     try {
       await pendingWrites.get(BLACKLISTED_TAGS_KEY);
+      if (cachedBlacklistedTags !== null) return [...cachedBlacklistedTags];
       const data = await AsyncStorage.getItem(BLACKLISTED_TAGS_KEY);
-      return data ? asStringArray(JSON.parse(data)) : [];
+      const parsed = data ? asStringArray(JSON.parse(data)) : [];
+      cachedBlacklistedTags = parsed;
+      return [...parsed];
     } catch {
       return [];
     }
@@ -381,7 +394,10 @@ export const StorageService = {
 
   async clearBlacklistedTags(): Promise<void> {
     try {
-      await queueWrite(BLACKLISTED_TAGS_KEY, () => AsyncStorage.removeItem(BLACKLISTED_TAGS_KEY));
+      await queueWrite(BLACKLISTED_TAGS_KEY, async () => {
+        await AsyncStorage.removeItem(BLACKLISTED_TAGS_KEY);
+        cachedBlacklistedTags = [];
+      });
     } catch (e) {
       console.warn('Error clearing blacklisted tags:', e);
     }
@@ -483,8 +499,10 @@ export const StorageService = {
 
   async saveAllFavorites(favorites: BooruPost[]): Promise<void> {
     const deduped = uniquePosts(favorites);
-    await queueWrite(FAVORITES_KEY, () => AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(deduped)));
-    setFavoritesMemoryCache(deduped);
+    await queueWrite(FAVORITES_KEY, async () => {
+      await AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(deduped));
+      setFavoritesMemoryCache(deduped);
+    });
   },
 
   async saveAllRecentViews(recent: BooruPost[]): Promise<void> {
@@ -517,7 +535,10 @@ export const StorageService = {
 
   async saveAllBlacklistedTags(tags: string[]): Promise<void> {
     try {
-      await queueWrite(BLACKLISTED_TAGS_KEY, () => AsyncStorage.setItem(BLACKLISTED_TAGS_KEY, JSON.stringify(tags)));
+      await queueWrite(BLACKLISTED_TAGS_KEY, async () => {
+        await AsyncStorage.setItem(BLACKLISTED_TAGS_KEY, JSON.stringify(tags));
+        cachedBlacklistedTags = [...tags];
+      });
     } catch (e) {
       console.warn('Error saving all blacklisted tags:', e);
     }

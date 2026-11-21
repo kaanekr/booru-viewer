@@ -42,6 +42,8 @@ export async function getHentaiHavenToken(forceRefresh: boolean = false): Promis
   if (wardenPromise) return wardenPromise;
 
   wardenPromise = (async () => {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 10000);
     try {
       const res = await fetch(`${HENTAIHAVEN_API_BASE}/warden`, {
         method: 'POST',
@@ -50,6 +52,7 @@ export async function getHentaiHavenToken(forceRefresh: boolean = false): Promis
           'User-Agent': HENTAIHAVEN_APP_UA,
         },
         body: WARDEN_BODY,
+        signal: ctrl.signal,
       });
 
       if (!res.ok) {
@@ -65,6 +68,7 @@ export async function getHentaiHavenToken(forceRefresh: boolean = false): Promis
       cachedWardenToken = token;
       return token;
     } finally {
+      clearTimeout(timeout);
       wardenPromise = null;
     }
   })();
@@ -82,11 +86,21 @@ export async function fetchHentaiHavenApi<T = any>(
   ms: number = 15000,
   signal?: AbortSignal
 ): Promise<T> {
+  if (signal?.aborted) {
+    const abortErr = new Error('Request aborted');
+    abortErr.name = 'AbortError';
+    throw abortErr;
+  }
   let token = await getHentaiHavenToken();
+  if (signal?.aborted) {
+    const abortErr = new Error('Request aborted');
+    abortErr.name = 'AbortError';
+    throw abortErr;
+  }
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), ms);
   const onAbort = () => ctrl.abort();
-  if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  signal?.addEventListener('abort', onAbort, { once: true });
 
   const makeReq = async (tok: string) => {
     return await fetch(`${HENTAIHAVEN_API_BASE}/${path}`, {
@@ -110,8 +124,6 @@ export async function fetchHentaiHavenApi<T = any>(
       res = await makeReq(token);
     }
 
-    clearTimeout(timeout);
-
     if (res.status === 429) {
       throw new Error('HentaiHaven rate limit exceeded (429 Rate limit). Please wait a bit.');
     }
@@ -121,9 +133,9 @@ export async function fetchHentaiHavenApi<T = any>(
 
     const json = await res.json();
     return json?.data as T;
-  } catch (e: any) {
+  } finally {
     clearTimeout(timeout);
-    throw e;
+    signal?.removeEventListener('abort', onAbort);
   }
 }
 
@@ -464,12 +476,16 @@ export function registerHentaiHavenAuthor(author: { term_id?: number; name?: str
   const name = (author?.name || '').trim();
   if (Number.isFinite(termId) && name) {
     if (!dynamicAuthorsMap.has(termId)) {
-      dynamicAuthorsMap.set(termId, {
+      const item: HHGenreItem = {
         term_id: termId,
         name,
         slug: hentaiHavenTagSlug(name),
         count: Number(author.count) || 0,
-      });
+      };
+      dynamicAuthorsMap.set(termId, item);
+      if (cachedGenres && !cachedGenres.some((g) => g.term_id === termId)) {
+        cachedGenres.push(item);
+      }
     }
   }
 }
@@ -509,7 +525,9 @@ async function getAllGenres(): Promise<HHGenreItem[]> {
         merged.push(author);
       }
     }
-    cachedGenres = merged;
+    if (dynamic.length > 0) {
+      cachedGenres = merged;
+    }
     return merged;
   })();
 
@@ -905,17 +923,17 @@ async function fetchMultiTokenItems(
   page: number
 ): Promise<any[]> {
   const limited = tokens.slice(0, 5);
-  const lists: any[][] = [];
   let hasSearchToken = false;
-  for (const t of limited) {
-    const matched = findHentaiHavenGenre(genres, t);
-    if (matched) {
-      lists.push(await fetchGenreItems(matched.term_id, page));
-    } else {
+  const lists = await Promise.all(
+    limited.map((t) => {
+      const matched = findHentaiHavenGenre(genres, t);
+      if (matched) {
+        return fetchGenreItems(matched.term_id, page);
+      }
       hasSearchToken = true;
-      lists.push(await fetchSearchItems(t, page));
-    }
-  }
+      return fetchSearchItems(t, page);
+    })
+  );
   const nonEmpty = lists.filter((l) => l.length > 0);
   if (nonEmpty.length === 0) return [];
   // On page > 1 the title search already returned empty; intersecting
@@ -1099,22 +1117,24 @@ async function fetchHentaiHtml(
     'Accept-Language': 'en-US,en;q=0.9',
     Accept: 'text/html,application/xhtml+xml',
   };
+  if (signal?.aborted) return null;
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), ms);
   const onAbort = () => ctrl.abort();
-  if (signal) signal.addEventListener('abort', onAbort, { once: true });
+  signal?.addEventListener('abort', onAbort, { once: true });
   try {
     const res = await proxyService.fetchWithFallback(url, { headers, signal: ctrl.signal }, ms);
-    clearTimeout(timeout);
     if (!res.ok) {
       console.warn('[HentaiHaven] HTTP ' + res.status + ' (' + label + ')');
       return null;
     }
     return await res.text();
   } catch (e: any) {
-    clearTimeout(timeout);
     console.warn('[HentaiHaven] network error (' + label + '): ' + (e?.message || e));
     return null;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', onAbort);
   }
 }
 
