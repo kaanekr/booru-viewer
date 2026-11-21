@@ -1,5 +1,6 @@
 import { BooruPost, BooruSource, BooruTagGroups, BooruTagSuggestion, RedGifsNiche, RedGifsTrendingTag, TagCategory, SearchFilterConfig } from '../types/booru';
 import { asTagList } from '../utils/guards';
+import { enrichPostAspectRatios } from '../utils/imageDimensions';
 import { LruCache } from '../utils/lruCache';
 import { DEFAULT_SOURCE } from './sources';
 import { proxyService } from './proxyService';
@@ -676,7 +677,8 @@ export class BooruApiService {
       });
     }
 
-    return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+    const filtered = await this.filterBlacklistedPosts(posts, includeBlacklisted);
+    return await enrichPostAspectRatios(filtered, `${source.baseUrl}/`);
   }
 
   private async fetchGelbooruPosts(
@@ -1217,7 +1219,8 @@ export class BooruApiService {
       });
     }
 
-    return await this.filterBlacklistedPosts(posts, includeBlacklisted);
+    const filtered = await this.filterBlacklistedPosts(posts, includeBlacklisted);
+    return await enrichPostAspectRatios(filtered, `${source.baseUrl}/`);
   }
 
   private redGifsToken: string | null = null;

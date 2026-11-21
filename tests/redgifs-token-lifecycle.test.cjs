@@ -19,6 +19,7 @@ function loadApi(send) {
       setRedGifsTokenCache: async () => { throw new Error('Must not persist device-bound tokens'); },
     } },
     '../utils/guards': {},
+    '../utils/imageDimensions': { enrichPostAspectRatios: async (p) => p },
     '../utils/lruCache': { LruCache: class { constructor() { this.m = new Map(); } get(k) { return this.m.get(k); } set(k, v) { this.m.set(k, v); } } },
     './xvideos': {}, './xhamster': {}, './pornhub': {}, './sexcom': {}, './hentaihavens': {}, './nhentai': { searchNHentaiTags: async () => [] },
   };

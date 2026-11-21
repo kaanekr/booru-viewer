@@ -408,3 +408,60 @@ test('canUseExpoVideoCache enables caching for direct/proxied MP4s, disables for
   assert.equal(clearCalls, 1);
   assert.deepEqual({ ...videoCache.getVideoCacheStats() }, { bytes: 0, files: 0 });
 });
+
+test('parseImageHeaderDimensions and enrichPostAspectRatios parse JPEG/PNG/GIF headers via Range and cache results', async () => {
+  // Minimal valid JPEG SOF0 (width=640, height=480)
+  const jpegBytes = new Uint8Array([
+    0xff, 0xd8, // SOI
+    0xff, 0xe0, 0x00, 0x04, 0x00, 0x00, // APP0 (len=4)
+    0xff, 0xc0, 0x00, 0x0b, 0x08, // SOF0, len=11, precision=8
+    0x01, 0xe0, // height = 480
+    0x02, 0x80, // width = 640
+    0x03, 0x01, 0x11, 0x00,
+  ]);
+  // Minimal PNG IHDR (width=1000, height=1500)
+  const pngBytes = new Uint8Array(24);
+  pngBytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+  new DataView(pngBytes.buffer).setUint32(16, 1000, false);
+  new DataView(pngBytes.buffer).setUint32(20, 1500, false);
+  // Minimal GIF89a (width=320, height=240)
+  const gifBytes = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x40, 0x01, 0xf0, 0x00]);
+
+  let fetchCalls = 0;
+  const load = createLoader({
+    './lruCache': createLoader()(path.resolve(__dirname, '../src/utils/lruCache.ts')),
+    '../services/proxyService': {
+      proxyService: {
+        fetchWithFallback: async (url, init) => {
+          fetchCalls += 1;
+          assert.equal(init.headers.Range, 'bytes=0-4095');
+          const payload = url.endsWith('.png') ? pngBytes : jpegBytes;
+          return { ok: true, status: 206, arrayBuffer: async () => payload.buffer };
+        },
+      },
+    },
+  });
+  const { parseImageHeaderDimensions, enrichPostAspectRatios } = load(
+    path.resolve(__dirname, '../src/utils/imageDimensions.ts')
+  );
+
+  assert.deepEqual({ ...parseImageHeaderDimensions(jpegBytes) }, { width: 640, height: 480 });
+  assert.deepEqual({ ...parseImageHeaderDimensions(pngBytes) }, { width: 1000, height: 1500 });
+  assert.deepEqual({ ...parseImageHeaderDimensions(gifBytes) }, { width: 320, height: 240 });
+
+  const posts = [
+    { id: '1', previewUrl: 'https://realbooru.com/thumbnails/a/b/t1.jpg', width: 800, height: 1000, aspectRatio: 0.8 },
+    { id: '2', previewUrl: 'https://realbooru.com/thumbnails/a/b/t2.png', width: 800, height: 1000, aspectRatio: 0.8 },
+  ];
+  await enrichPostAspectRatios(posts, 'https://realbooru.com/');
+  assert.equal(posts[0].width, 640);
+  assert.equal(posts[0].height, 480);
+  assert.equal(posts[0].aspectRatio, 640 / 480);
+  assert.equal(posts[1].width, 1000);
+  assert.equal(posts[1].height, 1500);
+  assert.equal(fetchCalls, 2);
+
+  // Second call for same URLs hits HEADER_DIMS_CACHE without network requests
+  await enrichPostAspectRatios(posts, 'https://realbooru.com/');
+  assert.equal(fetchCalls, 2);
+});

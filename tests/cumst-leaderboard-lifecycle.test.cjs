@@ -25,6 +25,7 @@ function loadApi() {
       if (id === './xhamster') return {};
       if (id === './pornhub') return {};
       if (id === '../utils/guards') return {};
+      if (id === '../utils/imageDimensions') return { enrichPostAspectRatios: async (p) => p };
       if (id === '../utils/lruCache') return { LruCache: class { constructor() { this.m = new Map(); } get(k) { return this.m.get(k); } set(k, v) { this.m.set(k, v); } } };
       if (id === './sexcom') return {};
       if (id === './hentaihavens') return {};
