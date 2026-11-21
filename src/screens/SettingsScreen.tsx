@@ -270,7 +270,18 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: pr
       </SettingsSection>
       <SettingsSection title="Cache storage" hint="Clear individual caches without affecting your favorites, API keys or preferences.">
         <SettingsRow title="Clear image cache" subtitle="Thumbnails & full-resolution viewer images" icon={icon(ImageIcon)} onPress={settings.clearImageCache} />
-        <SettingsRow title="Clear video cache" subtitle={`${formatCacheBytes(settings.cacheStats.videoBytes)} · ${settings.cacheStats.videoFiles} cached videos`} icon={icon(HardDrive)} onPress={settings.clearVideoCache} />
+        <SettingsRow
+          title="Clear video cache"
+          subtitle={
+            settings.cacheStats.videoFiles > 0
+              ? `${formatCacheBytes(settings.cacheStats.videoBytes)} · ${settings.cacheStats.videoFiles} ${settings.cacheStats.videoFiles === 1 ? 'cached video' : 'cached videos'}`
+              : settings.cacheStats.videoBytes > 0
+                ? `${formatCacheBytes(settings.cacheStats.videoBytes)} cached`
+                : '0 B · 0 cached videos'
+          }
+          icon={icon(HardDrive)}
+          onPress={settings.clearVideoCache}
+        />
         <SettingsRow title="Clear list & API cache" subtitle={`${formatCacheBytes(settings.cacheStats.listBytes)} · ${settings.cacheStats.listEntries} cached pages`} icon={icon(Database)} onPress={settings.clearApiCache} last />
       </SettingsSection>
       <SettingsSection title="Backup & transfer" hint="Supports AnimeBoxes (.abbj) and JSON files. Export your favorites and tags before moving to another device.">

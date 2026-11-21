@@ -47,7 +47,7 @@ import { Colors } from '../theme/colors';
 import { StorageService, ImageQuality } from '../services/storage';
 import { getPostKey } from '../utils/postIdentity';
 import { isGifMediaPost } from '../utils/gifMedia';
-import { canUseExpoVideoCache, downloadVideoViaAppSession } from '../utils/videoFallbackCache';
+import { canUseExpoVideoCache, downloadVideoViaAppSession, recordCachedVideo } from '../utils/videoFallbackCache';
 import { TagChip } from './TagChip';
 import { PostInfoModal } from './PostInfoModal';
 import { PornhubWebViewResolver } from './PornhubWebViewResolver';
@@ -2662,6 +2662,12 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
   }, [player]);
 
   useEventListener(player, 'statusChange', (payload) => {
+    if (payload.status === 'readyToPlay') {
+      if (typeof recordCachedVideo === 'function') {
+        recordCachedVideo(activeMediaUriRef.current);
+      }
+      return;
+    }
     if (payload.status !== 'error') return;
 
     if (

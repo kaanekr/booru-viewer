@@ -419,7 +419,11 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       }
 
       prefetchGridImages(
-        posts.slice(0, 10).map((p) => p.previewUrl || p.sampleUrl),
+        posts.slice(0, 10).map((p) => {
+          const sample = p.sampleUrl;
+          const useSample = sample && isImageMediaUrl(sample) && !/\.gif(?:\?|$)/i.test(sample);
+          return useSample ? sample : (p.previewUrl || sample);
+        }),
         4
       );
       resultsRef.current = posts;
@@ -562,7 +566,11 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       }
 
       prefetchGridImages(
-        newPosts.slice(0, 8).map((p) => p.previewUrl || p.sampleUrl),
+        newPosts.slice(0, 8).map((p) => {
+          const sample = p.sampleUrl;
+          const useSample = sample && isImageMediaUrl(sample) && !/\.gif(?:\?|$)/i.test(sample);
+          return useSample ? sample : (p.previewUrl || sample);
+        }),
         4
       );
       // If a jump page comes back empty (out of range) roll the counter back so the loader does not stick

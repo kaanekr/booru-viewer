@@ -15,7 +15,7 @@ import { GridColumn, useLoadGate } from '../utils/imageLoadGate';
 import { trackGridPlayer, recordFreezeEvent } from '../utils/freezeProbe';
 import { useGridPreviewsEnabled, markPreviewFailure, isPreviewBlocked, clearPreviewFailure } from '../utils/gridPreviews';
 import { getGridPreviewVideoCandidates, getGridPreviewFrames } from '../utils/gridPreviewMedia';
-import { canUseExpoVideoCache } from '../utils/videoFallbackCache';
+import { canUseExpoVideoCache, recordCachedVideo } from '../utils/videoFallbackCache';
 
 interface PostCardProps {
   post: BooruPost;
@@ -63,6 +63,9 @@ const isCandidateSafe = (u: string | undefined) => {
 const isStaticImageCandidate = (u: string | undefined) =>
   isCandidateSafe(u) && !urlEndsWith(u, '.mp4', '.webm', '.mov', '.m4v', '.m3u8', '.mpd', '.zip');
 
+const isCrispCoverCandidate = (u: string | undefined) =>
+  isStaticImageCandidate(u) && !urlEndsWith(u, '.gif');
+
 const coverVisibleStyle = { opacity: 1 };
 const coverHiddenStyle = { opacity: 0 };
 
@@ -105,16 +108,20 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     [post.fileExt, post.originalUrl, post.sampleUrl]
   );
 
-  // Static cover stays cheap; automatic motion uses listing clips/samples.
+  // Prefer crisp static sample (~850px) over tiny ~150px booru thumbnails when available;
+  // skip animated GIFs and videos for the static cover so cards stay sharp and lightweight.
   const primaryRaw = React.useMemo(() => {
+    if (isCrispCoverCandidate(post.sampleUrl)) {
+      return post.sampleUrl!;
+    }
     const candidates = [post.previewUrl, post.previewFallbackUrl, post.sampleUrl];
     return candidates.find(isStaticImageCandidate) || candidates.find(isCandidateSafe) || '';
   }, [post.previewUrl, post.previewFallbackUrl, post.sampleUrl]);
 
   const imageFallbacks = React.useMemo(
-    () => Array.from(new Set([post.previewFallbackUrl, post.previewThumbUrl, post.sampleUrl]
+    () => Array.from(new Set([post.previewUrl, post.previewFallbackUrl, post.previewThumbUrl, post.sampleUrl]
       .filter((url): url is string => !!url && url !== primaryRaw && isStaticImageCandidate(url)))),
-    [primaryRaw, post.previewFallbackUrl, post.previewThumbUrl, post.sampleUrl]
+    [primaryRaw, post.previewUrl, post.previewFallbackUrl, post.previewThumbUrl, post.sampleUrl]
   );
 
   const initialUri = React.useMemo(() => getMediaUrl(primaryRaw), [primaryRaw]);
@@ -460,7 +467,11 @@ const CardVideoPreview: React.FC<{
   }, []);
   useEventListener(player, 'statusChange', (payload) => {
     if (!mountedRef.current) return;
-    if (payload.status === 'readyToPlay') { player.play(); onReady(); }
+    if (payload.status === 'readyToPlay') {
+      if (typeof recordCachedVideo === 'function') recordCachedVideo(videoSource.uri);
+      player.play();
+      onReady();
+    }
     if (payload.status !== 'error') return;
     recordFreezeEvent('grid-player-error');
     const currentUri = videoSource.uri;

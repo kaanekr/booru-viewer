@@ -225,7 +225,11 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
         // Bounded disk prefetch (max 4 concurrent) so pagination never floods RAM or image gate.
         prefetchGridImages(
-          newPosts.slice(0, 10).map((p) => p.previewUrl || p.sampleUrl),
+          newPosts.slice(0, 10).map((p) => {
+            const sample = p.sampleUrl;
+            const useSample = sample && isImageMediaUrl(sample) && !/\.gif(?:\?|$)/i.test(sample);
+            return useSample ? sample : (p.previewUrl || sample);
+          }),
           4
         );
 
