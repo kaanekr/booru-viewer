@@ -496,10 +496,19 @@ export class BooruApiService {
     try {
       if (source.id === 'gelbooru') {
         // Gelbooru DAPI always returns 401 without an API key; go straight to HTML scrape
-        // when no key is saved instead of burning 6–12s on a guaranteed-failing DAPI call.
+        // when no key is saved. When a key IS saved, surface 401 (bad key) but fall back
+        // to HTML scrape on 429 rate-limit / 5xx / network timeouts so the feed still opens.
         const { userId, apiKey } = await StorageService.getGelbooruAuth().catch(() => ({ userId: '', apiKey: '' }));
         if (userId.trim() && apiKey.trim()) {
-          return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted, filter);
+          try {
+            return await this.fetchGelbooruPosts(source, page, limit, tags, includeBlacklisted, filter);
+          } catch (err: any) {
+            const msg = String(err?.message || '');
+            if (err?.name === 'AbortError' || /401|unauthorized|authentication required/i.test(msg)) {
+              throw err;
+            }
+            return await this.fetchGelbooruScrapedPosts(source, page, limit, tags, includeBlacklisted);
+          }
         }
         return await this.fetchGelbooruScrapedPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'gelbooru') {
