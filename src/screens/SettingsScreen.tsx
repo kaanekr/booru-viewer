@@ -50,7 +50,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: pr
   const [pages, setPages] = useState<Page[]>(['home']);
   const [configuringSource, setConfiguringSource] = useState<BooruSource>(activeSource);
   const page = pages[pages.length - 1];
-  const open = useCallback((next: Page) => setPages((previous) => [...previous, next]), []);
+  const open = useCallback(
+    (next: Page) =>
+      setPages((previous) =>
+        previous[previous.length - 1] === next ? previous : [...previous, next]
+      ),
+    []
+  );
   const back = useCallback(() => setPages((previous) => previous.length > 1 ? previous.slice(0, -1) : previous), []);
 
   const scrollRef = useRef<React.ComponentRef<typeof ScrollView> | null>(null);

@@ -77,6 +77,22 @@ const POPULAR_TAGS = [
   'cyberpunk',
 ];
 
+const NicheTagChip = React.memo(
+  ({ niche, onSelect }: { niche: RedGifsNiche; onSelect: (query: string) => void }) => {
+    const handlePress = useCallback(() => {
+      onSelect(`niche:${niche.id}`);
+    }, [niche.id, onSelect]);
+    return (
+      <TagChip
+        name={niche.name}
+        category="general"
+        count={niche.gifCount}
+        onPress={handlePress}
+      />
+    );
+  }
+);
+
 interface SearchScreenProps {
   route?: RouteProp<TabParamList, 'Search'>;
   navigation?: any;
@@ -115,10 +131,18 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   }, [propSource, selectSource]);
   const [isSourceSheetOpen, setIsSourceSheetOpen] = useState(false);
 
-  const handleManageSources = () => {
+  const handleManageSources = useCallback(() => {
     setIsSourceSheetOpen(false);
     navigation?.navigate?.('Settings', { section: 'sources' });
-  };
+  }, [navigation]);
+
+  const handleCloseFilterModal = useCallback(() => {
+    setIsFilterModalOpen(false);
+  }, []);
+
+  const handleCloseSourceSheet = useCallback(() => {
+    setIsSourceSheetOpen(false);
+  }, []);
 
   const handleOpenSourcePicker = () => {
     if (onOpenSourcePicker) {
@@ -197,11 +221,30 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
   // Refresh the fav set when returning to the cover — items faved in the viewer badge instantly
   useEffect(() => {
-    if (isFocused) {
-      StorageService.getFavorites().then((favs) => {
-        setFavoriteIds(new Set(favs.map(getPostKey)));
-      });
-    }
+    if (!isFocused) return;
+    let cancelled = false;
+    StorageService.getFavorites()
+      .then((favs) => {
+        if (cancelled) return;
+        const nextSet = new Set(favs.map(getPostKey));
+        setFavoriteIds((prev) => {
+          if (prev.size === nextSet.size) {
+            let same = true;
+            for (const k of nextSet) {
+              if (!prev.has(k)) {
+                same = false;
+                break;
+              }
+            }
+            if (same) return prev;
+          }
+          return nextSet;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [isFocused]);
 
   // Source Tracking & Race Condition Prevention Refs
@@ -217,16 +260,43 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     filterConfigRef.current = filterConfig;
   }, [filterConfig]);
 
-  useEffect(() => () => { searchRequestIdRef.current++; }, []);
+  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    searchRequestIdRef.current++;
+    if (blurTimerRef.current) {
+      clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = null;
+    }
+  }, []);
 
   const routeParams = route?.params;
   const effectiveTag = initialTag ?? routeParams?.tag;
   const effectiveMode = initialMode ?? routeParams?.mode ?? 'replace';
 
   useEffect(() => {
-    StorageService.getSearchHistory().then(setHistory);
-    StorageService.getFavoriteTags().then(setFavoriteTags);
-  }, [isSearchActive]);
+    if (!isFocused) return;
+    let cancelled = false;
+    StorageService.getSearchHistory()
+      .then((next) => {
+        if (cancelled) return;
+        setHistory((prev) =>
+          prev.length === next.length && prev.every((v, i) => v === next[i]) ? prev : next
+        );
+      })
+      .catch(() => {});
+    StorageService.getFavoriteTags()
+      .then((next) => {
+        if (cancelled) return;
+        setFavoriteTags((prev) =>
+          prev.length === next.length && prev.every((v, i) => v === next[i]) ? prev : next
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [isSearchActive, isFocused]);
 
   // RedGifs niches: load trends on the explore screen while redgifs is active
   useEffect(() => {
@@ -527,13 +597,42 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     executeSearchWithConfig(newConfig);
   };
 
-  const handleApplyFilterModal = (newConfig: SearchFilterConfig) => {
+  const executeSearchRef = useRef(executeSearch);
+  executeSearchRef.current = executeSearch;
+  const executeSearchWithConfigRef = useRef(executeSearchWithConfig);
+  executeSearchWithConfigRef.current = executeSearchWithConfig;
+  const handleSelectSuggestionRef = useRef(handleSelectSuggestion);
+  handleSelectSuggestionRef.current = handleSelectSuggestion;
+
+  const handleTagChipPress = useCallback((tag: string) => {
+    executeSearchRef.current(tag);
+  }, []);
+
+  const handleApplyFilterModal = useCallback((newConfig: SearchFilterConfig) => {
     setIsFilterModalOpen(false);
     setFilterConfig(newConfig);
     filterConfigRef.current = newConfig;
     setQuery(newConfig.tags.join(' '));
-    executeSearchWithConfig(newConfig);
-  };
+    executeSearchWithConfigRef.current(newConfig);
+  }, []);
+
+  const renderSuggestionItem = useCallback(
+    ({ item }: { item: BooruTagSuggestion }) => {
+      const onSelect = () => handleSelectSuggestionRef.current(item.name, true, item.category);
+      return (
+        <TouchableOpacity style={styles.suggestionRow} onPress={onSelect}>
+          <TagChip
+            name={item.name}
+            category={item.category}
+            count={item.postCount}
+            size="sm"
+            onPress={onSelect}
+          />
+        </TouchableOpacity>
+      );
+    },
+    []
+  );
 
   const handleCardPress = useCallback((post: BooruPost) => {
     const currentResults = resultsRef.current;
@@ -753,9 +852,19 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               placeholder="Search tags or creators..."
               placeholderTextColor={Colors.dark.textMuted}
               value={query}
-              onFocus={() => setIsInputFocused(true)}
+              onFocus={() => {
+                if (blurTimerRef.current) {
+                  clearTimeout(blurTimerRef.current);
+                  blurTimerRef.current = null;
+                }
+                setIsInputFocused(true);
+              }}
               onBlur={() => {
-                setTimeout(() => setIsInputFocused(false), 250);
+                if (blurTimerRef.current) clearTimeout(blurTimerRef.current);
+                blurTimerRef.current = setTimeout(() => {
+                  blurTimerRef.current = null;
+                  setIsInputFocused(false);
+                }, 250);
               }}
               onChangeText={(text) => {
                 setQuery(text);
@@ -906,20 +1015,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               data={suggestions}
               keyExtractor={(item, index) => `search-sug-${item.name}-${index}`}
               keyboardShouldPersistTaps="handled"
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={styles.suggestionRow}
-                  onPress={() => handleSelectSuggestion(item.name, true, item.category)}
-                >
-                  <TagChip
-                    name={item.name}
-                    category={item.category}
-                    count={item.postCount}
-                    size="sm"
-                    onPress={() => handleSelectSuggestion(item.name, true, item.category)}
-                  />
-                </TouchableOpacity>
-              )}
+              renderItem={renderSuggestionItem}
             />
           </View>
         )}
@@ -973,7 +1069,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                 searchOffsetRef.current = contentOffset.y;
                 viewportHeightRef.current = layoutMeasurement.height;
                 const now = Date.now();
-                if (changed || now - lastGridUpdateRef.current >= 80) {
+                const headerEdgeReached =
+                  changed && (header.occlusionRef.current === 0 || header.occlusionRef.current === header.height);
+                if (headerEdgeReached || now - lastGridUpdateRef.current >= 80) {
                   lastGridUpdateRef.current = now;
                   updateGridViewport(false);
                 }
@@ -1121,7 +1219,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       key={`hist-${tag}-${idx}`}
                       name={tag}
                       category="general"
-                      onPress={() => executeSearch(tag)}
+                      onPress={handleTagChipPress}
                     />
                   ))}
                 </View>
@@ -1143,7 +1241,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                       key={`fav-search-tag-${tag}-${idx}`}
                       name={tag}
                       category="meta"
-                      onPress={() => executeSearch(tag)}
+                      onPress={handleTagChipPress}
                     />
                   ))}
                 </View>
@@ -1162,12 +1260,10 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                 </View>
                 <View style={styles.tagWrap}>
                   {niches.map((niche) => (
-                    <TagChip
+                    <NicheTagChip
                       key={`niche-${niche.id}`}
-                      name={niche.name}
-                      category="general"
-                      count={niche.gifCount}
-                      onPress={() => executeSearch(`niche:${niche.id}`)}
+                      niche={niche}
+                      onSelect={handleTagChipPress}
                     />
                   ))}
                 </View>
@@ -1188,7 +1284,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                     key={`pop-${tag}-${idx}`}
                     name={tag}
                     category="general"
-                    onPress={() => executeSearch(tag)}
+                    onPress={handleTagChipPress}
                   />
                 ))}
               </View>
@@ -1203,7 +1299,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         filterConfig={filterConfig}
         activeSource={activeSource}
         onSelectSource={handleSelectSource}
-        onClose={() => setIsFilterModalOpen(false)}
+        onClose={handleCloseFilterModal}
         onApply={handleApplyFilterModal}
       />
 
@@ -1211,7 +1307,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         visible={isSourceSheetOpen}
         activeSource={activeSource}
         onSelectSource={handleSelectSource}
-        onClose={() => setIsSourceSheetOpen(false)}
+        onClose={handleCloseSourceSheet}
         onManage={handleManageSources}
       />
     </View>
