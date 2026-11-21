@@ -16,6 +16,8 @@ function setup() {
   let backCount = 0;
   const load = createLoader({
     react: React,
+    'react-native': { useWindowDimensions: () => ({ width: 390, height: 844 }) },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }) },
     '@react-navigation/native': { useIsFocused: () => focused },
     '../navigation/postsCache': { getCachedPosts: () => posts, deleteCachedPosts() {} },
     '../navigation/rootNavigation': { pushSearchDetail: (...args) => searches.push(args) },
@@ -70,6 +72,8 @@ test('immediate close disables stack pop animation to avoid double-slide after g
   let backCount = 0;
   const load = createLoader({
     react: React,
+    'react-native': { useWindowDimensions: () => ({ width: 390, height: 844 }) },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }) },
     '@react-navigation/native': { useIsFocused: () => true },
     '../navigation/postsCache': { getCachedPosts: () => [{ id: '1', sourceId: 'a' }], deleteCachedPosts() {} },
     '../navigation/rootNavigation': { pushSearchDetail() {} },
@@ -99,4 +103,42 @@ test('immediate close disables stack pop animation to avoid double-slide after g
   } finally {
     global.requestAnimationFrame = origRaf;
   }
+});
+
+test('videos keep native stack swipe-back enabled while excluding the timeline and pausing during scrub', async () => {
+  const setOptionsCalls = [];
+  const load = createLoader({
+    react: React,
+    'react-native': { useWindowDimensions: () => ({ width: 390, height: 844 }) },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }) },
+    '@react-navigation/native': { useIsFocused: () => true },
+    '../navigation/postsCache': { getCachedPosts: () => [{ id: '1', sourceId: 'a' }], deleteCachedPosts() {} },
+    '../navigation/rootNavigation': { pushSearchDetail() {} },
+    '../components/ImageViewerModal': { ImageViewerModal: 'Viewer' },
+    '../services/storage': { StorageService: { addRecentView: async () => {} } },
+    '../utils/media': { isVideoPost: () => true },
+    '../context/MediaPlaybackContext': { useMediaPlaybackAllowed: () => true },
+    '../services/sources': { AVAILABLE_SOURCES: [{ id: 'a' }] },
+  });
+  const { ViewerScreen } = load(path.resolve(__dirname, '../src/screens/ViewerScreen.tsx'));
+  await act(() => {
+    root = create(React.createElement(ViewerScreen, {
+      route: { params: { postsKey: 'v', initialIndex: 0 } },
+      navigation: {
+        canGoBack: () => true,
+        goBack() {},
+        setOptions: (opts) => setOptionsCalls.push(opts),
+      },
+    }));
+  });
+  const initialOpts = setOptionsCalls.at(-1);
+  assert.equal(initialOpts.gestureEnabled, true);
+  assert.equal(initialOpts.gestureResponseDistance.end, 48);
+  assert.equal(initialOpts.gestureResponseDistance.bottom, 844 - 34 - 165);
+
+  // While scrubbing the timeline, native swipe-back pauses; releasing restores it
+  await act(() => { root.root.findByType('Viewer').props.onScrubbingChange(true); });
+  assert.equal(setOptionsCalls.at(-1).gestureEnabled, false);
+  await act(() => { root.root.findByType('Viewer').props.onScrubbingChange(false); });
+  assert.equal(setOptionsCalls.at(-1).gestureEnabled, true);
 });

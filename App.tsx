@@ -59,7 +59,7 @@ const VIEWER_SCREEN_OPTIONS = {
   headerShown: false,
   animation: 'slide_from_right' as const,
   fullScreenGestureEnabled: true,
-  gestureResponseDistance: { start: 48 },
+  gestureResponseDistance: { end: 48 },
   animationMatchesGesture: true,
 };
 

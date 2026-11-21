@@ -216,7 +216,7 @@ test('asScreen video edge-swipe tracks horizontal finger movement and springs ba
         create: (cfg) => { panConfigs.push(cfg); return { panHandlers: { __cfg: cfg } }; },
       },
       BackHandler: { addEventListener: () => ({ remove() {} }) },
-      Platform: { OS: 'ios' },
+      Platform: { OS: 'android' },
       Alert: { alert() {} },
       Linking: {},
     },
