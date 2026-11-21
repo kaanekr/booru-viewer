@@ -52,6 +52,29 @@ import { useMountedIds, type CardLayout } from '../utils/gridVisibility';
 
 const GOLD_ACCENT = '#F5A623';
 
+const areStringListsEqual = (prev: string[], next: string[]) =>
+  prev.length === next.length && prev.every((v, i) => v === next[i]);
+
+const arePostListsEqual = (prev: BooruPost[], next: BooruPost[]) => {
+  if (prev.length !== next.length) return false;
+  for (let i = 0; i < prev.length; i++) {
+    const a = prev[i];
+    const b = next[i];
+    if (
+      getPostKey(a) !== getPostKey(b) ||
+      a.previewUrl !== b.previewUrl ||
+      a.sampleUrl !== b.sampleUrl ||
+      a.originalUrl !== b.originalUrl ||
+      a.score !== b.score ||
+      a.rating !== b.rating ||
+      (a.allTags?.length ?? 0) !== (b.allTags?.length ?? 0)
+    ) {
+      return false;
+    }
+  }
+  return true;
+};
+
 interface FavoritesScreenProps {
   navigation?: any;
   isActive?: boolean;
@@ -104,11 +127,19 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
   const gridTopRef = useRef(0);
   const viewportHeightRef = useRef(windowHeight);
   const lastViewportUpdateRef = useRef(0);
+  const blurTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (blurTimerRef.current) {
+      clearTimeout(blurTimerRef.current);
+      blurTimerRef.current = null;
+    }
+  }, []);
 
   const loadRecentViews = useCallback(async () => {
     try {
       const views = await StorageService.getRecentViews();
-      setRecentViews(views);
+      setRecentViews((prev) => (arePostListsEqual(prev, views) ? prev : views));
     } catch (e) {
       console.warn('Load recent views error:', e);
     }
@@ -127,8 +158,8 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
         StorageService.getFavorites(),
         StorageService.getFavoriteTags(),
       ]);
-      setFavorites(items);
-      setFavoriteTags(tags);
+      setFavorites((prev) => (arePostListsEqual(prev, items) ? prev : items));
+      setFavoriteTags((prev) => (areStringListsEqual(prev, tags) ? prev : tags));
     } catch (e) {
       console.warn('Load favorites error:', e);
     } finally {
@@ -280,6 +311,13 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
 
   // Favorites filtered by multi-tag, source, score, media type, rating and search text
   const filteredFavorites = useMemo(() => {
+    const normalizedSelectedTags = selectedTags.map((selectedTag) => {
+      const sel = selectedTag.toLowerCase();
+      return { sel, selNormalized: sel.replace(/_/g, ' ') };
+    });
+    const terms = trimmedQuery ? trimmedQuery.split(/\s+/).filter(Boolean) : [];
+    const needsPostTags = normalizedSelectedTags.length > 0 || terms.length > 0;
+
     let result = favorites.filter((post) => {
       // 1. Kaynak Filtresi
       if (selectedSource !== 'all') {
@@ -309,35 +347,26 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
         if (ratingFilter === 'explicit' && r !== 'e' && r !== 'explicit') return false;
       }
 
+      if (!needsPostTags) return true;
+
       const postAllTags = onlyStrings(post.allTags).map((t) => t.toLowerCase());
 
       // 4. Selected multi-tag filter (AND or OR mode)
-      if (selectedTags.length > 0) {
+      if (normalizedSelectedTags.length > 0) {
+        const postNormalizedTags = postAllTags.map((t) => t.replace(/_/g, ' '));
+        const matchesSelected = ({ sel, selNormalized }: { sel: string; selNormalized: string }) =>
+          postAllTags.some((t, i) => t === sel || postNormalizedTags[i] === selNormalized || t.includes(sel));
+
         if (tagMatchMode === 'AND') {
-          const hasAllSelected = selectedTags.every((selectedTag) => {
-            const sel = selectedTag.toLowerCase();
-            const selNormalized = sel.replace(/_/g, ' ');
-            return postAllTags.some((t) => {
-              return t === sel || t.replace(/_/g, ' ') === selNormalized || t.includes(sel);
-            });
-          });
-          if (!hasAllSelected) return false;
+          if (!normalizedSelectedTags.every(matchesSelected)) return false;
         } else {
           // OR modu
-          const hasAnySelected = selectedTags.some((selectedTag) => {
-            const sel = selectedTag.toLowerCase();
-            const selNormalized = sel.replace(/_/g, ' ');
-            return postAllTags.some((t) => {
-              return t === sel || t.replace(/_/g, ' ') === selNormalized || t.includes(sel);
-            });
-          });
-          if (!hasAnySelected) return false;
+          if (!normalizedSelectedTags.some(matchesSelected)) return false;
         }
       }
 
       // 5. Plain text search box filter (supports tag/source/id)
-      if (trimmedQuery) {
-        const terms = trimmedQuery.split(/\s+/).filter(Boolean);
+      if (terms.length > 0) {
         const idStr = String(post.id).toLowerCase();
         const sourceNameStr = (post.sourceName || '').toLowerCase();
         const sourceIdStr = (post.sourceId || '').toLowerCase();
@@ -508,11 +537,11 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
         onPress={handleHistoryCardPress}
         columnWidth={columnWidth}
         fixedHeight={historyCardHeight}
-        screenActive={isFocused && mediaAllowed}
+        screenActive={effectiveIsActive && mediaAllowed && !showFilterSheet}
         isFavorite={favoriteIdSet.has(getPostKey(item))}
       />
     ),
-    [handleHistoryCardPress, favoriteIdSet, isFocused, mediaAllowed, columnWidth, historyCardHeight]
+    [handleHistoryCardPress, favoriteIdSet, effectiveIsActive, mediaAllowed, showFilterSheet, columnWidth, historyCardHeight]
   );
 
   const getHistoryItemLayout = useCallback(
@@ -674,10 +703,20 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                 placeholder="Search in favorites... (Press Enter to add tag)"
                 placeholderTextColor={Colors.dark.textMuted}
                 value={searchQuery}
-                onFocus={() => setIsInputFocused(true)}
+                onFocus={() => {
+                  if (blurTimerRef.current) {
+                    clearTimeout(blurTimerRef.current);
+                    blurTimerRef.current = null;
+                  }
+                  setIsInputFocused(true);
+                }}
                 onBlur={() => {
                   // Short delay so the suggestion list stays tappable
-                  setTimeout(() => setIsInputFocused(false), 220);
+                  if (blurTimerRef.current) clearTimeout(blurTimerRef.current);
+                  blurTimerRef.current = setTimeout(() => {
+                    blurTimerRef.current = null;
+                    setIsInputFocused(false);
+                  }, 220);
                 }}
                 onChangeText={(text) => {
                   setSearchQuery(text);
@@ -1064,7 +1103,9 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
               favoritesOffsetRef.current = contentOffset.y;
               viewportHeightRef.current = layoutMeasurement.height;
               const now = Date.now();
-              if (changed || now - lastViewportUpdateRef.current >= 80) {
+              const headerEdgeReached =
+                changed && (header.occlusionRef.current === 0 || header.occlusionRef.current === header.height);
+              if (headerEdgeReached || now - lastViewportUpdateRef.current >= 80) {
                 lastViewportUpdateRef.current = now;
                 updateFavoritesViewport();
               }

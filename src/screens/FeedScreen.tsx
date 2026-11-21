@@ -60,10 +60,14 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const navigation = propNavigation ?? hookNavigation;
   const [isSourceSheetOpen, setIsSourceSheetOpen] = useState(false);
 
-  const handleManageSources = () => {
+  const handleManageSources = useCallback(() => {
     setIsSourceSheetOpen(false);
     navigation?.navigate?.('Settings', { section: 'sources' });
-  };
+  }, [navigation]);
+
+  const handleCloseSourceSheet = useCallback(() => {
+    setIsSourceSheetOpen(false);
+  }, []);
 
   const handleOpenSourcePicker = () => {
     if (onOpenSourcePicker) {
@@ -174,11 +178,30 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
   // Refresh the fav set when returning to the cover — faved items badge instantly in viewer
   useEffect(() => {
-    if (isFocused) {
-      StorageService.getFavorites().then((favs) => {
-        setFavoriteIds(new Set(favs.map(getPostKey)));
-      });
-    }
+    if (!isFocused) return;
+    let cancelled = false;
+    StorageService.getFavorites()
+      .then((favs) => {
+        if (cancelled) return;
+        const nextSet = new Set(favs.map(getPostKey));
+        setFavoriteIds((prev) => {
+          if (prev.size === nextSet.size) {
+            let same = true;
+            for (const k of nextSet) {
+              if (!prev.has(k)) {
+                same = false;
+                break;
+              }
+            }
+            if (same) return prev;
+          }
+          return nextSet;
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [isFocused]);
 
   const loadPosts = useCallback(
@@ -533,7 +556,9 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
             scrollOffsetRef.current = nativeEvent.contentOffset.y;
             viewportHeightRef.current = nativeEvent.layoutMeasurement.height;
             const now = Date.now();
-            if (changed || now - lastGridUpdateRef.current >= 80) {
+            const headerEdgeReached =
+              changed && (header.occlusionRef.current === 0 || header.occlusionRef.current === header.height);
+            if (headerEdgeReached || now - lastGridUpdateRef.current >= 80) {
               lastGridUpdateRef.current = now;
               updateGridViewport(false);
             }
@@ -613,7 +638,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
       <SourceSheet
         visible={isSourceSheetOpen}
-        onClose={() => setIsSourceSheetOpen(false)}
+        onClose={handleCloseSourceSheet}
         onManage={handleManageSources}
       />
     </View>

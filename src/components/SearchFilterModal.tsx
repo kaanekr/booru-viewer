@@ -186,7 +186,7 @@ interface SearchFilterModalProps {
   onApply: (config: SearchFilterConfig) => void;
 }
 
-export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
+const SearchFilterModalComponent: React.FC<SearchFilterModalProps> = ({
   visible,
   filterConfig,
   activeSource: propSource,
@@ -220,9 +220,10 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
     };
   }, []);
 
-  // Sync draft when modal opens
+  // Sync draft only on false -> true transition so parent re-renders never wipe unsaved edits
+  const wasVisibleRef = useRef(false);
   useEffect(() => {
-    if (visible) {
+    if (visible && !wasVisibleRef.current) {
       setDraft({ ...filterConfig });
       setDraftSource(propSource);
       setTagInput('');
@@ -231,6 +232,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
       setActivePicker(null);
       setPageInputText(filterConfig.jumpToPage > 1 ? String(filterConfig.jumpToPage) : '');
     }
+    wasVisibleRef.current = visible;
   }, [visible, filterConfig, propSource]);
 
   useEffect(() => {
@@ -449,12 +451,14 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
 
   // The date picker offers period-appropriate slots for the active time range:
   // weeks in weekly mode, months in monthly mode, days otherwise.
-  const dateSlots =
-    draft.timeRange === '1w'
+  const dateSlots = useMemo(() => {
+    if (!visible || activePicker !== 'dateAnchor') return [];
+    return draft.timeRange === '1w'
       ? weekDateOptions()
       : draft.timeRange === '1m'
         ? monthDateOptions()
         : dayDateOptions();
+  }, [visible, activePicker, draft.timeRange]);
   const datePickerTitle =
     draft.timeRange === '1w'
       ? 'Select Week'
@@ -473,6 +477,7 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
       }}
       onDismiss={onClose}
     >
+      {visible ? (
       <KeyboardAvoidingView
         style={[
           styles.container,
@@ -1189,9 +1194,12 @@ export const SearchFilterModal: React.FC<SearchFilterModalProps> = ({
           </AnimatedView>
         )}
       </KeyboardAvoidingView>
+      ) : null}
     </Modal>
   );
 };
+
+export const SearchFilterModal = React.memo(SearchFilterModalComponent);
 
 const styles = StyleSheet.create({
   container: {

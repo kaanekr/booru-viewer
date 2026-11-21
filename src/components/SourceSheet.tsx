@@ -30,7 +30,7 @@ interface SourceSheetProps {
  * In-place source picker for Explore/Search headers.
  * Switching stays on the current screen; managing keys still lives in Settings.
  */
-export const SourceSheet: React.FC<SourceSheetProps> = ({ visible, activeSource: propSource, onSelectSource, onClose, onManage }) => {
+const SourceSheetComponent: React.FC<SourceSheetProps> = ({ visible, activeSource: propSource, onSelectSource, onClose, onManage }) => {
   const { activeSource: contextSource, selectSource } = useSource();
   const activeSource = propSource ?? contextSource;
   const insets = useSafeAreaInsets();
@@ -73,6 +73,7 @@ export const SourceSheet: React.FC<SourceSheetProps> = ({ visible, activeSource:
       presentationStyle={Platform.OS === 'ios' ? 'pageSheet' : 'overFullScreen'}
       onRequestClose={onClose}
     >
+      {visible ? (
       <KeyboardAvoidingView
         style={[styles.container, { paddingTop: Platform.OS === 'ios' ? 8 : insets.top + 8 }]}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -127,9 +128,12 @@ export const SourceSheet: React.FC<SourceSheetProps> = ({ visible, activeSource:
           />
         </ScrollView>
       </KeyboardAvoidingView>
+      ) : null}
     </Modal>
   );
 };
+
+export const SourceSheet = React.memo(SourceSheetComponent);
 
 const styles = StyleSheet.create({
   container: {

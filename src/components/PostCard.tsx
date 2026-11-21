@@ -68,6 +68,7 @@ const isCrispCoverCandidate = (u: string | undefined) =>
 
 const coverVisibleStyle = { opacity: 1 };
 const coverHiddenStyle = { opacity: 0 };
+const EMPTY_FAILED_FRAMES: Set<string> = new Set();
 
 const PostCardComponent: React.FC<PostCardProps> = ({
   post,
@@ -142,8 +143,10 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     [post]);
   const rawFrames = React.useMemo(() => getGridPreviewFrames(post),
     [post.previewThumbs, post.previewThumbUrl, post.sampleUrl, post.previewUrl]);
-  const [failedFrames, setFailedFrames] = React.useState<Set<string>>(new Set());
-  React.useEffect(() => { setFailedFrames(new Set()); }, [rawFrames, post.id, post.sourceId]);
+  const [failedFrames, setFailedFrames] = React.useState<Set<string>>(EMPTY_FAILED_FRAMES);
+  React.useEffect(() => {
+    setFailedFrames((prev) => (prev.size === 0 ? prev : EMPTY_FAILED_FRAMES));
+  }, [rawFrames, post.id, post.sourceId]);
   const previewThumbs = React.useMemo(
     () => rawFrames.filter((url) => !failedFrames.has(url) && !urlEndsWith(url, '.gif')),
     [rawFrames, failedFrames]
