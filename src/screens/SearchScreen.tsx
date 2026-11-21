@@ -56,6 +56,8 @@ import { SearchFilterModal } from '../components/SearchFilterModal';
 import { SourceSheet } from '../components/SourceSheet';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isImageMediaUrl } from '../utils/media';
+import { prefetchGridImages } from '../utils/imagePrefetch';
+import { buildListCacheKey, getListCache, SEARCH_LIST_TTL_MS, setListCache } from '../utils/listCache';
 import { useVisibleIds, useMountedIds, useFocusedCardIds, CardLayout } from '../utils/gridVisibility';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { useSource } from '../context/SourceContext';
@@ -392,6 +394,23 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       resultsScrollRef.current?.scrollTo({ y: 0, animated: false });
     } catch {}
 
+    const listCacheKey = buildListCacheKey(
+      'search',
+      activeSource.id,
+      config.tags.join(' '),
+      `${config.sortBy}|${config.timeRange}|${config.rating}|${config.minScore ?? ''}|${config.user ?? ''}|${config.cumstService ?? ''}|${config.cumstMediaType ?? ''}|${config.leaderboardDate ?? ''}|${config.includeBlacklisted ? 1 : 0}|${config.hentaiHavenSection ?? ''}`,
+      startPage
+    );
+
+    const cached = await getListCache(listCacheKey);
+    if (!isCurrent()) return;
+    if (cached && cached.posts.length > 0) {
+      resultsRef.current = cached.posts;
+      hasMoreRef.current = true;
+      setResults(cached.posts);
+      setLoading(false);
+    }
+
     try {
       const posts = await booruApi.fetchPostsWithFilter(config, startPage, effectiveLimit, activeSource);
       // Guard: Ignore response if newer search request was triggered
@@ -399,24 +418,27 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         return;
       }
 
-      posts.slice(0, 10).forEach((p) => {
-        const raw = p.previewUrl || p.sampleUrl;
-        if (!isImageMediaUrl(raw)) return;
-        const u = getMediaUrl(raw);
-        if (u) Image.prefetch(u, { headers: getMediaHeaders(u) }).catch(() => {});
-      });
+      prefetchGridImages(
+        posts.slice(0, 10).map((p) => p.previewUrl || p.sampleUrl),
+        4
+      );
       resultsRef.current = posts;
       hasMoreRef.current = posts.length > 0;
       setResults(posts);
+      if (posts.length > 0) {
+        void setListCache(listCacheKey, posts, SEARCH_LIST_TTL_MS);
+      }
       if (posts.length === 0) {
         setSearchError('No results found');
       }
     } catch (e: any) {
       if (!isCurrent()) return;
       console.warn('Search with config error:', e);
-      resultsRef.current = [];
-      setResults([]);
-      setSearchError(e?.message || 'An error occurred while fetching search results.');
+      if (resultsRef.current.length === 0) {
+        resultsRef.current = [];
+        setResults([]);
+        setSearchError(e?.message || 'An error occurred while fetching search results.');
+      }
     } finally {
       if (isCurrent()) setLoading(false);
     }
@@ -539,12 +561,10 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
         return;
       }
 
-      newPosts.slice(0, 8).forEach((p) => {
-        const raw = p.previewUrl || p.sampleUrl;
-        if (!isImageMediaUrl(raw)) return;
-        const u = getMediaUrl(raw);
-        if (u) Image.prefetch(u, { headers: getMediaHeaders(u) }).catch(() => {});
-      });
+      prefetchGridImages(
+        newPosts.slice(0, 8).map((p) => p.previewUrl || p.sampleUrl),
+        4
+      );
       // If a jump page comes back empty (out of range) roll the counter back so the loader does not stick
       if (newPosts.length === 0) {
         hasMoreRef.current = false;

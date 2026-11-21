@@ -24,6 +24,8 @@ import { pushViewer, pushSearchDetail } from '../navigation/rootNavigation';
 import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { Colors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isImageMediaUrl } from '../utils/media';
+import { prefetchGridImages } from '../utils/imagePrefetch';
+import { buildListCacheKey, FEED_LIST_TTL_MS, getListCache, setListCache } from '../utils/listCache';
 import { useVisibleIds, useMountedIds, useFocusedCardIds, CardLayout } from '../utils/gridVisibility';
 import { useSource } from '../context/SourceContext';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
@@ -187,14 +189,30 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
       if (pageNum === 1) hasMoreRef.current = true;
       const isCurrent = () => requestId === requestIdRef.current && feedKey === feedKeyRef.current;
       try {
-        if (pageNum === 1 && !isRefresh) setLoading(true);
-        setError(null);
-
         const feedFilter: SearchFilterConfig = {
           ...DEFAULT_FILTER_CONFIG,
           ...selectedOrder,
         };
         const queryTags = booruApi.buildQueryTags(feedFilter, activeSource);
+        const listCacheKey =
+          pageNum === 1
+            ? buildListCacheKey('feed', activeSource.id, queryTags, feedOrderKey(selectedOrder), 1)
+            : '';
+
+        let hydratedFromCache = false;
+        if (pageNum === 1 && !isRefresh && listCacheKey) {
+          const cached = await getListCache(listCacheKey);
+          if (!isCurrent()) return;
+          if (cached && cached.posts.length > 0 && postsRef.current.length === 0) {
+            postsRef.current = cached.posts;
+            setPosts(cached.posts);
+            setPage(1);
+            hydratedFromCache = true;
+          }
+        }
+        if (pageNum === 1 && !isRefresh && !hydratedFromCache) setLoading(true);
+        setError(null);
+
         const newPosts = await booruApi.fetchPosts(pageNum, 24, queryTags, feedFilter, activeSource);
         // A stale request finishing during a source/order change must not overwrite the new list.
         if (!isCurrent()) return;
@@ -205,17 +223,11 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           return;
         }
 
-        // Pre-warm: the SAME entry the grid will read (getMediaUrl + URL key).
-        // prefetch does not support cacheKey, so the grid uses the URL key too.
-        // Video/archive URLs cannot warm an image cache.
-        newPosts.slice(0, 10).forEach((p) => {
-          const raw = p.previewUrl || p.sampleUrl;
-          if (!isImageMediaUrl(raw)) return;
-          const u = getMediaUrl(raw);
-          if (u) {
-            Image.prefetch(u, { headers: getMediaHeaders(u) }).catch(() => {});
-          }
-        });
+        // Bounded disk prefetch (max 4 concurrent) so pagination never floods RAM or image gate.
+        prefetchGridImages(
+          newPosts.slice(0, 10).map((p) => p.previewUrl || p.sampleUrl),
+          4
+        );
 
         const previous = pageNum === 1 ? [] : postsRef.current;
         const existingIds = new Set(previous.map((p) => p.id));
@@ -224,15 +236,18 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           existingIds.add(p.id);
           return true;
         });
-        if (uniqueNew.length === 0) hasMoreRef.current = false;
-        postsRef.current = [...previous, ...uniqueNew];
+        if (uniqueNew.length === 0 && pageNum > 1) hasMoreRef.current = false;
+        postsRef.current = pageNum === 1 ? uniqueNew : [...previous, ...uniqueNew];
         setPosts(postsRef.current);
         setPage(pageNum);
+        if (pageNum === 1 && listCacheKey && uniqueNew.length > 0) {
+          void setListCache(listCacheKey, uniqueNew, FEED_LIST_TTL_MS);
+        }
       } catch (err: any) {
         if (!isCurrent()) return;
         console.warn('[FeedScreen] loadPosts error:', err);
-        // The page advances only on success; the same page can be retried after an error.
-        if (pageNum === 1) {
+        // The page advances only on success; keep cached posts visible if SWR already painted them.
+        if (pageNum === 1 && postsRef.current.length === 0) {
           setError(err?.message || 'An error occurred while loading images.');
         }
       } finally {

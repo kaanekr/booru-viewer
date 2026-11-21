@@ -4,7 +4,13 @@ import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { useFocusEffect, StackActions } from '@react-navigation/native';
 import type { BooruSource } from '../../types/booru';
-import { StorageService, ImageQuality } from '../../services/storage';
+import {
+  DEFAULT_CACHE_LIMIT_MB,
+  MAX_CACHE_LIMIT_MB,
+  MIN_CACHE_LIMIT_MB,
+  StorageService,
+  ImageQuality,
+} from '../../services/storage';
 import { proxyService } from '../../services/proxyService';
 import { BackupService } from '../../services/backupService';
 import { SecurityService, BiometryType } from '../../services/securityService';
@@ -12,6 +18,9 @@ import { testProxyConnection, ConnectionResult } from '../../services/networkDia
 import { setGridPreviewsEnabled } from '../../utils/gridPreviews';
 import { clearCachedPosts } from '../../navigation/postsCache';
 import { navigationRef } from '../../navigation/rootNavigation';
+import { clearListCache, enforceListCacheLimit, getListCacheStats } from '../../utils/listCache';
+import { clearVideoCache, enforceVideoCacheLimit, getVideoCacheStats } from '../../utils/videoFallbackCache';
+import { clearResolveCaches } from '../../utils/media';
 import type { PasscodeModalMode } from '../../components/PasscodeModal';
 
 interface Credentials { userId: string; apiKey: string }
@@ -37,6 +46,20 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
   const [hasBiometrics, setHasBiometrics] = useState(false);
   const [passcodeModalVisible, setPasscodeModalVisible] = useState(false);
   const [passcodeModalMode, setPasscodeModalMode] = useState<PasscodeModalMode>('setup');
+  const [cacheLimitMb, setCacheLimitMb] = useState<number>(DEFAULT_CACHE_LIMIT_MB);
+  const [cacheLimitInput, setCacheLimitInput] = useState<string>(String(DEFAULT_CACHE_LIMIT_MB));
+  const [cacheStats, setCacheStats] = useState({ videoBytes: 0, videoFiles: 0, listBytes: 0, listEntries: 0 });
+
+  const refreshCacheStats = useCallback(() => {
+    const video = typeof getVideoCacheStats === 'function' ? getVideoCacheStats() : { bytes: 0, files: 0 };
+    const list = typeof getListCacheStats === 'function' ? getListCacheStats() : { bytes: 0, entries: 0 };
+    setCacheStats({
+      videoBytes: video.bytes,
+      videoFiles: video.files,
+      listBytes: list.bytes,
+      listEntries: list.entries,
+    });
+  }, []);
 
   const refreshSecurity = useCallback(async () => {
     const [config, bio] = await Promise.all([SecurityService.getConfig(), SecurityService.getBiometricStatus()]);
@@ -48,18 +71,23 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
 
   useEffect(() => {
     let alive = true;
+    const loadLimit = typeof StorageService.getCacheLimitMb === 'function'
+      ? StorageService.getCacheLimitMb()
+      : Promise.resolve(DEFAULT_CACHE_LIMIT_MB);
     Promise.all([StorageService.getProxyConfig(), StorageService.getImageQuality(), StorageService.getGridPreviews(),
-      StorageService.getGelbooruAuth(), StorageService.getRule34Auth()]).then(([proxy, quality, previews, gelbooru, rule34]) => {
+      StorageService.getGelbooruAuth(), StorageService.getRule34Auth(), loadLimit]).then(([proxy, quality, previews, gelbooru, rule34, limitMb]) => {
       if (!alive) return;
       setProxyEnabled(proxy.enabled); setWorkerUrl(proxy.workerUrl); setSavedWorkerUrl(proxy.workerUrl);
       proxyService.setConfig(proxy.enabled, proxy.workerUrl);
       setImageQuality(quality); setGridPreviews(previews); setGridPreviewsEnabled(previews);
       setGelbooruAuth(gelbooru); setRule34Auth(rule34); setSavedAuth({ gelbooru, rule34 });
+      setCacheLimitMb(limitMb); setCacheLimitInput(String(limitMb));
+      refreshCacheStats();
     }).catch(() => Alert.alert('Settings unavailable', 'Could not load your preferences. Please reopen Settings.'))
       .finally(() => { if (alive) setLoading(false); });
     refreshSecurity().catch(() => {});
     return () => { alive = false; };
-  }, [refreshSecurity]);
+  }, [refreshSecurity, refreshCacheStats]);
 
   useFocusEffect(useCallback(() => {
     let alive = true;
@@ -69,8 +97,9 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
         prev.length === tags.length && prev.every((tag, idx) => tag === tags[idx]) ? prev : tags
       );
     });
+    refreshCacheStats();
     return () => { alive = false; };
-  }, []));
+  }, [refreshCacheStats]));
 
   const run = async (id: string, action: () => Promise<void>) => {
     setBusy(id);
@@ -143,6 +172,28 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
     finally { setIsTestingProxy(false); }
   };
 
+  const changeCacheLimit = async (mb: number) => run('cacheLimit', async () => {
+    const saved = await StorageService.setCacheLimitMb(mb);
+    setCacheLimitMb(saved);
+    setCacheLimitInput(String(saved));
+    await Promise.all([
+      typeof enforceVideoCacheLimit === 'function' ? enforceVideoCacheLimit(saved) : Promise.resolve(),
+      typeof enforceListCacheLimit === 'function' ? enforceListCacheLimit(saved) : Promise.resolve(),
+    ]);
+    refreshCacheStats();
+    Haptics.selectionAsync();
+  });
+
+  const saveCustomCacheLimit = async () => {
+    const trimmed = cacheLimitInput.trim();
+    const parsed = Number(trimmed);
+    if (!/^\d+$/.test(trimmed) || !Number.isFinite(parsed) || parsed < MIN_CACHE_LIMIT_MB || parsed > MAX_CACHE_LIMIT_MB) {
+      Alert.alert('Invalid cache size', `Enter a size between ${MIN_CACHE_LIMIT_MB} and ${MAX_CACHE_LIMIT_MB} MB.`);
+      return;
+    }
+    await changeCacheLimit(parsed);
+  };
+
   const confirm = (title: string, description: string, action: () => Promise<void>) => Alert.alert(title, description,
     [{ text: 'Cancel', style: 'cancel' }, { text: 'Clear', style: 'destructive', onPress: () => run('clear', action) }]);
 
@@ -151,6 +202,7 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
     gelbooruAuth, rule34Auth, setGelbooruAuth, setRule34Auth, savedAuth, saveAuth, clearAuth, changeSource,
     saveWorker, removeWorker, toggleProxy, testConnection, isTestingProxy, connectionResults,
     passcodeEnabled, useBiometrics, biometryType, hasBiometrics, passcodeModalVisible, passcodeModalMode, refreshSecurity,
+    cacheLimitMb, cacheLimitInput, setCacheLimitInput, cacheStats, refreshCacheStats, changeCacheLimit, saveCustomCacheLimit,
     closePasscode: () => setPasscodeModalVisible(false),
     openPasscode: (mode: PasscodeModalMode) => { setPasscodeModalMode(mode); setPasscodeModalVisible(true); },
     changeQuality: (quality: ImageQuality) => run('quality', async () => { await StorageService.setImageQuality(quality); setImageQuality(quality); Haptics.selectionAsync(); }),
@@ -159,8 +211,29 @@ export function useSettings(onSelectSource: (source: BooruSource) => void | Prom
     removeTag: (tag: string) => run('tag', async () => { await StorageService.removeBlacklistedTag(tag); setBlacklistedTags((tags) => tags.filter((item) => item !== tag)); }),
     clearTags: () => confirm('Clear blocked tags?', 'Posts with these tags will no longer be hidden.', async () => { await StorageService.saveAllBlacklistedTags([]); setBlacklistedTags([]); }),
     clearHistory: () => confirm('Clear search history?', 'Your favorites and blocked tags will be kept.', async () => { await StorageService.clearSearchHistory(); Alert.alert('History cleared'); }),
-    clearCache: () => confirm('Clear media cache?', 'Downloaded thumbnails and temporary post data will be removed. Your favorites and settings will be kept.', async () => {
-      clearCachedPosts(); await Image.clearDiskCache(); await Image.clearMemoryCache(); Alert.alert('Cache cleared');
+    clearImageCache: () => confirm('Clear image cache?', 'Downloaded thumbnails and full images will be removed. Your favorites and settings will be kept.', async () => {
+      await Image.clearDiskCache(); await Image.clearMemoryCache(); Alert.alert('Image cache cleared');
+    }),
+    clearVideoCache: () => confirm('Clear video cache?', 'Locally buffered videos will be removed. Your favorites and settings will be kept.', async () => {
+      if (typeof clearVideoCache === 'function') await clearVideoCache();
+      refreshCacheStats();
+      Alert.alert('Video cache cleared');
+    }),
+    clearApiCache: () => confirm('Clear list & API cache?', 'Cached feeds, search pages and resolved links will be removed.', async () => {
+      clearCachedPosts();
+      if (typeof clearListCache === 'function') await clearListCache();
+      if (typeof clearResolveCaches === 'function') clearResolveCaches();
+      refreshCacheStats();
+      Alert.alert('List & API cache cleared');
+    }),
+    clearCache: () => confirm('Clear media cache?', 'Downloaded thumbnails, cached videos and temporary post data will be removed. Your favorites and settings will be kept.', async () => {
+      clearCachedPosts();
+      if (typeof clearListCache === 'function') await clearListCache();
+      if (typeof clearResolveCaches === 'function') clearResolveCaches();
+      if (typeof clearVideoCache === 'function') await clearVideoCache();
+      await Image.clearDiskCache(); await Image.clearMemoryCache();
+      refreshCacheStats();
+      Alert.alert('Cache cleared');
     }),
     importBackup: () => run('import', async () => {
       const result = await BackupService.pickAndImportFile();

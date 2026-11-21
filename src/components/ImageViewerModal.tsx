@@ -53,6 +53,7 @@ import { PostInfoModal } from './PostInfoModal';
 import { PornhubWebViewResolver } from './PornhubWebViewResolver';
 import {
   checkMp4UpgradeAvailable,
+  getImageCacheKey,
   getImageUris,
   getMediaHeaders,
   getMediaUrl,
@@ -2059,10 +2060,12 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
                 source={{
                   uri: sampleMediaUrl,
                   headers: getMediaHeaders(sampleMediaUrl),
+                  cacheKey: typeof getImageCacheKey === 'function' ? getImageCacheKey(sampleMediaUrl) : sampleMediaUrl,
                 }}
                 placeholder={{
                   uri: placeholderMediaUrl,
                   headers: getMediaHeaders(placeholderMediaUrl),
+                  cacheKey: typeof getImageCacheKey === 'function' ? getImageCacheKey(placeholderMediaUrl) : placeholderMediaUrl,
                 }}
                 placeholderContentFit="contain"
                 style={{ width: screenWidth, height: screenHeight }}
@@ -2090,7 +2093,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
                     uri: gifRequestUrl,
                     headers: getMediaHeaders(gifRequestUrl),
                     isAnimated: true,
-                    cacheKey: `${gifRequestUrl}:gif`,
+                    cacheKey: `${typeof getImageCacheKey === 'function' ? getImageCacheKey(gifRequestUrl) : gifRequestUrl}:gif`,
                   }}
                   style={[
                     { width: screenWidth, height: screenHeight },
@@ -2135,7 +2138,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
                   source={{
                     uri: fullMediaUrl,
                     headers: getMediaHeaders(fullMediaUrl),
-                    cacheKey: `${fullMediaUrl}:full-original`,
+                    cacheKey: `${typeof getImageCacheKey === 'function' ? getImageCacheKey(fullMediaUrl) : fullMediaUrl}:full-original`,
                   }}
                   style={[
                     { width: screenWidth, height: screenHeight },

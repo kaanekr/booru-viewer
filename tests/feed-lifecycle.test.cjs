@@ -57,6 +57,13 @@ function loadFeed(sourceOverride = {}) {
     '../utils/sourceQuickFilters': createLoader()(path.resolve(__dirname, '../src/utils/sourceQuickFilters.ts')),
     '../utils/scrollAwayHeader': scrollHeader.hook,
     '../components/ScrollAwayHeader': scrollHeader.component,
+    '../utils/imagePrefetch': { prefetchGridImages() {} },
+    '../utils/listCache': {
+      buildListCacheKey: () => 'feed-key',
+      FEED_LIST_TTL_MS: 600000,
+      getListCache: async () => null,
+      setListCache: async () => {},
+    },
     '../services/storage': { StorageService: {
       getFavorites: async () => [], getFeedOrder: async () => null, setFeedOrder: async () => {},
     } },

@@ -23,6 +23,17 @@ const GRID_PREVIEWS_KEY = '@booru_grid_previews_v2';
 const RECENT_VIEWS_KEY = '@booru_recent_views_v2';
 const FEED_ORDER_KEY = '@booru_feed_order_v2';
 const HH_LAST_EPISODES_KEY = '@booru_hh_last_episodes_v1';
+const CACHE_LIMIT_MB_KEY = '@booru_cache_limit_mb_v1';
+
+export const DEFAULT_CACHE_LIMIT_MB = 512;
+export const MIN_CACHE_LIMIT_MB = 50;
+export const MAX_CACHE_LIMIT_MB = 4096;
+export const CACHE_LIMIT_PRESETS_MB = [128, 256, 512, 1024, 2048] as const;
+
+export function clampCacheLimitMb(value: number): number {
+  if (!Number.isFinite(value)) return DEFAULT_CACHE_LIMIT_MB;
+  return Math.min(MAX_CACHE_LIMIT_MB, Math.max(MIN_CACHE_LIMIT_MB, Math.round(value)));
+}
 
 const VALID_SORT: SortOption[] = ['default', 'id', 'score', 'rating', 'user', 'height', 'width'];
 const VALID_RANGE: TimeRangeOption[] = ['all', '1d', '1w', '1m', '1y'];
@@ -38,6 +49,14 @@ const VALID_HH_SECTION: HentaiHavenFeedSection[] = [
 ];
 
 let cachedRecentViews: BooruPost[] | null = null;
+let cachedFavorites: BooruPost[] | null = null;
+let cachedFavoriteKeys: Set<string> | null = null;
+let cachedCacheLimitMb: number | null = null;
+
+function setFavoritesMemoryCache(items: BooruPost[]): void {
+  cachedFavorites = items;
+  cachedFavoriteKeys = new Set(items.map(getPostKey));
+}
 
 // Serialize each read-modify-write, not just setItem. A failed write must not
 // poison later operations, and a reader must see earlier queued mutations.
@@ -144,11 +163,36 @@ export const StorageService = {
       console.warn('Error saving grid previews:', e);
     }
   },
+
+  async getCacheLimitMb(): Promise<number> {
+    if (cachedCacheLimitMb !== null) return cachedCacheLimitMb;
+    try {
+      const data = await AsyncStorage.getItem(CACHE_LIMIT_MB_KEY);
+      if (data == null) return DEFAULT_CACHE_LIMIT_MB;
+      const parsed = JSON.parse(data);
+      const limit = typeof parsed === 'number' ? clampCacheLimitMb(parsed) : DEFAULT_CACHE_LIMIT_MB;
+      cachedCacheLimitMb = limit;
+      return limit;
+    } catch {
+      return DEFAULT_CACHE_LIMIT_MB;
+    }
+  },
+
+  async setCacheLimitMb(mb: number): Promise<number> {
+    const clamped = clampCacheLimitMb(mb);
+    await AsyncStorage.setItem(CACHE_LIMIT_MB_KEY, JSON.stringify(clamped));
+    cachedCacheLimitMb = clamped;
+    return clamped;
+  },
+
   async getFavorites(): Promise<BooruPost[]> {
     try {
       await pendingWrites.get(FAVORITES_KEY);
+      if (cachedFavorites !== null) return cachedFavorites;
       const data = await AsyncStorage.getItem(FAVORITES_KEY);
-      return data ? asPostArray(JSON.parse(data)) : [];
+      const parsed = data ? asPostArray(JSON.parse(data)) : [];
+      setFavoritesMemoryCache(parsed);
+      return parsed;
     } catch {
       return [];
     }
@@ -156,8 +200,11 @@ export const StorageService = {
 
   async isFavorite(post: Pick<BooruPost, 'sourceId' | 'id'>): Promise<boolean> {
     try {
-      const favs = await this.getFavorites();
-      return favs.some((p) => getPostKey(p) === getPostKey(post));
+      await pendingWrites.get(FAVORITES_KEY);
+      if (cachedFavoriteKeys === null) {
+        await this.getFavorites();
+      }
+      return cachedFavoriteKeys ? cachedFavoriteKeys.has(getPostKey(post)) : false;
     } catch {
       return false;
     }
@@ -174,8 +221,10 @@ export const StorageService = {
   },
 
   /** Also used by backup repair/import so a stale snapshot cannot erase a toggle. */
-  updateFavorites(update: (items: BooruPost[]) => BooruPost[]): Promise<BooruPost[]> {
-    return updateList(FAVORITES_KEY, asPostArray, update);
+  async updateFavorites(update: (items: BooruPost[]) => BooruPost[]): Promise<BooruPost[]> {
+    const next = await updateList(FAVORITES_KEY, asPostArray, update);
+    setFavoritesMemoryCache(next);
+    return next;
   },
 
   updateFavoriteTags(update: (tags: string[]) => string[]): Promise<string[]> {
@@ -433,7 +482,9 @@ export const StorageService = {
   },
 
   async saveAllFavorites(favorites: BooruPost[]): Promise<void> {
-    await queueWrite(FAVORITES_KEY, () => AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(uniquePosts(favorites))));
+    const deduped = uniquePosts(favorites);
+    await queueWrite(FAVORITES_KEY, () => AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(deduped)));
+    setFavoritesMemoryCache(deduped);
   },
 
   async saveAllRecentViews(recent: BooruPost[]): Promise<void> {

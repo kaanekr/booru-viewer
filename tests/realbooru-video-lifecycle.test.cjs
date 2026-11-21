@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
+const { createLoader } = require('./helpers/load-typescript.cjs');
+const lruCache = createLoader()(path.resolve(__dirname, '../src/utils/lruCache.ts'));
 
 function loadMedia(fetcher) {
   const calls = [];
@@ -22,6 +24,7 @@ function loadMedia(fetcher) {
     '../services/xvideos': {},
     '../services/xhamster': {},
     '../services/pornhub': {},
+    './lruCache': lruCache,
   };
   const filename = path.resolve(__dirname, '../src/utils/media.ts');
   const js = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
