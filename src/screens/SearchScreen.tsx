@@ -30,8 +30,7 @@ import {
 import * as Haptics from 'expo-haptics';
 import { Image } from 'expo-image';
 import { booruApi } from '../services/booruApi';
-import { nhentaiTagQuery } from '../services/nhentai';
-import { hentaiHavenTagQuery } from '../services/hentaihavens';
+import { getTagCompletion, sourceTagQuery, splitSearchTags } from '../utils/tagSearch';
 import { useNavigation, type RouteProp, useIsFocused } from '@react-navigation/native';
 import {
   BooruPost,
@@ -39,7 +38,6 @@ import {
   BooruTagSuggestion,
   RedGifsNiche,
   SearchFilterConfig,
-  TagCategory,
   DEFAULT_FILTER_CONFIG,
 } from '../types/booru';
 import type { TabParamList, SearchMode } from '../navigation/types';
@@ -63,6 +61,7 @@ import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { useSource } from '../context/SourceContext';
 
 const GOLD_ACCENT = '#F5A623';
+const SOURCE_TAG_CATALOGS = new Set(['xvideos', 'xhamster', 'pornhub', 'nhentai', 'hentaihaven']);
 
 const POPULAR_TAGS = [
   'original',
@@ -161,6 +160,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const [history, setHistory] = useState<string[]>([]);
   const [favoriteTags, setFavoriteTags] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<BooruTagSuggestion[]>([]);
+  const [sourceTags, setSourceTags] = useState<{ sourceId: string; tags: BooruTagSuggestion[] }>();
   const [isInputFocused, setIsInputFocused] = useState(false);
 
   // Filter Configuration State
@@ -212,6 +212,20 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const [niches, setNiches] = useState<RedGifsNiche[]>([]);
   const [nichesLoading, setNichesLoading] = useState(false);
   const isFocused = useIsFocused();
+  const hasSourceTagCatalog = SOURCE_TAG_CATALOGS.has(activeSource.type);
+  const exploreTags: BooruTagSuggestion[] = hasSourceTagCatalog
+    ? (sourceTags?.sourceId === activeSource.id ? sourceTags.tags : [])
+    : POPULAR_TAGS.map((name) => ({ name, category: 'general', postCount: 0 }));
+
+  useEffect(() => {
+    if (!isFocused || !hasSourceTagCatalog) return;
+    let cancelled = false;
+    void booruApi.fetchSourceTags(activeSource).then((tags) => {
+      if (!cancelled) setSourceTags({ sourceId: activeSource.id, tags });
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [activeSource, hasSourceTagCatalog, isFocused]);
+
   const mediaAllowed = useMediaPlaybackAllowed();
   const header = useScrollAwayHeader({
     enabled: isSearchActive && !loading && !searchError && results.length > 0,
@@ -386,24 +400,9 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       return;
     }
 
-    // If it ends with a space the user has not started typing a new tag yet
-    if (query.endsWith(' ')) {
-      setSuggestions([]);
-      return;
-    }
-
-    // For multi-tag searches base it on the tag currently being typed.
-    // The `tag:"..."` prefix and quotes are stripped from the search (e.g. tag:"big bre -> big bre).
-    const tokens = query.trim().split(/\s+/);
-    const activeToken = tokens[tokens.length - 1] || '';
-    const cleanToken = activeToken
-      .replace(/^-+/, '')
-      .replace(/^(tag|artist|character|parody|group|language|category):"?/i, '')
-      .replace(/"$/, '')
-      .trim();
-
-    if (cleanToken.length < 2) {
-      setSuggestions([]);
+    setSuggestions([]);
+    const completion = getTagCompletion(query);
+    if (!completion || completion.text.length < 2) {
       return;
     }
 
@@ -411,7 +410,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
-        const list = await booruApi.searchTags(cleanToken, 12, activeSource);
+        const list = await booruApi.searchTags(completion.text, 12, activeSource, completion.prefix);
         if (!cancelled && currentSourceId === lastActiveSourceIdRef.current) {
           setSuggestions(list);
         }
@@ -518,42 +517,17 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     }
   };
 
-  const handleSelectSuggestion = (suggestedTag: string, immediateSearch = false, category?: TagCategory) => {
+  const handleSelectSuggestion = (suggestion: BooruTagSuggestion) => {
     Haptics.selectionAsync();
-
-    // nhentai / hentaihaven: if the suggestion is a real tag, search via the `tag:...` or `artist:...`
-    // mechanism (like the other servers).
-    const qualifiedTag =
-      activeSource.type === 'nhentai'
-        ? nhentaiTagQuery(suggestedTag, category)
-        : activeSource.type === 'hentaihaven'
-          ? hentaiHavenTagQuery(suggestedTag, category)
-          : suggestedTag;
-
-    const parts = query.match(/("[^"]*"|[^\s"])+/g) || [];
-    let newQuery = '';
-
-    if (parts.length > 0 && !query.endsWith(' ')) {
-      const last = parts[parts.length - 1];
-      const isNegated = last.startsWith('-');
-      parts[parts.length - 1] = isNegated ? `-${qualifiedTag}` : qualifiedTag;
-      newQuery = parts.filter(Boolean).join(' ') + ' ';
-    } else {
-      const existing = query.trim();
-      newQuery = existing ? `${existing} ${qualifiedTag} ` : `${qualifiedTag} `;
-    }
-
-    setQuery(newQuery);
-    setSuggestions([]);
-
-    if (immediateSearch) {
-      executeSearch(newQuery.trim(), 'replace');
-    }
+    const completion = getTagCompletion(query);
+    const qualified = suggestion.query ?? sourceTagQuery(activeSource.type, suggestion.name, suggestion.category);
+    const parts = completion?.previous ?? splitSearchTags(query);
+    executeSearch([...parts, completion?.negated ? `-${qualified}` : qualified].join(' '));
   };
 
   const parseQueryToTags = (raw: string): string[] => {
     // Quoted groups stay a single token: tag:"big breasts" is not split
-    return (raw.trim().match(/("[^"]*"|[^\s"])+/g) || [])
+    return splitSearchTags(raw)
       .map((t) => t.trim().toLowerCase())
       .filter(Boolean);
   };
@@ -618,13 +592,13 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
   const renderSuggestionItem = useCallback(
     ({ item }: { item: BooruTagSuggestion }) => {
-      const onSelect = () => handleSelectSuggestionRef.current(item.name, true, item.category);
+      const onSelect = () => handleSelectSuggestionRef.current(item);
       return (
         <TouchableOpacity style={styles.suggestionRow} onPress={onSelect}>
           <TagChip
             name={item.name}
             category={item.category}
-            count={item.postCount}
+            count={item.postCount || undefined}
             size="sm"
             onPress={onSelect}
           />
@@ -1270,25 +1244,27 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
               </View>
             )}
 
-            {/* Popular Trending Tags */}
-            <View style={styles.section}>
+            {exploreTags.length > 0 && <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <View style={styles.sectionTitleWithIcon}>
                   <Flame size={16} color="#FF7B72" />
-                  <Text style={styles.sectionTitle}>Popular Tags</Text>
+                  <Text style={styles.sectionTitle}>{hasSourceTagCatalog ? 'Source Tags' : 'Popular Tags'}</Text>
                 </View>
               </View>
               <View style={styles.tagWrap}>
-                {POPULAR_TAGS.map((tag, idx) => (
+                {exploreTags.map((tag, idx) => (
                   <TagChip
-                    key={`pop-${tag}-${idx}`}
-                    name={tag}
-                    category="general"
-                    onPress={handleTagChipPress}
+                    key={`pop-${tag.name}-${idx}`}
+                    name={tag.name}
+                    category={tag.category}
+                    count={tag.postCount || undefined}
+                    onPress={hasSourceTagCatalog
+                      ? () => handleTagChipPress(tag.query ?? sourceTagQuery(activeSource.type, tag.name, tag.category))
+                      : handleTagChipPress}
                   />
                 ))}
               </View>
-            </View>
+            </View>}
           </ScrollView>
         )}
       </View>

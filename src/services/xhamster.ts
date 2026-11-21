@@ -1,4 +1,4 @@
-import type { BooruPost, BooruSource } from '../types/booru';
+import type { BooruPost, BooruSource, BooruTagGroups } from '../types/booru';
 
 /**
  * XHamster (https://xhamster.com) integration — pure helpers.
@@ -152,20 +152,43 @@ function parseViews(v: string | undefined): number {
   return Number.isFinite(num) ? Math.round(num * mult) : 0;
 }
 
-/**
- * Extracts posts from XHamster search/list HTML.
- */
+function readXhamsterInitials(html: string): any {
+  const script = html.match(/<script[^>]*id=['"]initials-script['"][^>]*>([\s\S]*?)<\/script>/i)?.[1]
+    ?? html.match(/window\.initials\s*=\s*(\{[\s\S]*?\});\s*(?:window\.|<\/script>)/i)?.[1];
+  if (!script) return null;
+  try {
+    return JSON.parse(script.trim().replace(/^window\.initials\s*=\s*/, '').replace(/;\s*$/, ''));
+  } catch {
+    return null;
+  }
+}
+
+export function parseXHamsterSearchSuggestions(html: string): string[] {
+  const tags = readXhamsterInitials(html)?.searchVideoSuggestions?.tags;
+  if (!Array.isArray(tags)) return [];
+  return tags.flatMap((tag) => {
+    const label = typeof tag?.plainText === 'string' ? tag.plainText : tag?.text;
+    return typeof label === 'string' && label.trim() ? [decodeEntities(label).trim()] : [];
+  });
+}
+
+export function parseXHamsterCategoryNames(html: string): string[] {
+  const links = /<a\b(?=[^>]*\bdata-role=['"]tag-link['"])(?=[^>]*\bhref=['"](?:https?:\/\/[^/'"]+)?\/categories\/)[^>]*>([\s\S]*?)<\/a>/gi;
+  return [...html.matchAll(links)].map((match) => {
+    return decodeEntities(match[1].replace(/<!--[\s\S]*?-->|<[^>]*>/g, '')).trim();
+  }).filter(Boolean);
+}
+
+/** Extracts posts from XHamster search/list HTML. */
 export function parseXhamsterListing(html: string, source: BooruSource): BooruPost[] {
   const posts: BooruPost[] = [];
   const seen = new Set<string>();
   const base = (source.baseUrl || XHAMSTER_BASE).replace(/\/$/, '');
 
   const initVideoMap = new Map<string, any>();
-  const initMatch = html.match(/<script id=['"]initials-script['"]>window\.initials=([\s\S]*?)<\/script>/);
-  if (initMatch) {
+  const initials = readXhamsterInitials(html);
+  if (initials) {
     try {
-      const raw = initMatch[1].trim().replace(/;$/, '');
-      const parsed = JSON.parse(raw);
       const scan = (obj: any) => {
         if (!obj || typeof obj !== 'object') return;
         if (Array.isArray(obj)) {
@@ -179,7 +202,7 @@ export function parseXhamsterListing(html: string, source: BooruSource): BooruPo
           for (const k of Object.keys(obj)) scan(obj[k]);
         }
       };
-      scan(parsed);
+      scan(initials);
     } catch {}
   }
 
@@ -364,7 +387,7 @@ export interface XHamsterFiles {
   low: string;
   hls: string;
   title?: string;
-  tags?: string[];
+  tagGroups?: BooruTagGroups;
   uploader?: string;
 }
 
@@ -380,69 +403,53 @@ export function parseXhamsterDetail(html: string): XHamsterFiles {
   let hls = '';
   let title = '';
   let uploader = '';
-  const tags: string[] = [];
+  const tags: BooruTagGroups = { artist: [], character: [], copyright: [], general: [], meta: [] };
 
   // 1. window.initials JSON extraction
   try {
-    const scriptM =
-      html.match(/<script[^>]*id=['"]initials-script['"][^>]*>([\s\S]*?)<\/script>/i) ||
-      html.match(/window\.initials\s*=\s*(\{[\s\S]*?\});\s*(?:window\.|<\/script>)/i);
-
-    if (scriptM) {
-      let rawJson = scriptM[1];
-      if (!rawJson.startsWith('{')) {
-        const jsonInner = rawJson.match(/window\.initials\s*=\s*(\{[\s\S]*?\});/);
-        if (jsonInner) rawJson = jsonInner[1];
+    const data = readXhamsterInitials(html);
+    if (data) {
+      if (typeof data.videoTitle === 'string' && data.videoTitle.trim()) {
+        title = data.videoTitle.trim();
+      } else if (typeof data.videoTitle?.pageTitle === 'string') {
+        title = data.videoTitle.pageTitle.trim();
+      } else if (typeof data.videoEntity?.title === 'string') {
+        title = data.videoEntity.title.trim();
       }
-      if (rawJson.startsWith('{')) {
-        const data = JSON.parse(rawJson);
 
-        // Title
-        if (typeof data.videoTitle === 'string' && data.videoTitle.trim()) {
-          title = data.videoTitle.trim();
-        } else if (data.videoTitle && typeof data.videoTitle.pageTitle === 'string') {
-          title = data.videoTitle.pageTitle.trim();
-        } else if (data.videoEntity && typeof data.videoEntity.title === 'string') {
-          title = data.videoEntity.title.trim();
+      const tagList = data.videoTagsComponent?.tags ?? data.videoTagsComponent?.models;
+      if (Array.isArray(tagList)) {
+        for (const item of tagList) {
+          if (typeof item?.name !== 'string' || !item.name.trim()) continue;
+          const name = decodeEntities(item.name).trim();
+          if (item.isUploader && !uploader) uploader = name;
+          if (item.isUploader || item.isPornstar || item.isCreator || item.isChannel || item.isUser) tags.artist.push(name);
+          else if (item.isCategory) tags.copyright.push(name);
+          else tags.general.push(name);
         }
+      }
 
-        // Tags
-        const tagList = data.videoTagsComponent?.tags || data.videoTagsComponent?.models;
-        if (Array.isArray(tagList)) {
-          for (const item of tagList) {
-            if (item && item.name) {
-              tags.push(String(item.name).trim());
-            }
-            if (item && item.isUploader && item.name && !uploader) {
-              uploader = String(item.name).trim();
-            }
-          }
+      if (!uploader && typeof data.videoEntity?.author === 'string') {
+        uploader = data.videoEntity.author.trim();
+      }
+      if (uploader && !tags.artist.includes(uploader)) tags.artist.push(uploader);
+
+      const sources = data.xplayerSettings?.sources;
+      if (sources) {
+        const h264Hls = sources.hls?.h264?.url || sources.hls?.h264?.fallback;
+        const av1Hls = sources.hls?.av1?.url || sources.hls?.av1?.fallback;
+        if (h264Hls && /^https?:\/\//i.test(h264Hls)) {
+          hls = h264Hls;
+        } else if (av1Hls && /^https?:\/\//i.test(av1Hls)) {
+          hls = av1Hls;
         }
-
-        // Uploader
-        if (!uploader && data.videoEntity && data.videoEntity.author) {
-          uploader = String(data.videoEntity.author).trim();
-        }
-
-        // Video sources (xplayerSettings.sources)
-        const sources = data.xplayerSettings?.sources;
-        if (sources) {
-          const h264Hls = sources.hls?.h264?.url || sources.hls?.h264?.fallback;
-          const av1Hls = sources.hls?.av1?.url || sources.hls?.av1?.fallback;
-          if (h264Hls && /^https?:\/\//i.test(h264Hls)) {
-            hls = h264Hls;
-          } else if (av1Hls && /^https?:\/\//i.test(av1Hls)) {
-            hls = av1Hls;
-          }
-
-          const standardH264 = Array.isArray(sources.standard?.h264) ? sources.standard.h264 : [];
-          for (const s of standardH264) {
-            const u = s?.url || s?.fallback;
-            if (u && /^https?:\/\//i.test(u)) {
-              const q = parseInt(s.quality, 10);
-              if (q >= 720 && !high) high = u;
-              else if (!low) low = u;
-            }
+        const standardH264 = Array.isArray(sources.standard?.h264) ? sources.standard.h264 : [];
+        for (const s of standardH264) {
+          const u = s?.url || s?.fallback;
+          if (u && /^https?:\/\//i.test(u)) {
+            const q = parseInt(s.quality, 10);
+            if (q >= 720 && !high) high = u;
+            else if (!low) low = u;
           }
         }
       }
@@ -502,7 +509,7 @@ export function parseXhamsterDetail(html: string): XHamsterFiles {
     low,
     hls,
     title: title || undefined,
-    tags: tags.length > 0 ? tags : undefined,
+    tagGroups: tags.artist.length || tags.copyright.length || tags.general.length ? tags : undefined,
     uploader: uploader || undefined,
   };
 }

@@ -1,5 +1,6 @@
 import type { BooruPost, BooruSource, BooruTagGroups, BooruTagSuggestion, TagCategory } from '../types/booru';
 import { proxyService } from './proxyService';
+import { LruCache } from '../utils/lruCache';
 
 /**
  * nhentai integration - pure helpers.
@@ -208,8 +209,10 @@ export function buildNHentaiApiCandidates(
  * v2 list parser. `num_favorites` -> score/favCount (score equals the favorite count).
  * Images come from the t1/i1 CDN; the list only gives tag_ids (names resolve in detail).
  */
-export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): BooruPost[] {
-  const posts: BooruPost[] = [];
+type NHentaiListingPost = BooruPost & { tagIds?: number[] };
+
+export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): NHentaiListingPost[] {
+  const posts: NHentaiListingPost[] = [];
   if (!jsonText) return posts;
   try {
     const data = JSON.parse(jsonText);
@@ -264,6 +267,7 @@ export function parseNHentaiV2Listing(jsonText: string, source: BooruSource): Bo
         favCount: favorites,
         tags: { artist: [], character: [], copyright: [], general: [], meta: ['manga'] },
         allTags: [],
+        tagIds: Array.isArray(item.tag_ids) ? item.tag_ids.filter(Number.isSafeInteger) : undefined,
         sourceLink: `https://nhentai.net/g/${id}/`,
         fileExt: ext,
         createdAt: new Date().toISOString(),
@@ -338,36 +342,81 @@ export interface NHentaiResolvedGallery {
   pages: string[];
   tags: BooruTagGroups;
   allTags: string[];
+  tagQueries?: BooruPost['tagQueries'];
   pageCount: number;
   /** Favorite count from v2 detail (score); undefined if absent */
   numFavorites?: number;
 }
 
 /** Extracts tag groups from v2 detail JSON (names + types are included). */
-export function parseNHentaiV2DetailTags(jsonText: string): { tags: BooruTagGroups; allTags: string[]; numFavorites: number } {
+const NHENTAI_TAG_TYPES = new Set(['tag', 'artist', 'parody', 'character', 'group', 'language', 'category']);
+
+function readNHentaiTag(value: any): BooruTagSuggestion | null {
+  if (typeof value?.name !== 'string') return null;
+  const name = decodeEntities(value.name).trim();
+  if (!name) return null;
+  const type = String(value.type || 'tag').toLowerCase();
+  return {
+    name,
+    category: nhentaiTagCategory(type),
+    postCount: Number(value.count) || 0,
+    query: NHENTAI_TAG_TYPES.has(type) ? `${type}:"${name.replace(/"/g, '')}"` : undefined,
+  };
+}
+
+function groupNHentaiTags(list: BooruTagSuggestion[]) {
   const tags: BooruTagGroups = { artist: [], character: [], copyright: [], general: [], meta: ['manga'] };
-  const allTags: string[] = [];
-  let numFavorites = 0;
-  if (!jsonText) return { tags, allTags, numFavorites };
+  const tagQueries: Record<string, string> = {};
+  const allTags = new Set<string>();
+  for (const { name, category, query } of list) {
+    if (!tags[category].includes(name)) tags[category].push(name);
+    if (query) tagQueries[`${category}:${name}`] = query;
+    allTags.add(name);
+  }
+  return { tags, allTags: [...allTags], tagQueries };
+}
+
+export function parseNHentaiV2DetailTags(jsonText: string) {
   try {
     const data = JSON.parse(jsonText);
-    numFavorites = Number(data?.num_favorites) || 0;
-    const list = Array.isArray(data?.tags) ? data.tags : [];
-    const seen = new Set<string>();
-    for (const t of list) {
-      const name = decodeEntities(String(t?.name || '')).trim();
-      if (!name || seen.has(name.toLowerCase())) continue;
-      seen.add(name.toLowerCase());
-      allTags.push(name);
-      const type = String(t?.type || '').toLowerCase();
-      if (type === 'artist' || type === 'group') tags.artist.push(name);
-      else if (type === 'character') tags.character.push(name);
-      else if (type === 'parody') tags.copyright.push(name);
-      else if (type === 'tag') tags.general.push(name);
-      else tags.meta.push(name);
+    const list: BooruTagSuggestion[] = Array.isArray(data?.tags) ? data.tags.map(readNHentaiTag).filter(Boolean) : [];
+    return { ...groupNHentaiTags(list), numFavorites: Number(data?.num_favorites) || 0 };
+  } catch {
+    return { ...groupNHentaiTags([]), numFavorites: 0 };
+  }
+}
+
+const listingTags = new LruCache<number, BooruTagSuggestion>(4000, 60 * 60 * 1000);
+let listingTagCooldownUntil = 0;
+
+export async function hydrateNHentaiListingTags(posts: NHentaiListingPost[]): Promise<BooruPost[]> {
+  const missing = [...new Set(posts.flatMap((post) => post.tagIds ?? []))].filter((id) => !listingTags.has(id));
+  if (Date.now() >= listingTagCooldownUntil) {
+    const requests = [];
+    for (let i = 0; i < missing.length; i += 100) {
+      const ids = missing.slice(i, i + 100);
+      requests.push((async () => {
+        try {
+          const res = await proxyService.fetchWithFallback(`${NHENTAI_API_BASE}/tags/ids?ids=${ids.join(',')}`, { headers: nhentaiApiHeaders() }, 3000);
+          if (res.status === 429) listingTagCooldownUntil = Date.now() + 60_000;
+          if (!res.ok) return;
+          const data = await res.json();
+          if (!Array.isArray(data)) return;
+          for (const item of data) {
+            const tag = readNHentaiTag(item);
+            if (tag && Number.isSafeInteger(item.id)) listingTags.set(item.id, tag);
+          }
+        } catch {
+          // The gallery cards can still be displayed and detail loads its own tags.
+        }
+      })());
     }
-  } catch {}
-  return { tags, allTags, numFavorites };
+    await Promise.all(requests);
+  }
+  return posts.map(({ tagIds, ...post }) => {
+    const tags = (tagIds ?? []).map((id) => listingTags.get(id)).filter((tag) => tag !== undefined);
+    return tags.length ? { ...post, ...groupNHentaiTags(tags) } : post;
+  });
 }
 
 /**
@@ -410,7 +459,7 @@ export async function resolveNHentaiGalleryDetail(
 
   // 1. Official v2 API detail: GET /api/v2/galleries/{id}
   const v2Text = await fetchWithTimeout(`${NHENTAI_API_BASE}/galleries/${rawId}`, 12000);
-  let v2Detail: { tags: BooruTagGroups; allTags: string[]; numFavorites: number } | null = null;
+  let v2Detail: ReturnType<typeof parseNHentaiV2DetailTags> | null = null;
   if (v2Text) {
     const pages = parseNHentaiGalleryPages(v2Text, rawId);
     const detail = parseNHentaiV2DetailTags(v2Text);
@@ -418,8 +467,7 @@ export async function resolveNHentaiGalleryDetail(
     if (pages.length > 0) {
       return {
         pages,
-        tags: detail.tags,
-        allTags: detail.allTags,
+        ...detail,
         pageCount: pages.length,
         numFavorites: detail.numFavorites || undefined,
       };
@@ -431,11 +479,12 @@ export async function resolveNHentaiGalleryDetail(
   // v2 body itself is the better metadata source (real media_id / num_pages /
   // page extension), post list metadata is the last resort.
   const synth = syntheticNHentaiPages(v2Text, post);
-  if (synth.length > 0) {
+  if (synth.length > 0 || v2Detail) {
     return {
       pages: synth,
       tags: v2Detail?.tags ?? empty.tags,
       allTags: v2Detail?.allTags ?? empty.allTags,
+      tagQueries: v2Detail?.tagQueries,
       pageCount: synth.length,
       numFavorites: v2Detail?.numFavorites || undefined,
     };
@@ -586,35 +635,33 @@ function nhentaiTagCategory(type: string): TagCategory {
  */
 export async function searchNHentaiApiTags(
   query: string,
-  limit: number = 12
+  limit: number = 12,
+  type?: string,
 ): Promise<BooruTagSuggestion[]> {
   const q = (query || '').trim();
-  if (!q) return [];
+  if (limit <= 0) return [];
   try {
+    const size = Math.min(50, limit);
+    if (!q) {
+      const res = await proxyService.fetchWithFallback(`${NHENTAI_API_BASE}/tags/tag?sort=popular&per_page=${size}`, { headers: nhentaiApiHeaders() }, 5000);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data?.result) ? data.result.map(readNHentaiTag).filter(Boolean).slice(0, limit) : [];
+    }
     const url = `${NHENTAI_API_BASE}/tags/search`;
     const res = await proxyService.fetchWithFallback(
       url,
       {
         method: 'POST',
         headers: nhentaiApiHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ query: q, limit: Math.min(50, Math.max(5, limit)) }),
+        body: JSON.stringify({ query: q, limit: size, type: type && NHENTAI_TAG_TYPES.has(type) ? type : undefined }),
       },
       5000
     );
     if (!res.ok) return [];
     const data = await res.json();
     if (!Array.isArray(data)) return [];
-    return data
-      .map((t: any) => {
-        const name = decodeEntities(String(t?.name || '')).trim();
-        if (!name) return null;
-        return {
-          name,
-          category: nhentaiTagCategory(String(t?.type || 'tag')),
-          postCount: Number(t?.count) || 0,
-        };
-      })
-      .filter(Boolean) as BooruTagSuggestion[];
+    return data.map(readNHentaiTag).filter((tag): tag is BooruTagSuggestion => tag !== null).slice(0, limit);
   } catch {
     return [];
   }
@@ -622,39 +669,20 @@ export async function searchNHentaiApiTags(
 
 /**
  * nhentai tag search / autocomplete.
- * Order: local pool (instant) -> official v2 POST /api/v2/tags/search.
+ * Use the official v2 tag index first, with local matches when the API is unavailable.
  */
 export async function searchNHentaiTags(
   query: string,
-  limit: number = 12
+  limit: number = 12,
+  type?: string,
 ): Promise<BooruTagSuggestion[]> {
-  const q = (query || '').toLowerCase().trim();
+  const q = (query || '').toLowerCase().replace(/_/g, ' ').trim();
   if (!q) return [];
-
-  const results: BooruTagSuggestion[] = [];
-  const seen = new Set<string>();
-
-  // 1. Local fast match (instant response)
-  for (const tag of COMMON_NHENTAI_TAGS) {
-    if (tag.name.toLowerCase().includes(q)) {
-      results.push(tag);
-      seen.add(tag.name.toLowerCase());
-      if (results.length >= limit) break;
-    }
-  }
-
-  // 2. Official v2 API tag search (POST /api/v2/tags/search)
-  if (results.length < limit) {
-    const apiResults = await searchNHentaiApiTags(q, limit);
-    for (const r of apiResults) {
-      if (seen.has(r.name.toLowerCase())) continue;
-      seen.add(r.name.toLowerCase());
-      results.push(r);
-      if (results.length >= limit) break;
-    }
-  }
-
-  return results.slice(0, limit);
+  const results = await searchNHentaiApiTags(q, limit, type);
+  if (results.length) return results;
+  return COMMON_NHENTAI_TAGS.filter((tag) => {
+    return tag.name.includes(q) && (!type || nhentaiTagQuery(tag.name, tag.category).startsWith(`${type}:`));
+  }).slice(0, limit).map((tag) => ({ ...tag, postCount: 0 }));
 }
 
 /**

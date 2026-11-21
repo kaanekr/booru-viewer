@@ -33,8 +33,7 @@ import {
   DEFAULT_FILTER_CONFIG,
 } from '../types/booru';
 import { booruApi } from '../services/booruApi';
-import { nhentaiTagQuery } from '../services/nhentai';
-import { hentaiHavenTagQuery } from '../services/hentaihavens';
+import { getTagCompletion, sourceTagQuery, splitSearchTags } from '../utils/tagSearch';
 import { dayDateOptions, weekDateOptions, monthDateOptions, describeAnchor } from '../utils/leaderboardPeriods';
 import { SourceCatalog, SourceMark } from './SourceCatalog';
 import { useSource } from '../context/SourceContext';
@@ -282,24 +281,16 @@ const SearchFilterModalComponent: React.FC<SearchFilterModalProps> = ({
       return;
     }
 
-    if (tagInput.endsWith(' ')) {
-      setSuggestions([]);
-      return;
-    }
-
-    const tokens = tagInput.trim().split(/[\s,]+/);
-    const activeToken = tokens[tokens.length - 1] || '';
-    const cleanToken = activeToken.replace(/^-+/, '').trim();
-
-    if (cleanToken.length < 2) {
-      setSuggestions([]);
+    setSuggestions([]);
+    const completion = getTagCompletion(tagInput, true);
+    if (!completion || completion.text.length < 2) {
       return;
     }
 
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
-        const list = await booruApi.searchTags(cleanToken, 12, activeSource);
+        const list = await booruApi.searchTags(completion.text, 12, activeSource, completion.prefix);
         if (!cancelled) setSuggestions(list);
       } catch {
         if (!cancelled) setSuggestions([]);
@@ -312,7 +303,7 @@ const SearchFilterModalComponent: React.FC<SearchFilterModalProps> = ({
   const handleAddTag = (tagToAdd: string) => {
     // Parse multiple space- or comma-separated tags one by one;
     // a quoted group stays whole (tag:"big breasts" is not split)
-    const parts = tagToAdd.trim().match(/("[^"]*"|[^\s,"])+/g) || [];
+    const parts = splitSearchTags(tagToAdd, true);
     const validTags = parts
       .map((p) => p.trim().toLowerCase())
       .filter((p) => p.length > 0 && !draft.tags.includes(p));
@@ -328,29 +319,11 @@ const SearchFilterModalComponent: React.FC<SearchFilterModalProps> = ({
     setSuggestions([]);
   };
 
-  const handleSelectSuggestion = (suggestedTag: string, category?: BooruTagSuggestion['category']) => {
-    Haptics.selectionAsync();
-    // nhentai: suggestions are added via the `tag:"name"` / `artist:"name"` mechanism
-    // hentaihaven: suggestions are added via the `tag:...` or `artist:...` mechanism
-    const qualified =
-      activeSource.type === 'nhentai'
-        ? nhentaiTagQuery(suggestedTag, category)
-        : activeSource.type === 'hentaihaven'
-          ? hentaiHavenTagQuery(suggestedTag, category)
-          : suggestedTag.trim().toLowerCase();
-    // Also pick up previously typed tokens, complete the last one with the suggestion
-    const tokens = tagInput.trim().match(/("[^"]*"|[^\s,"])+/g) || [];
-    const previousTokens = tokens.slice(0, -1).map((t) => t.trim().toLowerCase()).filter(Boolean);
-
-    const toAdd = [...previousTokens, qualified].filter((t) => !draft.tags.includes(t));
-    if (toAdd.length > 0) {
-      setDraft((prev) => ({
-        ...prev,
-        tags: [...prev.tags, ...toAdd],
-      }));
-    }
-    setTagInput('');
-    setSuggestions([]);
+  const handleSelectSuggestion = (suggestion: BooruTagSuggestion) => {
+    const completion = getTagCompletion(tagInput, true);
+    const qualified = suggestion.query ?? sourceTagQuery(activeSource.type, suggestion.name, suggestion.category);
+    const previous = completion?.previous ?? splitSearchTags(tagInput, true);
+    handleAddTag([...previous, completion?.negated ? `-${qualified}` : qualified].join(' '));
   };
 
   const handleRemoveTag = (tagToRemove: string) => {
@@ -573,14 +546,14 @@ const SearchFilterModalComponent: React.FC<SearchFilterModalProps> = ({
                   <TouchableOpacity
                     key={`suggest-${item.name}-${index}`}
                     style={styles.suggestionRow}
-                    onPress={() => handleSelectSuggestion(item.name, item.category)}
+                    onPress={() => handleSelectSuggestion(item)}
                   >
                     <TagChip
                       name={item.name}
                       category={item.category}
-                      count={item.postCount}
+                      count={item.postCount || undefined}
                       size="sm"
-                      onPress={() => handleSelectSuggestion(item.name, item.category)}
+                      onPress={() => handleSelectSuggestion(item)}
                     />
                   </TouchableOpacity>
                 ))}

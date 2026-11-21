@@ -295,6 +295,7 @@ export interface HentaiHavenFiles {
   episodes?: HentaiHavenEpisode[];
   tags?: BooruPost['tags'];
   allTags?: string[];
+  tagQueries?: BooruPost['tagQueries'];
   views?: number;
   rating?: { rating: string | number; votes: number };
   description?: string;
@@ -699,14 +700,7 @@ export function parseHentaiHavenQuery(raw: string | undefined): HentaiHavenParse
     }
   };
 
-  let rest = raw || '';
-  // First -?"..." groups (e.g. -"big breasts" exclusion also works)
-  rest = rest.replace(/(-?)"([^"]*)"/g, (_m, neg: string, inner: string) => {
-    push((neg ? '-' : '') + inner, false);
-    return ' ';
-  });
-  for (const part of rest.split(/\s+/)) {
-    if (!part) continue;
+  for (const part of (raw || '').match(/(?:"[^"]*(?:"|$)|[^\s"])+/g) ?? []) {
     push(part, false);
     if (include.length + exclude.length >= 12) break;
   }
@@ -720,10 +714,10 @@ export function parseHentaiHavenQuery(raw: string | undefined): HentaiHavenParse
  */
 export async function searchHentaiHavenTags(
   query: string,
-  limit: number = 12
+  limit: number = 12,
+  type?: string,
 ): Promise<BooruTagSuggestion[]> {
   const q = normHentaiHavenToken(query);
-  if (!q) return [];
   const qc = q.replace(/\s+/g, '');
   const terms = await getAllGenres();
   const authorIds = new Set([
@@ -732,6 +726,8 @@ export async function searchHentaiHavenTags(
   ]);
 
   const matched = terms.filter((g) => {
+    if (type === 'artist' && !authorIds.has(g.term_id)) return false;
+    if ((type === 'tag' || type === 'genre') && authorIds.has(g.term_id)) return false;
     const name = normHentaiHavenToken(g.name);
     const slug = normHentaiHavenToken(g.slug);
     return (
@@ -1041,7 +1037,7 @@ export async function fetchHentaiHavenPosts(
     if (include.length === 0) {
       const section: HentaiHavenFeedSection =
         opts.section ?? (opts.sortBy === 'score' ? 'trending' : 'latest');
-      return await fetchHentaiHavenFeedPosts(source, section, page);
+      return applyHentaiHavenExcludes(await fetchHentaiHavenFeedPosts(source, section, page), exclude);
     }
 
     const genres = await getAllGenres();
@@ -1274,6 +1270,7 @@ export async function resolveHentaiHavenGalleryDetail(
   episodes: HentaiHavenEpisode[];
   tags: BooruPost['tags'];
   allTags: string[];
+  tagQueries: NonNullable<BooruPost['tagQueries']>;
   views: number;
   rating?: { rating: string | number; votes: number };
   description?: string;
@@ -1337,22 +1334,26 @@ export async function resolveHentaiHavenGalleryDetail(
     episodes.sort((a, b) => b.ep - a.ep);
 
     const rawGeneral: string[] = [];
+    const tagQueries: NonNullable<BooruPost['tagQueries']> = {};
     if (Array.isArray(data.post_genres)) {
       data.post_genres.forEach((g: any) => {
-        if (g.name) rawGeneral.push(g.name);
+        if (typeof g?.name !== 'string' || !g.name.trim()) return;
+        const name = cleanHentaiHavenTags([g.name])[0] ?? g.name.trim();
+        rawGeneral.push(name);
+        tagQueries[`general:${name}`] = hentaiHavenTagQuery(g.name);
       });
     }
     if (Array.isArray(data.post_tags)) {
       data.post_tags.forEach((t: any) => {
-        if (t.name) rawGeneral.push(t.name);
+        if (typeof t?.name === 'string') rawGeneral.push(...cleanHentaiHavenTags([t.name]));
       });
     }
-    const generalTags = cleanHentaiHavenTags(rawGeneral);
+    const generalTags = [...new Map(rawGeneral.map((name) => [name.toLowerCase(), name])).values()];
 
     const artistTags: string[] = [];
     if (Array.isArray(data.post_authors)) {
       data.post_authors.forEach((a: any) => {
-        if (a.name && !isHentaiHavenSpamTag(a.name)) {
+        if (typeof a?.name === 'string' && a.name.trim() && !isHentaiHavenSpamTag(a.name)) {
           artistTags.push(a.name.trim());
           registerHentaiHavenAuthor(a);
         }
@@ -1372,6 +1373,7 @@ export async function resolveHentaiHavenGalleryDetail(
       episodes,
       tags,
       allTags,
+      tagQueries,
       views: Number(data.post_views) || 0,
       rating: data.post_rating,
       description: data.post_content || '',
@@ -1441,8 +1443,13 @@ export async function resolveHentaiHavenEpisodeUrls(
 ): Promise<HentaiHavenFiles | null> {
   // 1. First the official API path
   const detail = await resolveHentaiHavenGalleryDetail(post, signal);
-  if (detail && detail.episodes.length > 0) {
-    const episodes = detail.episodes;
+  const metadata = detail && {
+    hls: '', mp4: '', thumb: post.previewUrl || '',
+    episodes: detail.episodes, tags: detail.tags, allTags: detail.allTags,
+    tagQueries: detail.tagQueries, views: detail.views, rating: detail.rating, description: detail.description,
+  };
+  if (metadata && metadata.episodes.length > 0) {
+    const episodes = metadata.episodes;
     const targetEp =
       preferredEp != null
         ? episodes.find((e) => e.ep === preferredEp) || episodes[0]
@@ -1453,32 +1460,27 @@ export async function resolveHentaiHavenEpisodeUrls(
 
     if (playableHls || playableMp4) {
       return {
+        ...metadata,
         hls: playableHls,
         mp4: playableMp4,
-        thumb: targetEp.thumbnail || post.previewUrl || '',
-        episodes,
-        tags: detail.tags,
-        allTags: detail.allTags,
-        views: detail.views,
-        rating: detail.rating,
-        description: detail.description,
+        thumb: targetEp.thumbnail || metadata.thumb,
       };
     }
   }
 
   // 2. HTML scraping fallback
-  if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
+  if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return metadata;
 
   const seriesHtml = await fetchHentaiHtml(post.sourceLink, 10000, 'seri', signal);
-  if (!seriesHtml) return null;
+  if (!seriesHtml) return metadata;
   if (isChallengeHtml(seriesHtml)) {
     console.warn('[HentaiHaven] challenge wall (series)');
-    return null;
+    return metadata;
   }
   const episodes = parseHentaiHavenEpisodes(seriesHtml, post.sourceLink);
   if (episodes.length === 0) {
     console.warn('[HentaiHaven] episode not found');
-    return null;
+    return metadata;
   }
   const targetEp =
     preferredEp != null
@@ -1487,16 +1489,15 @@ export async function resolveHentaiHavenEpisodeUrls(
   const baseM = post.sourceLink.match(/^https?:\/\/[^/]+/i);
   const epUrl = (baseM ? baseM[0] : HENTAIHAVEN_BASE) + targetEp.url;
   const epHtml = await fetchHentaiHtml(epUrl, 10000, 'episode', signal);
-  if (!epHtml) return null;
+  if (!epHtml) return metadata;
   if (isChallengeHtml(epHtml)) {
     console.warn('[HentaiHaven] challenge wall (episode)');
-    return null;
+    return metadata;
   }
   const files = parseHentaiHavenEpisodeDetail(epHtml);
   if (!files.hls && !files.mp4) {
     console.warn('[HentaiHaven] HLS not found');
-    return null;
+    return metadata;
   }
-  files.episodes = episodes;
-  return files;
+  return { ...metadata, ...files, episodes };
 }

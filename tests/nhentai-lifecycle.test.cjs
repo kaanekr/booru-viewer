@@ -1,34 +1,14 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
 const path = require('node:path');
-const vm = require('node:vm');
-const ts = require('typescript');
+const { createLoader } = require('./helpers/load-typescript.cjs');
 
 function loadNHentai(customProxyFetch) {
-  const filename = path.resolve(__dirname, '../src/services/nhentai.ts');
-  const js = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-  }).outputText;
-  const module = { exports: {} };
-  vm.runInNewContext(js, {
-    module, exports: module.exports,
-    require: (id) => {
-      if (id === './proxyService') {
-        return {
-          proxyService: {
-            fetchWithFallback: (url, opts, ms) => {
-              if (customProxyFetch) return customProxyFetch(url, opts, ms);
-              return Promise.resolve({ ok: true, text: async () => '' });
-            },
-          },
-        };
-      }
-      throw new Error('nhentai must be UI-dependency-free, got: ' + id);
-    },
-    setTimeout, clearTimeout, AbortController,
-  }, { filename });
-  return module.exports;
+  return createLoader({
+    './proxyService': { proxyService: {
+      fetchWithFallback: customProxyFetch ?? (async () => ({ ok: true, text: async () => '', json: async () => [] })),
+    } },
+  })(path.resolve(__dirname, '../src/services/nhentai.ts'));
 }
 
 const SOURCE = { id: 'nhentai', name: 'nhentai', baseUrl: 'https://nhentai.net', type: 'nhentai' };
@@ -394,6 +374,37 @@ test('searchNHentaiApiTags uses official POST /api/v2/tags/search', async () => 
 
   assert.equal(tags[2].name, 'naruto artist');
   assert.equal(tags[2].category, 'artist');
+});
+
+test('nhentai autocomplete retains the native type even when two types share a UI category', async () => {
+  let payload;
+  const nh = loadNHentai(async (_url, options) => {
+    payload = JSON.parse(options.body);
+    return { ok: true, json: async () => [{ type: 'group', name: 'Lunar Press', count: 7 }] };
+  });
+  const [tag] = await nh.searchNHentaiTags('lunar_pr', 12, 'group');
+  assert.deepEqual(payload, { query: 'lunar pr', type: 'group', limit: 12 });
+  assert.equal(tag.category, 'artist');
+  assert.equal(tag.query, 'group:"Lunar Press"');
+});
+
+test('nhentai enriches gallery tags in batches of at most 100 and reuses the tag cache', async () => {
+  const requests = [];
+  const nh = loadNHentai(async (url) => {
+    const ids = new URL(url).searchParams.get('ids').split(',').map(Number);
+    requests.push(ids);
+    return { ok: true, json: async () => ids.map((id) => ({ id, type: 'language', name: `Language ${id}` })) };
+  });
+  const posts = nh.parseNHentaiV2Listing(JSON.stringify({ result: [{
+    id: 12, media_id: '34', thumbnail: 'galleries/34/thumb.webp',
+    tag_ids: Array.from({ length: 105 }, (_, idx) => idx + 1),
+  }] }), SOURCE);
+  const [post] = await nh.hydrateNHentaiListingTags(posts);
+  assert.deepEqual(requests.map((ids) => ids.length), [100, 5]);
+  assert.equal(post.allTags.length, 105);
+  assert.equal(post.tagQueries['meta:Language 105'], 'language:"Language 105"');
+  await nh.hydrateNHentaiListingTags(posts);
+  assert.equal(requests.length, 2);
 });
 
 test('resolveNHentaiGalleryDetail resolves pages and categorized tags together via v2 API', async () => {

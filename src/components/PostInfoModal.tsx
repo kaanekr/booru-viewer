@@ -29,10 +29,10 @@ import {
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import * as Clipboard from 'expo-clipboard';
-import { BooruPost, TagCategory } from '../types/booru';
+import { BooruPost, BooruType, TagCategory } from '../types/booru';
 import { StorageService, ImageQuality } from '../services/storage';
-import { nhentaiTagQuery } from '../services/nhentai';
-import { hentaiHavenTagQuery, isHentaiHavenOfficialGenre } from '../services/hentaihavens';
+import { isHentaiHavenOfficialGenre } from '../services/hentaihavens';
+import { sourceTagQuery } from '../utils/tagSearch';
 import { resolveRealDimensions } from '../utils/media';
 import { onlyStrings } from '../utils/guards';
 
@@ -290,12 +290,15 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = React.memo(({
   const allTagItems = useMemo<TagItemData[]>(() => {
     const items: TagItemData[] = [];
     const seen = new Set<string>();
+    const seenNames = new Set<string>();
 
     const addCategoryTags = (tags: unknown, category: TagCategory) => {
       onlyStrings(tags).forEach((t) => {
         const clean = t.trim();
-        if (clean && !seen.has(clean)) {
-          seen.add(clean);
+        const key = post?.tagQueries?.[`${category}:${clean}`] ?? clean.toLowerCase();
+        if (clean && !seen.has(key)) {
+          seen.add(key);
+          seenNames.add(clean.toLowerCase());
           items.push({ name: clean, category });
         }
       });
@@ -308,16 +311,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = React.memo(({
       addCategoryTags(post.tags?.general || [], 'general');
       addCategoryTags(post.tags?.meta || [], 'meta');
 
-      // Fallback for uncategorized
-      if (items.length === 0 && post.allTags && post.allTags.length > 0) {
-        onlyStrings(post.allTags).forEach((t) => {
-          const clean = t.trim();
-          if (clean && !seen.has(clean)) {
-            seen.add(clean);
-            items.push({ name: clean, category: 'general' });
-          }
-        });
-      }
+      addCategoryTags(onlyStrings(post.allTags).filter((tag) => !seenNames.has(tag.trim().toLowerCase())), 'general');
     }
 
     return items;
@@ -406,41 +400,20 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = React.memo(({
     setSelectedTag(item);
   };
 
+  const getSearchQuery = (tag: string, category?: TagCategory) =>
+    post?.tagQueries?.[`${category}:${tag}`] ?? sourceTagQuery(post?.sourceId as BooruType | undefined, tag, category);
+
   const handleTagSearch = (tag: string, category?: TagCategory) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
-    // Searching a RedGifs artist-name tag returns 0; search via the 'user:' mechanism
-    // nhentai: search via the `tag:"name"` / `artist:"name"` mechanism by category
-    // (a plain word matches full-text, not tag matches)
-    // hentaihaven: a spaced genre becomes `tag:"name"`, otherwise it would split into words
-    const isNhentai = post?.sourceId === 'nhentai' && !/^[a-z][a-z-]*:/i.test(tag);
-    const isHentaiHaven = post?.sourceId === 'hentaihaven' && !/^[a-z][a-z-]*:/i.test(tag);
-    const query =
-      category === 'artist' && post?.sourceId === 'redgifs' && !tag.toLowerCase().startsWith('user:')
-        ? `user:${tag}`
-        : isNhentai
-          ? nhentaiTagQuery(tag, category)
-          : isHentaiHaven
-            ? hentaiHavenTagQuery(tag, category)
-            : tag;
+    const query = getSearchQuery(tag, category);
     dismissThen(() => onSearchTag(query));
   };
-
-  const isRedGifsArtist = (name: string, category?: TagCategory) =>
-    category === 'artist' && post?.sourceId === 'redgifs' && !name.toLowerCase().startsWith('user:');
 
   const handleTagAddToSearch = (tag: string, category?: TagCategory) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
-    // A RedGifs artist is added to search as a user
-    const isHentaiHavenAdd = post?.sourceId === 'hentaihaven' && !/^[a-z][a-z-]*:/i.test(tag);
-    const query = isRedGifsArtist(tag, category)
-      ? `user:${tag}`
-      : post?.sourceId === 'nhentai' && !/^[a-z][a-z-]*:/i.test(tag)
-        ? nhentaiTagQuery(tag, category)
-        : isHentaiHavenAdd
-          ? hentaiHavenTagQuery(tag, category)
-          : tag;
+    const query = getSearchQuery(tag, category);
     dismissThen(() => {
       if (onAddTagToSearch) {
         onAddTagToSearch(query);
@@ -453,17 +426,8 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = React.memo(({
   const handleTagExcludeFromSearch = (tag: string, category?: TagCategory) => {
     Haptics.selectionAsync();
     setSelectedTag(null);
-    // A RedGifs artist is excluded as '-user:'
-    // nhentai: `-tag:"name"` (a multi-word tag stays whole like `-"a b"`)
-    // hentaihaven: `-artist:"name"` or `-tag:"name"`
-    const isHentaiHavenEx = post?.sourceId === 'hentaihaven' && !/^(-|[a-z][a-z-]*:)/i.test(tag);
-    const query = isRedGifsArtist(tag, category)
-      ? `-user:${tag}`
-      : post?.sourceId === 'nhentai' && !/^(-|[a-z][a-z-]*:)/i.test(tag)
-        ? `-${nhentaiTagQuery(tag, category)}`
-        : isHentaiHavenEx
-          ? `-${hentaiHavenTagQuery(tag, category)}`
-          : `-${tag}`;
+    const tagQuery = getSearchQuery(tag, category);
+    const query = tagQuery.startsWith('-') ? tagQuery : `-${tagQuery}`;
     dismissThen(() => {
       if (onExcludeTagFromSearch) {
         onExcludeTagFromSearch(query);

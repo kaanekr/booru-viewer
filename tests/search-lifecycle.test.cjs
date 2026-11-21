@@ -9,7 +9,7 @@ let root;
 afterEach(async () => { if (root) await act(() => root.unmount()); root = undefined; });
 const post = (id) => ({ id, sourceId: 'a', previewUrl: `https://cdn.test/${id}.jpg`, tags: {}, aspectRatio: 1 });
 
-function setup(sourceOverride = {}) {
+function setup(sourceOverride = {}, apiOverrides = {}) {
   const scrollHeader = require('./helpers/scroll-away-header.cjs').loadScrollAwayHeader();
   const source = { id: 'a', type: 'danbooru', name: 'A', ...sourceOverride };
   const requests = [];
@@ -31,6 +31,8 @@ function setup(sourceOverride = {}) {
     '../services/booruApi': { booruApi: {
       fetchPostsWithFilter: (filter, page, _limit, source) => new Promise((resolve, reject) => requests.push({ filter, page, source, resolve, reject })),
       fetchRedGifsNiches: async () => [],
+      fetchSourceTags: async () => [],
+      ...apiOverrides,
     } },
     '../services/nhentai': {}, '../services/hentaihavens': {},
     '@react-navigation/native': { useNavigation: () => navigation, useIsFocused: () => true },
@@ -94,6 +96,40 @@ test('video weekly search chips depend on a keyword and never offer Safe or Poin
   assert.equal(requests.length, 1);
   assert.deepEqual(Array.from(requests[0].filter.tags), ['cosplay']);
   assert.equal(requests[0].filter.timeRange, '1w');
+});
+
+test('Explore displays source tags and applies the native query when a tag is tapped', async () => {
+  const { Screen, requests } = setup({ id: 'nhentai', type: 'nhentai' }, {
+    fetchSourceTags: async () => [{ name: 'Lunar Press', query: 'group:"Lunar Press"', category: 'artist', postCount: 5 }],
+  });
+  await act(async () => { root = create(React.createElement(Screen)); });
+  const chips = root.root.findAllByType('TagChip');
+  assert.deepEqual(chips.map((chip) => chip.props.name), ['Lunar Press']);
+  await act(async () => chips[0].props.onPress());
+  assert.deepEqual(Array.from(requests[0].filter.tags), ['group:"lunar press"']);
+});
+
+test('autocomplete replaces a partially quoted phrase, preserving its qualifier and negation', async () => {
+  const completed = { name: 'Lunar Press', query: 'group:"Lunar Press"', category: 'artist', postCount: 5 };
+  const calls = [];
+  const { Screen, requests } = setup({ id: 'nhentai', type: 'nhentai' }, {
+    searchTags: async (query, limit, source, type) => {
+      calls.push({ query, type, source: source.id });
+      return [completed];
+    },
+  });
+  await act(async () => { root = create(React.createElement(Screen)); });
+  const input = root.root.findByType('TextInput');
+  await act(async () => {
+    input.props.onFocus();
+    input.props.onChangeText('language:english -group:"lunar pr');
+  });
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
+  assert.deepEqual(calls, [{ query: 'lunar pr', type: 'group', source: 'nhentai' }]);
+  const list = root.root.findAllByType('FlatList').find((node) => node.props.data?.[0] === completed);
+  const suggestion = list.props.renderItem({ item: completed });
+  await act(async () => suggestion.props.onPress());
+  assert.deepEqual(Array.from(requests[0].filter.tags), ['language:english', '-group:"lunar press"']);
 });
 
 test('stale search rejection/finally cannot replace a newer search or clear its loader', async () => {

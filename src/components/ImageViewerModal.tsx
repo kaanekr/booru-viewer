@@ -69,6 +69,7 @@ import {
   resolveXVideosVideoUrls,
   resolveXHamsterVideoUrls,
   resolvePornhubVideoUrls,
+  resolvePornhubTags,
   selectPrimaryVideoCandidate,
 } from '../utils/media';
 import { resolveSexComVideoUrls, selectSexComPlayable } from '../services/sexcom';
@@ -245,7 +246,9 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     }
   }, [visible, initialIndex, enterAnimation, asScreen, setGalleryScrollSynchronously, translateX, infoSheetTranslateY]);
 
-  const currentPost = posts[currentIndex] || posts[0];
+  const [resolvedMetadata, setResolvedMetadata] = useState<{ base: BooruPost; post: BooruPost } | null>(null);
+  const basePost = posts[currentIndex] || posts[0];
+  const currentPost = resolvedMetadata && resolvedMetadata.base === basePost ? resolvedMetadata.post : basePost;
   const currentPostKey = currentPost ? getPostKey(currentPost) : '';
   const currentPostKeyRef = useRef(currentPostKey);
   currentPostKeyRef.current = currentPostKey;
@@ -293,7 +296,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
         }
       });
     }
-  }, [currentPost, currentIndex, visible, suspended, posts]);
+  }, [currentIndex, visible, suspended, posts]);
 
   // Slideshow timer
   useEffect(() => {
@@ -564,18 +567,34 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       targetPost: BooruPost,
       tags: BooruPost['tags'],
       allTags: string[],
-      numFavorites?: number
+      numFavorites?: number,
+      tagQueries?: BooruPost['tagQueries'],
     ) => {
-      targetPost.tags = tags;
-      targetPost.allTags = allTags;
-      // Score = favorite count: absent from list HTML, arrives with detail
-      if (numFavorites) {
-        targetPost.score = numFavorites;
-        targetPost.favCount = numFavorites;
-      }
+      if (getPostKey(targetPost) !== currentPostKeyRef.current) return;
+      setResolvedMetadata({ base: targetPost, post: {
+        ...targetPost,
+        tags,
+        allTags,
+        tagQueries: tagQueries ?? targetPost.tagQueries,
+        score: numFavorites ?? targetPost.score,
+        favCount: numFavorites ?? targetPost.favCount,
+      } });
     },
     []
   );
+
+  useEffect(() => {
+    if (!visible || suspended || !showDetailsSheet || basePost?.sourceId !== 'pornhub' || currentPost !== basePost) return;
+    if (basePost.tags?.general?.some((tag) => !/^(duration|views):/i.test(tag))) return;
+    const ctrl = new AbortController();
+    void resolvePornhubTags(basePost, ctrl.signal).then((tags) => {
+      if (!ctrl.signal.aborted && tags) {
+        handleTagsResolved(basePost, tags, [...tags.artist, ...tags.copyright, ...tags.general]);
+      }
+    });
+    return () => ctrl.abort();
+  }, [basePost, currentPost, handleTagsResolved, showDetailsSheet, suspended, visible]);
+
   const getItemLayout = useCallback(
     (_: ArrayLike<BooruPost> | null | undefined, index: number) => ({
       length: windowWidth,
@@ -950,7 +969,8 @@ interface PostPageItemProps {
     post: BooruPost,
     tags: BooruPost['tags'],
     allTags: string[],
-    numFavorites?: number
+    numFavorites?: number,
+    tagQueries?: BooruPost['tagQueries'],
   ) => void;
   onToggleControls: () => void;
   onSetControlsVisible?: (visible: boolean) => void;
@@ -1133,6 +1153,9 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
         resolveXVideosVideoUrls(postForResolve, abortCtrl.signal)
           .then((files) => {
             if (alive && files) {
+              if (files.tags?.length) {
+                onTagsResolved?.(post, { ...post.tags, general: files.tags }, [...(post.allTags ?? []), ...files.tags]);
+              }
               setResolvedOriginalUrl(files.high || files.low || files.hls || null);
             }
           })
@@ -1141,6 +1164,11 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
         resolveXHamsterVideoUrls(post, abortCtrl.signal)
           .then((files) => {
             if (alive && files) {
+              if (files.tagGroups) {
+                const tags = { ...files.tagGroups, meta: post.tags?.meta ?? ['video'] };
+                if (!tags.artist.length) tags.artist = post.tags?.artist ?? [];
+                onTagsResolved?.(post, tags, [...tags.artist, ...tags.copyright, ...tags.general]);
+              }
               setResolvedOriginalUrl(files.high || files.low || files.hls || null);
             }
           })
@@ -1184,7 +1212,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
                   StorageService.setLastWatchedEpisode(post.id, effectiveEp).catch(() => {});
                 }
                 if (files?.tags) {
-                  onTagsResolved?.(post, files.tags, files.allTags || [], files.views);
+                  onTagsResolved?.(post, files.tags, files.allTags || [], files.views || undefined, files.tagQueries);
                 }
                 const playable = files?.hls || files?.mp4;
                 if (playable) {
@@ -1391,7 +1419,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
         }
         // Forward detail-resolved categorized tags to the Info panel
         if (detail.allTags && detail.allTags.length > 0) {
-          onTagsResolved?.(post, detail.tags, detail.allTags, detail.numFavorites);
+          onTagsResolved?.(post, detail.tags, detail.allTags, detail.numFavorites, detail.tagQueries);
         } else if (detail.numFavorites) {
           onTagsResolved?.(post, post.tags, post.allTags, detail.numFavorites);
         }

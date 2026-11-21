@@ -1,9 +1,10 @@
 import { Platform } from 'react-native';
 import { proxyService } from '../services/proxyService';
 import { ImageQuality } from '../services/storage';
-import { parseXVideosFiles, XVIDEOS_BASE, XVIDEOS_UA } from '../services/xvideos';
-import { parseXhamsterDetail, XHAMSTER_BASE, XHAMSTER_UA } from '../services/xhamster';
-import { parsePornhubDetail, PORNHUB_BASE, PORNHUB_UA } from '../services/pornhub';
+import { parseXVideosFiles, parseXVideosTags, XVIDEOS_BASE, XVIDEOS_UA } from '../services/xvideos';
+import { parseXhamsterDetail, XHAMSTER_BASE, XHAMSTER_UA, type XHamsterFiles } from '../services/xhamster';
+import { parsePornhubDetail, parsePornhubVideoTags, PORNHUB_API_BASE, PORNHUB_BASE, PORNHUB_UA } from '../services/pornhub';
+import type { BooruPost, BooruTagGroups } from '../types/booru';
 import { getPostKey } from './postIdentity';
 import { urlEndsWith } from './guards';
 import { LruCache, getOrDedup } from './lruCache';
@@ -13,12 +14,38 @@ const NEGATIVE_RESOLVE_TTL_MS = 60_000;
 
 const DIMS_CACHE = new LruCache<string, { w: number; h: number; bytes?: number }>(RESOLVE_CACHE_MAX);
 const DIMS_IN_FLIGHT = new Map<string, Promise<{ w: number; h: number; bytes?: number } | null>>();
+const NON_IMAGE_DETAIL_SOURCES = new Set(['pornhub', 'xvideos', 'xhamster', 'sexcom', 'redgifs', 'hentaihaven', 'nhentai']);
+
+function readImageFileSize(html: string): number | undefined {
+  const whitespace = /\s/;
+  const numberCharacter = /[\d.,]/;
+  let kilobytes: string | undefined;
+  for (const match of html.matchAll(/(?:MB|KB)\b/gi)) {
+    // Start at the unit so whitespace elsewhere in the page is skipped in one pass.
+    let end = match.index;
+    while (end > 0 && whitespace.test(html[end - 1])) end--;
+    let start = end;
+    while (start > 0 && numberCharacter.test(html[start - 1])) start--;
+    if (start === end) continue;
+
+    const value = html.slice(start, end);
+    if (match[0].toUpperCase() === 'MB') {
+      const mb = parseFloat(value.replace(',', '.'));
+      return mb > 0 && mb < 500 ? Math.round(mb * 1024 * 1024) : undefined;
+    }
+    kilobytes ??= value;
+  }
+
+  if (kilobytes === undefined) return undefined;
+  const kb = parseFloat(kilobytes.replace(',', '.'));
+  return kb > 0 && kb < 500 * 1024 ? Math.round(kb * 1024) : undefined;
+}
 
 /**
  * Resolves the real dimensions from the original-image link on the post page.
  * The Gelbooru list HTML carries no size info (scrape leaves an 800x1000
  * placeholder); the Info modal fills in the real WxH via this function.
- * Results are cached for the session — the same post is never fetched twice.
+ * Successful results are cached for the session.
  */
 export async function resolveRealDimensions(post: {
   id?: string;
@@ -28,7 +55,8 @@ export async function resolveRealDimensions(post: {
   sourceId?: string;
   [key: string]: any;
 } | null | undefined): Promise<{ w: number; h: number; bytes?: number } | null> {
-  if (!post) return null;
+  // Dedicated video and gallery sources supply dimensions through their own metadata.
+  if (!post || (post.sourceId && NON_IMAGE_DETAIL_SOURCES.has(post.sourceId))) return null;
   const cacheKey = post.sourceId && post.id
     ? getPostKey({ sourceId: post.sourceId, id: post.id })
     : post.sourceLink || post.originalUrl || '';
@@ -51,18 +79,7 @@ export async function resolveRealDimensions(post: {
     }
     if (!res.ok) return null;
     const html = await res.text();
-    // File size: written next to the original link on the post page
-    // (e.g. "2.4 MB", "850 KB", "1,234,567 bytes")
-    let foundBytes: number | undefined;
-    const mbMatch = html.match(/(?:file size|size)?\s*:?\s*([\d.,]+)\s*MB\b/i);
-    const kbMatch = !mbMatch && html.match(/(?:file size|size)?\s*:?\s*([\d.,]+)\s*KB\b/i);
-    if (mbMatch) {
-      const v = parseFloat(mbMatch[1].replace(',', '.'));
-      if (Number.isFinite(v) && v > 0 && v < 500) foundBytes = Math.round(v * 1024 * 1024);
-    } else if (kbMatch) {
-      const v = parseFloat(kbMatch[1].replace(',', '.'));
-      if (Number.isFinite(v) && v > 0 && v < 500 * 1024) foundBytes = Math.round(v * 1024);
-    }
+    let foundBytes = readImageFileSize(html);
 
     // On sites like Gelbooru the post page may not carry the file size as text;
     // a light HEAD request to the original image URL fetches the Content-Length
@@ -98,7 +115,7 @@ export async function resolveRealDimensions(post: {
     //    "Size: 1456 x 2048" / "1456x2048" / image width/height attributes
     const sizeMatch =
       html.match(/Size:\s*(\d{2,5})\s*[x×]\s*(\d{2,5})/i) ||
-      html.match(/(\d{3,5})\s*[x×]\s*(\d{3,5})\s*(?:px)?\s*(?:<|\)|\||,)/i);
+      html.match(/(\d{3,5})\s*[x×]\s*(\d{3,5})\s*(?:px\s*)?(?:<|\)|\||,)/i);
     if (sizeMatch) {
       const w = parseInt(sizeMatch[1], 10);
       const h = parseInt(sizeMatch[2], 10);
@@ -455,7 +472,7 @@ export async function resolveXVideosVideoUrls(
     sourceLink?: string;
   },
   signal?: AbortSignal
-): Promise<{ high: string; low: string; hls: string } | null> {
+): Promise<{ high: string; low: string; hls: string; tags: string[] } | null> {
   if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
   if (signal?.aborted) return null;
 
@@ -476,8 +493,9 @@ export async function resolveXVideosVideoUrls(
     if (!response.ok) return null;
     const html = await response.text();
     const files = parseXVideosFiles(html);
-    if (!files.high && !files.low && !files.hls) return null;
-    return files;
+    const tags = parseXVideosTags(html);
+    if (!files.high && !files.low && !files.hls && !tags.length) return null;
+    return { ...files, tags };
   } catch {
     return null;
   } finally {
@@ -510,7 +528,7 @@ export async function resolveXHamsterVideoUrls(
     sourceLink?: string;
   },
   signal?: AbortSignal
-): Promise<{ high: string; low: string; hls: string } | null> {
+): Promise<XHamsterFiles | null> {
   if (!post.sourceLink || !/^https?:\/\//i.test(post.sourceLink)) return null;
   if (signal?.aborted) return null;
 
@@ -531,13 +549,31 @@ export async function resolveXHamsterVideoUrls(
     if (!response.ok) return null;
     const html = await response.text();
     const files = parseXhamsterDetail(html);
-    if (!files.high && !files.low && !files.hls) return null;
+    if (!files.high && !files.low && !files.hls && !files.tagGroups) return null;
     return files;
   } catch {
     return null;
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+/** Fills in tags for homepage cards when the Info panel is opened. */
+export async function resolvePornhubTags(post: BooruPost, signal: AbortSignal): Promise<BooruTagGroups | null> {
+  const key = post.sourceLink?.match(/[?&]viewkey=([a-z0-9]+)/i)?.[1] ?? post.id.match(/^ph_([a-z0-9]+)$/i)?.[1];
+  if (!key || signal.aborted) return null;
+  try {
+    const response = await proxyService.fetchWithFallback(`${PORNHUB_API_BASE}/video_by_id?id=${key}`, {
+      headers: { 'User-Agent': PORNHUB_UA, Accept: 'application/json' }, signal,
+    }, 6000);
+    if (!response.ok) return null;
+    const { video } = await response.json();
+    if (!video) return null;
+    const tags = parsePornhubVideoTags(video);
+    return tags.general.length || tags.copyright.length || tags.artist.length ? tags : null;
+  } catch {
+    return null;
   }
 }
 

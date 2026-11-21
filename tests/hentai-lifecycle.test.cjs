@@ -551,6 +551,7 @@ test('parseHentaiHavenQuery tokenizes spaces, quotes, excludes and prefixes', ()
 
   // Quoted exclusion
   assert.equal(parsed('-"big breasts" yuri'), want(['yuri'], ['big breasts']));
+  assert.equal(parsed('yuri -tag:"big breasts" artist:"Lunar Press"'), want(['yuri', 'Lunar Press'], ['big breasts']));
 
   // Duplicates are deduped
   assert.equal(parsed('yuri Yuri YURI'), want(['yuri'], []));

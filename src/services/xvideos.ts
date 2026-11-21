@@ -111,6 +111,17 @@ function decodeScriptValue(s: string): string {
     .trim();
 }
 
+export function parseXVideosTags(html: string): string[] {
+  const tags = new Map<string, string>();
+  const links = /<a\b[^>]*\bhref=(['"])(?:https?:\/\/[^/'"]+)?\/tags\/[^/'"?#]+\/?(?:[?#][^'"]*)?\1[^>]*>([\s\S]*?)<\/a>/gi;
+  for (const match of html.matchAll(links)) {
+    const content = match[2].replace(/<span\b[^>]*\bnavbadge\b[^>]*>[\s\S]*?<\/span>/gi, '');
+    const label = decodeEntities(content.replace(/<[^>]*>/g, '')).trim();
+    if (label && !tags.has(label.toLowerCase())) tags.set(label.toLowerCase(), label);
+  }
+  return [...tags.values()];
+}
+
 /** Extracts the current month (`YYYY-MM`) from `/best` HTML (from the pagination link). */
 export function extractXVideosBestMonth(html: string): string {
   if (!html) return '';

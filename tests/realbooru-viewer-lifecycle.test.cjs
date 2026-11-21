@@ -57,7 +57,7 @@ async function setup(post, options = {}) {
     '../services/storage': { StorageService: {
       isFavorite: async () => false, getImageQuality: async () => 'auto',
     } },
-    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {}, './WebmWebViewPlayer': {},
     '../utils/media': { ...media, resolveRealDimensions: async () => null },
     '../services/sexcom': {}, '../services/hentaihavens': {}, '../services/nhentai': {},
   }, { console: { ...console, warn() {} } });

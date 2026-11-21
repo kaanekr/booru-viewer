@@ -1,7 +1,8 @@
 import { BooruPost, BooruSource, BooruTagGroups, BooruTagSuggestion, RedGifsNiche, RedGifsTrendingTag, TagCategory, SearchFilterConfig } from '../types/booru';
 import { asTagList } from '../utils/guards';
 import { enrichPostAspectRatios } from '../utils/imageDimensions';
-import { LruCache } from '../utils/lruCache';
+import { getOrDedup, LruCache } from '../utils/lruCache';
+import { splitSearchTags } from '../utils/tagSearch';
 import { DEFAULT_SOURCE } from './sources';
 import { proxyService } from './proxyService';
 import { StorageService } from './storage';
@@ -10,6 +11,7 @@ import {
   buildXVideosSearchUrl,
   extractXVideosBestMonth,
   parseXVideosListing,
+  parseXVideosTags,
   xvideosDatefForTimeRange,
   XVIDEOS_BASE,
   XVIDEOS_UA,
@@ -19,6 +21,8 @@ import {
   buildXhamsterSearchCandidates,
   buildXhamsterSearchUrl,
   parseXhamsterListing,
+  parseXHamsterCategoryNames,
+  parseXHamsterSearchSuggestions,
   xhamsterDateForTimeRange,
   XHAMSTER_BASE,
   XHAMSTER_UA,
@@ -28,6 +32,7 @@ import {
   buildPornhubSearchUrl,
   mapPornhubVideoToPost,
   parsePornhubHtmlListing,
+  parsePornhubVideoTags,
   pornhubPeriodForTimeRange,
   PORNHUB_BASE,
   PORNHUB_UA,
@@ -50,10 +55,12 @@ import {
 } from './hentaihavens';
 import {
   buildNHentaiApiCandidates,
+  hydrateNHentaiListingTags,
   nhentaiApiHeaders,
   nhentaiApiSort,
   parseNHentaiV2Listing,
   searchNHentaiTags,
+  searchNHentaiApiTags,
   NHENTAI_API_UA,
 } from './nhentai';
 
@@ -91,6 +98,27 @@ const BOUND_MAX_PAGES = 15;
 
 const CUMST_TAGS_CACHE_TTL_MS = 15 * 60 * 1000;
 let cumStTagsCache: { baseUrl: string; tags: any[]; at: number } | null = null;
+
+function videoSearchText(value: string): string {
+  return value.replace(/[_\s]+/g, ' ').trim();
+}
+
+function parseVideoSearch(query: string) {
+  const keywords: string[] = [];
+  const tags: string[] = [];
+  const excludedTags: string[] = [];
+  for (const token of splitSearchTags(query)) {
+    const excluded = token.startsWith('-');
+    const term = excluded ? token.slice(1) : token;
+    const isTag = /^tag:/i.test(term);
+    const text = videoSearchText((isTag ? term.slice(4) : term).replace(/"/g, ''));
+    if (!text) continue;
+    if (excluded) excludedTags.push(text);
+    else if (isTag) tags.push(text);
+    else keywords.push(text);
+  }
+  return { keywords, tags, excludedTags };
+}
 
 function mapDanbooruCategory(catNum: number): TagCategory {
   switch (catNum) {
@@ -184,6 +212,8 @@ export function snapLeaderboardAnchor(anchorYMD: string | undefined, timeRange: 
 
 export class BooruApiService {
   private currentSource: BooruSource = DEFAULT_SOURCE;
+  private videoTagCache = new LruCache<string, BooruTagSuggestion[]>(64, 15 * 60 * 1000);
+  private videoTagRequests = new Map<string, Promise<BooruTagSuggestion[]>>();
   private lastRequestAt = new Map<string, number>();
   private requestSlots = new Map<string, Promise<void>>();
 
@@ -1606,12 +1636,8 @@ export class BooruApiService {
   ): Promise<BooruPost[]> {
     // XVideos doesn't understand the '-' exclusion syntax; excluded ones are dropped
     // (list cards carry no tag data, so they can't be filtered client-side).
-    const tokens = tags
-      .split(/\s+/)
-      .map((t) => t.trim())
-      .filter(Boolean)
-      .filter((t) => !t.startsWith('-'));
-    const k = tokens.join(' ');
+    const query = parseVideoSearch(tags);
+    const k = [...query.keywords, ...query.tags].join(' ');
     void limit;
 
     // Order mapping (site sort params: relevance, uploaddate,
@@ -1632,7 +1658,12 @@ export class BooruApiService {
     }
 
     const bestMonth = !k && page > 1 && sort !== 'uploaddate' ? await this.resolveXVideosBestMonth(source.baseUrl || XVIDEOS_BASE) : this.xvideosBestMonth;
-    const candidates = buildXVideosSearchCandidates(source.baseUrl || XVIDEOS_BASE, page, k, sort, datef, bestMonth);
+    const base = source.baseUrl || XVIDEOS_BASE;
+    const candidates = buildXVideosSearchCandidates(base, page, k, sort, datef, bestMonth);
+    if (sort === 'relevance' && query.tags.length === 1 && !query.keywords.length) {
+      const slug = encodeURIComponent(query.tags[0].toLowerCase().replace(/\s+/g, '-'));
+      candidates.unshift(`${base.replace(/\/$/, '')}/tags/${slug}${page > 1 ? `/${page - 1}` : ''}`);
+    }
     const headers = {
       'User-Agent': XVIDEOS_UA,
       Referer: `${XVIDEOS_BASE}/`,
@@ -1760,11 +1791,7 @@ export class BooruApiService {
     // API; keywords, "exact phrase", -negation, tag:/artist:/language: filtrelerini,
     // Supports the `favorites:>=N` threshold and the date/popular/popular-today/
     // popular-week/popular-month sorts locally.
-    const fullQuery = tags
-      .split(/\s+/)
-      .map((t) => t.trim())
-      .filter(Boolean)
-      .join(' ');
+    const fullQuery = tags.trim();
     void limit;
 
     const apiSort = nhentaiApiSort(filter?.sortBy, filter?.timeRange);
@@ -1809,7 +1836,7 @@ export class BooruApiService {
         console.log(`[BooruAPI] nhentai sonuc=${posts.length} url=${url}`);
         if (posts.length > 0) {
           return await this.filterNHentaiMinScore(
-            await this.filterBlacklistedPosts(posts, includeBlacklisted),
+            await this.filterBlacklistedPosts(await hydrateNHentaiListingTags(posts), includeBlacklisted),
             filter
           );
         }
@@ -1850,12 +1877,8 @@ export class BooruApiService {
     filter?: SearchFilterConfig
   ): Promise<BooruPost[]> {
     // XHamster does not understand '-' exclusions; excluded terms are dropped
-    const tokens = tags
-      .split(/\s+/)
-      .map((t) => t.trim())
-      .filter(Boolean)
-      .filter((t) => !t.startsWith('-'));
-    const k = tokens.join(' ');
+    const query = parseVideoSearch(tags);
+    const k = [...query.keywords, ...query.tags].join(' ');
     void limit;
 
     // score->views+date, rating->best, height/width->longest, id->newest, default->relevance
@@ -1951,20 +1974,23 @@ export class BooruApiService {
     includeBlacklisted: boolean = false,
     filter?: SearchFilterConfig
   ): Promise<BooruPost[]> {
-    // The Webmasters API does not understand '-' exclusions; excluded terms are dropped
-    const tokens = tags
-      .split(/\s+/)
-      .map((t) => t.trim())
-      .filter(Boolean)
-      .filter((t) => !t.startsWith('-'));
-    const k = tokens.join(' ');
+    const query = parseVideoSearch(tags);
+    const k = query.keywords.join(' ');
+    const [firstTag] = query.tags;
+    const isDiscover = !k && !firstTag && !query.excludedTags.length;
+    const matchesTags = (post: BooruPost) => {
+      const general = post.tags.general.map((tag) => videoSearchText(tag).toLowerCase());
+      const all = post.allTags.map((tag) => videoSearchText(tag).toLowerCase());
+      return query.tags.every((tag) => general.includes(tag.toLowerCase()))
+        && !query.excludedTags.some((tag) => all.includes(tag.toLowerCase()));
+    };
     void limit;
 
     // Featured (relevance) in search, mostviewed+daily in explore (dynamic trends)
     let ordering: PornhubOrdering = 'featured';
     let period = pornhubPeriodForTimeRange(filter?.timeRange);
 
-    if (!k) {
+    if (!k && !firstTag) {
       ordering = 'mostviewed';
       if (filter?.timeRange === 'all' || !filter?.timeRange) {
         period = 'daily';
@@ -1984,7 +2010,7 @@ export class BooruApiService {
       }
     }
 
-    const url = buildPornhubSearchUrl(page, k, ordering, period);
+    const url = buildPornhubSearchUrl(page, k, ordering, period, firstTag);
     const htmlHeaders = {
       'User-Agent': PORNHUB_UA,
       Referer: `${PORNHUB_BASE}/`,
@@ -1992,7 +2018,7 @@ export class BooruApiService {
 
     // Explore page 1: the homepage (what the site currently features). On
     // failure it falls back to the API flow below; deeper pages come from the API.
-    if (!k && page <= 1) {
+    if (isDiscover && page <= 1) {
       try {
         const homeRes = await this.fetchWithRetry(`${PORNHUB_BASE}/`, {
           headers: htmlHeaders,
@@ -2021,14 +2047,14 @@ export class BooruApiService {
     try {
       response = await this.fetchWithRetry(url, { headers }, 1, 12000);
     } catch (e: any) {
-      if (!k && page <= 1 && this.phDiscoverCacheValid()) {
+      if (isDiscover && page <= 1 && this.phDiscoverCacheValid()) {
         console.warn('[BooruAPI] Pornhub API unreachable, serving cached discover');
         return this.phDiscoverCache;
       }
       throw e instanceof Error ? e : new Error(String(e));
     }
     if (!response.ok) {
-      if (!k && page <= 1 && this.phDiscoverCacheValid()) {
+      if (isDiscover && page <= 1 && this.phDiscoverCacheValid()) {
         console.warn(`[BooruAPI] Pornhub API failed (${response.status}), serving cached discover`);
         return this.phDiscoverCache;
       }
@@ -2042,10 +2068,12 @@ export class BooruApiService {
     }
 
     let rawVideos: PornhubVideo[] = [];
+    let apiReturnedVideos = false;
     try {
       const data = await response.json();
       if (data && Array.isArray(data.videos)) {
         rawVideos = data.videos;
+        apiReturnedVideos = true;
       } else if (data && typeof data.code === 'string') {
         console.warn(`[BooruAPI] Pornhub API warning (${data.code}): ${data.message || 'bilinmeyen hata'}`);
       }
@@ -2056,8 +2084,9 @@ export class BooruApiService {
     const posts: BooruPost[] = [];
 
     try {
-      const htmlSearchUrl = k
-        ? `${PORNHUB_BASE}/video/search?search=${encodeURIComponent(k)}&page=${page}`
+      const previewSearch = k || firstTag;
+      const htmlSearchUrl = previewSearch
+        ? `${PORNHUB_BASE}/video/search?search=${encodeURIComponent(previewSearch)}&page=${page}`
         : `${PORNHUB_BASE}/video?o=mv&page=${page}`;
       const htmlRes = await this.fetchWithRetry(htmlSearchUrl, {
         headers: {
@@ -2087,11 +2116,11 @@ export class BooruApiService {
               posts.push(post);
             }
           }
-          if (posts.length === 0) {
+          if (posts.length === 0 && !firstTag && !query.excludedTags.length) {
             posts.push(...htmlPosts);
           }
-          const enriched = await this.filterBlacklistedPosts(posts, includeBlacklisted);
-          this.storePhDiscoverCache(enriched, k, page);
+          const enriched = await this.filterBlacklistedPosts(posts.filter(matchesTags), includeBlacklisted);
+          if (isDiscover) this.storePhDiscoverCache(enriched, '', page);
           return enriched;
         }
       }
@@ -2104,14 +2133,15 @@ export class BooruApiService {
       if (post) posts.push(post);
     }
     if (posts.length === 0) {
-      if (!k && page <= 1 && this.phDiscoverCacheValid()) {
+      if (isDiscover && page <= 1 && this.phDiscoverCacheValid()) {
         console.warn('[BooruAPI] Pornhub returned 0 posts, serving cached discover');
         return this.phDiscoverCache;
       }
+      if (apiReturnedVideos && !isDiscover) return [];
       throw new Error('Could not load Pornhub videos. Please check your internet connection and try again.');
     }
-    const out = await this.filterBlacklistedPosts(posts, includeBlacklisted);
-    this.storePhDiscoverCache(out, k, page);
+    const out = await this.filterBlacklistedPosts(posts.filter(matchesTags), includeBlacklisted);
+    if (isDiscover) this.storePhDiscoverCache(out, '', page);
     return out;
   }
 
@@ -2321,8 +2351,79 @@ export class BooruApiService {
     return await this.filterBlacklistedPosts(result, includeBlacklisted);
   }
 
-  async searchTags(query: string, limit: number = 12, source: BooruSource = this.currentSource): Promise<BooruTagSuggestion[]> {
-    if (!query || query.trim().length < 2) return [];
+  private async fetchVideoTagSuggestions(source: BooruSource, query: string): Promise<BooruTagSuggestion[]> {
+    const key = `${source.type}:${source.baseUrl}:${query}`;
+    const cached = this.videoTagCache.get(key);
+    if (cached) return cached;
+
+    return getOrDedup(this.videoTagRequests, key, async () => {
+      const base = (source.baseUrl || (source.type === 'xvideos' ? XVIDEOS_BASE : XHAMSTER_BASE)).replace(/\/$/, '');
+      let suggestions: BooruTagSuggestion[];
+      if (source.type === 'pornhub') {
+        const url = buildPornhubSearchUrl(1, query, query ? 'featured' : 'mostviewed', query ? undefined : 'weekly');
+        const res = await this.fetchWithRetry(url, { headers: { 'User-Agent': PORNHUB_UA, Accept: 'application/json' } }, 0, 5000);
+        if (!res.ok) return [];
+        const { videos } = await res.json();
+        if (!Array.isArray(videos)) return [];
+        const names = new Map<string, number>();
+        for (const video of videos) {
+          if (!video) continue;
+          for (const tag of new Set(parsePornhubVideoTags(video).general)) {
+            names.set(tag, (names.get(tag) ?? 0) + 1);
+          }
+        }
+        suggestions = [...names].sort((a, b) => b[1] - a[1]).map(([name]) => ({ name, category: 'general', postCount: 0 }));
+      } else {
+        const xv = source.type === 'xvideos';
+        const url = xv ? `${base}/tags` : query ? buildXhamsterSearchUrl(base, 1, query) : `${base}/categories`;
+        const res = await this.fetchWithRetry(url, { headers: { 'User-Agent': xv ? XVIDEOS_UA : XHAMSTER_UA } }, 0, 5000);
+        if (!res.ok) return [];
+        const html = await res.text();
+        const names = xv ? parseXVideosTags(html) : query ? parseXHamsterSearchSuggestions(html) : parseXHamsterCategoryNames(html);
+        const category = xv || query ? 'general' : 'copyright';
+        suggestions = [...new Set(names)].map((name) => ({ name, category, postCount: 0 }));
+      }
+      if (suggestions.length) this.videoTagCache.set(key, suggestions);
+      return suggestions;
+    });
+  }
+
+  private async searchVideoTags(source: BooruSource, query: string, limit: number): Promise<BooruTagSuggestion[]> {
+    const q = videoSearchText(query).toLowerCase();
+    const catalog = await this.fetchVideoTagSuggestions(source, '').catch(() => []);
+    if (!q) return catalog.slice(0, limit);
+    const matches = catalog.filter((item) => videoSearchText(item.name).toLowerCase().includes(q));
+    if (source.type === 'xvideos' || matches.length >= limit) return matches.slice(0, limit);
+
+    const related = await this.fetchVideoTagSuggestions(source, q).catch(() => []);
+    const seen = new Set(matches.map((item) => videoSearchText(item.name).toLowerCase()));
+    for (const item of related) {
+      const key = videoSearchText(item.name).toLowerCase();
+      if (seen.has(key) || (source.type === 'pornhub' && !key.includes(q))) continue;
+      matches.push(item);
+      seen.add(key);
+      if (matches.length >= limit) break;
+    }
+    return matches;
+  }
+
+  async fetchSourceTags(source: BooruSource, limit = 10): Promise<BooruTagSuggestion[]> {
+    switch (source.type) {
+      case 'xvideos':
+      case 'xhamster':
+      case 'pornhub':
+        return this.searchVideoTags(source, '', limit);
+      case 'hentaihaven':
+        return searchHentaiHavenTags('', limit, 'genre');
+      case 'nhentai':
+        return searchNHentaiApiTags('', limit);
+      default:
+        return [];
+    }
+  }
+
+  async searchTags(query: string, limit: number = 12, source: BooruSource = this.currentSource, type?: string): Promise<BooruTagSuggestion[]> {
+    if (query.trim().length < 2 || limit <= 0) return [];
 
     try {
       if (source.id === 'gelbooru') {
@@ -2436,13 +2537,14 @@ export class BooruApiService {
           }
         } catch {}
         return [];
-      } else if (source.type === 'xvideos' || source.type === 'xhamster' || source.type === 'pornhub' || source.type === 'sexcom') {
-        // No official suggestion endpoint; a client-side filter is enough
+      } else if (source.type === 'xvideos' || source.type === 'xhamster' || source.type === 'pornhub') {
+        return await this.searchVideoTags(source, query, limit);
+      } else if (source.type === 'sexcom') {
         return [];
       } else if (source.type === 'hentaihaven') {
-        return await searchHentaiHavenTags(query, limit);
+        return await searchHentaiHavenTags(query, limit, type);
       } else if (source.type === 'nhentai') {
-        return await searchNHentaiTags(query, limit);
+        return await searchNHentaiTags(query, limit, type);
       } else if (source.type === 'gelbooru' || source.type === 'realbooru') {
         const url = `${source.baseUrl}/autocomplete.php?q=${encodeURIComponent(query.trim())}`;
         const response = await fetchBooru(url, {

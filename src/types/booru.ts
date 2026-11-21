@@ -46,6 +46,8 @@ export interface BooruPost {
   favCount: number;
   tags: BooruTagGroups;
   allTags: string[];
+  /** Native query when multiple source tag types share a display category. */
+  tagQueries?: Record<string, string>;
   sourceLink?: string;
   fileExt?: string;
   fileSize?: number;
@@ -63,6 +65,7 @@ export interface BooruTagSuggestion {
   name: string;
   category: TagCategory;
   postCount: number;
+  query?: string;
 }
 
 export interface RedGifsNiche {

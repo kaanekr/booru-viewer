@@ -85,6 +85,23 @@ test('viewer can hide, reopen and empty its list without changing hook order', a
   assert.equal(root.root.findAllByType('FlatList').length, 0);
 });
 
+test('resolved viewer tags refresh the info sheet without changing the grid post or leaking across swipes', async () => {
+  const { Viewer, props, options } = setup();
+  await act(() => { root = create(React.createElement(Viewer, props), options); });
+  const list = () => root.root.findByType('FlatList');
+  const info = () => root.root.findByType('PostInfo').props;
+  const [first, second] = props.posts;
+  const tags = { artist: [], character: [], copyright: [], general: ['Retro Costume'], meta: [] };
+  const resolve = list().props.renderItem({ item: first, index: 0 }).props.onTagsResolved;
+  await act(() => resolve(first, tags, ['Retro Costume']));
+  assert.equal(info().post.tags, tags);
+  assert.equal(first.tags, undefined);
+
+  await act(() => list().props.onMomentumScrollEnd({ nativeEvent: { contentOffset: { x: 390 } } }));
+  await act(() => resolve(first, tags, ['Retro Costume']));
+  assert.equal(info().post, second);
+});
+
 test('slideshow advances, releases its timer on suspend and stays stopped on return', async () => {
   const { Viewer, props, options, timers, indices } = setup();
   await act(() => { root = create(React.createElement(Viewer, props), options); });

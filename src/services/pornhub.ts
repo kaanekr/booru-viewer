@@ -1,4 +1,4 @@
-import type { BooruPost, BooruSource } from '../types/booru';
+import type { BooruPost, BooruSource, BooruTagGroups } from '../types/booru';
 
 /**
  * Pornhub integration — pure helpers.
@@ -62,7 +62,8 @@ export function buildPornhubSearchUrl(
   page: number,
   query: string,
   ordering?: PornhubOrdering,
-  period?: PornhubPeriod
+  period?: PornhubPeriod,
+  tag?: string
 ): string {
   const qp = new URLSearchParams();
   qp.set('search', (query || '').trim());
@@ -70,11 +71,25 @@ export function buildPornhubSearchUrl(
   qp.set('thumbsize', 'medium');
   if (ordering) qp.set('ordering', ordering);
   if (period && ordering) qp.set('period', period);
+  if (tag) qp.set('tags[]', tag);
   return `${PORNHUB_API_BASE}/search?${qp.toString()}`;
 }
 
 function normalizeTag(s: string): string {
   return s.trim().toLowerCase().replace(/\s+/g, '_');
+}
+
+export function parsePornhubVideoTags(video: PornhubVideo): BooruTagGroups {
+  return {
+    artist: Array.isArray(video.pornstars)
+      ? video.pornstars.map((p) => normalizeTag(String(p?.pornstar_name || ''))).filter(Boolean) : [],
+    character: [],
+    copyright: Array.isArray(video.categories)
+      ? video.categories.map((c) => normalizeTag(String(c?.category || ''))).filter(Boolean) : [],
+    general: Array.isArray(video.tags)
+      ? video.tags.map((t) => normalizeTag(String(t?.tag_name || ''))).filter(Boolean) : [],
+    meta: ['video', `duration:${parseDurationToSeconds(video.duration)}s`],
+  };
 }
 
 function parseDurationToSeconds(duration: string | undefined): number {
@@ -176,15 +191,7 @@ export function mapPornhubVideoToPost(v: PornhubVideo, source: BooruSource): Boo
     }
   }
 
-  const tags = Array.isArray(v.tags)
-    ? v.tags.map((t) => normalizeTag(String(t?.tag_name || ''))).filter(Boolean)
-    : [];
-  const categories = Array.isArray(v.categories)
-    ? v.categories.map((c) => normalizeTag(String(c?.category || ''))).filter(Boolean)
-    : [];
-  const artists = Array.isArray(v.pornstars)
-    ? v.pornstars.map((p) => normalizeTag(String(p?.pornstar_name || ''))).filter(Boolean)
-    : [];
+  const tags = parsePornhubVideoTags(v);
 
   const rating = typeof v.rating === 'number' ? v.rating : 0;
   const views = typeof v.views === 'number' ? v.views : 0;
@@ -236,14 +243,8 @@ export function mapPornhubVideoToPost(v: PornhubVideo, source: BooruSource): Boo
     rating: 'e',
     score: Math.round(rating * 100),
     favCount: typeof v.ratings === 'number' ? v.ratings : views,
-    tags: {
-      artist: artists,
-      character: [],
-      copyright: categories,
-      general: tags,
-      meta: ['video', `duration:${parseDurationToSeconds(v.duration)}s`],
-    },
-    allTags: [...artists, ...categories, ...tags],
+    tags,
+    allTags: [...tags.artist, ...tags.copyright, ...tags.general],
     sourceLink: (v.url || '').trim() || `${PORNHUB_BASE}/view_video.php?viewkey=${v.video_id}`,
     fileExt: 'mp4',
     createdAt,
