@@ -51,6 +51,7 @@ import { canUseExpoVideoCache, downloadVideoViaAppSession, recordCachedVideo } f
 import { TagChip } from './TagChip';
 import { PostInfoModal } from './PostInfoModal';
 import { PornhubWebViewResolver } from './PornhubWebViewResolver';
+import { WebmWebViewPlayer } from './WebmWebViewPlayer';
 import {
   checkMp4UpgradeAvailable,
   getImageCacheKey,
@@ -1007,6 +1008,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
   const isScrubbingRef = useRef(false);
   const [upgradedMp4Url, setUpgradedMp4Url] = useState<string | null>(null);
   const [isCheckingUpgrade, setIsCheckingUpgrade] = useState(false);
+  const [webmWebViewFailed, setWebmWebViewFailed] = useState(false);
   const [quality, setQuality] = useState<ImageQuality>('auto');
   const [resolvedOriginalUrl, setResolvedOriginalUrl] = useState<string | null>(null);
   // If resolving dies, "Retry" bumps this counter and re-runs the effect.
@@ -1451,6 +1453,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
 
   useEffect(() => {
     setUpgradedMp4Url(null);
+    setWebmWebViewFailed(false);
   }, [primaryCandidate]);
 
   useEffect(() => {
@@ -2254,7 +2257,19 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
                   </View>
                 </View>
               )}
-              {isWebmOnlyOnIOS && isActive && !isCheckingUpgrade && !upgradedMp4Url && (
+              {isWebmOnlyOnIOS && isActive && !isCheckingUpgrade && !upgradedMp4Url && Boolean(mediaUrl) && !webmWebViewFailed && (
+                <View style={styles.fullImageLayer}>
+                  <WebmWebViewPlayer
+                    url={mediaUrl}
+                    posterUrl={sampleMediaUrl || undefined}
+                    width={screenWidth}
+                    height={screenHeight}
+                    suspended={suspended}
+                    onError={() => setWebmWebViewFailed(true)}
+                  />
+                </View>
+              )}
+              {isWebmOnlyOnIOS && isActive && !isCheckingUpgrade && !upgradedMp4Url && (!mediaUrl || webmWebViewFailed) && (
                 <View style={styles.unsupportedCardContainer} pointerEvents="box-none">
                   <View style={styles.unsupportedCard}>
                     <View style={styles.unsupportedHeader}>

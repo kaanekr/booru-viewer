@@ -34,7 +34,8 @@ function setup(storageOverrides = {}) {
     'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
     '../services/proxyService': {}, '../theme/colors': { Colors: { dark: {} } },
     '../services/storage': { StorageService: { isFavorite: async () => false, toggleFavorite: async () => true, ...storageOverrides } },
-    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' },
+    './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' }, './PornhubWebViewResolver': {}, './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' },
     '../utils/media': {
       isVideoPost: () => false,
       getMediaUrl: (url) => url,
@@ -228,7 +229,8 @@ test('asScreen video edge-swipe tracks horizontal finger movement and springs ba
     'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
     '../services/proxyService': {}, '../theme/colors': { Colors: { dark: {} } },
     '../services/storage': { StorageService: { isFavorite: async () => false } },
-    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' },
+    './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' }, './PornhubWebViewResolver': {}, './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' },
     '../utils/media': {
       isVideoPost: () => true,
       getMediaUrl: (url) => url, getMediaHeaders: () => ({}),
@@ -319,7 +321,8 @@ test('unified video controls auto-hide and toggle together with viewer chrome wi
     '../services/proxyService': { proxyService: { hasWorker: () => false, isProxiedUrl: () => false } },
     '../theme/colors': { Colors: { dark: {} } },
     '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
-    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' },
+    './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' }, './PornhubWebViewResolver': {}, './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' },
     '../utils/media': {
       isVideoPost: () => true,
       getMediaUrl: (url) => url, getMediaHeaders: () => ({}),
@@ -483,7 +486,8 @@ test('nhentai manga uses real aspect ratio and deduplicates page indicator updat
     'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
     '../services/proxyService': {}, '../theme/colors': { Colors: { dark: {} } },
     '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
-    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' },
+    './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' }, './PornhubWebViewResolver': {}, './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' },
     '../utils/media': {
       isVideoPost: () => false, getMediaUrl: (u) => u, getImageCacheKey: (u) => u, getMediaHeaders: () => ({}),
       isImageMediaUrl: () => true, getImageUris: () => ({ sampleUri: '', fullUri: '', placeholderUri: '' }),
@@ -577,7 +581,8 @@ test('interactive edge-swipe, vertical pull-to-dismiss, and 1:1 pull-up info she
     'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
     '../services/proxyService': {}, '../theme/colors': { Colors: { dark: {} } },
     '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
-    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' },
+    './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' }, './PornhubWebViewResolver': {}, './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' },
     '../utils/media': {
       isVideoPost: () => false, getMediaUrl: (u) => u, getImageCacheKey: (u) => u, getMediaHeaders: () => ({}),
       isImageMediaUrl: () => true, getImageUris: () => ({ sampleUri: 'https://x.test/s.jpg', fullUri: 'https://x.test/f.jpg', placeholderUri: 'https://x.test/p.jpg' }),
@@ -702,7 +707,8 @@ test('VideoPlayerView falls back to local File.downloadFileAsync when streaming 
     '../services/proxyService': { proxyService: { hasWorker: () => false, isProxiedUrl: () => false, forceProxyUrl: (u) => u } },
     '../theme/colors': { Colors: { dark: { primary: '#6366F1' } } },
     '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
-    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' },
+    './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' }, './PornhubWebViewResolver': {}, './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' },
     '../utils/media': {
       isVideoPost: () => true, getMediaUrl: (u) => u,
       getMediaHeaders: () => ({ Referer: 'https://realbooru.com/' }),
@@ -802,7 +808,8 @@ test('VideoPlayerView guards stale replaceAsync against URL change and shows Ret
     },
     '../theme/colors': { Colors: { dark: { primary: '#6366F1' } } },
     '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
-    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' },
+    './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' }, './PornhubWebViewResolver': {}, './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' },
     '../utils/media': {
       isVideoPost: () => true, getMediaUrl: (u) => u, getMediaHeaders: () => ({}),
       isImageMediaUrl: () => false, getImageUris: () => ({ sampleUri: '', fullUri: '', placeholderUri: '' }),
@@ -893,7 +900,8 @@ test('VideoTimelineBar unmount mid-scrub releases scrubbing lock via onScrubbing
     '../services/proxyService': { proxyService: { hasWorker: () => false, isProxiedUrl: () => false, forceProxyUrl: (u) => u } },
     '../theme/colors': { Colors: { dark: { primary: '#6366F1' } } },
     '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
-    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' }, './PornhubWebViewResolver': {},
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' },
+    './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' }, './PornhubWebViewResolver': {}, './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' },
     '../utils/media': {
       isVideoPost: () => true, getMediaUrl: (u) => u, getMediaHeaders: () => ({}),
       isImageMediaUrl: () => false, getImageUris: () => ({ sampleUri: '', fullUri: '', placeholderUri: '' }),
@@ -1093,6 +1101,7 @@ test('PostPageItem Pornhub rejection triggers WebView immediately and HentaiHave
       },
     },
     './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' },
+    './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' },
     './PornhubWebViewResolver': { PornhubWebViewResolver: 'PornhubWebViewResolver' },
     '../utils/media': {
       isVideoPost: () => true, getMediaUrl: (u) => u, getMediaHeaders: () => ({}),
