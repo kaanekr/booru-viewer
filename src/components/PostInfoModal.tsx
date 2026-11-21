@@ -48,6 +48,9 @@ interface PostInfoModalProps {
   onAddTagToSearch?: (tag: string) => void;
   onExcludeTagFromSearch?: (tag: string) => void;
   onPreviewOriginal?: (post: BooruPost) => void;
+  useModal?: boolean;
+  isPeeking?: boolean;
+  externalTranslateY?: Animated.Value;
 }
 
 interface TagItemData {
@@ -63,6 +66,9 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   onAddTagToSearch,
   onExcludeTagFromSearch,
   onPreviewOriginal,
+  useModal = true,
+  isPeeking = false,
+  externalTranslateY,
 }) => {
   const insets = useSafeAreaInsets();
   const { height: windowHeight } = useWindowDimensions();
@@ -73,6 +79,8 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   const insetLeft = insets.left ?? 0;
   const insetRight = insets.right ?? 0;
   const sheetMaxHeight = Math.round(windowHeight * 0.92);
+  const sheetMaxHeightRef = useRef(sheetMaxHeight);
+  sheetMaxHeightRef.current = sheetMaxHeight;
 
   const [selectedTag, setSelectedTag] = useState<TagItemData | null>(null);
   const selectedTagRef = useRef<TagItemData | null>(null);
@@ -132,9 +140,11 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   }, []);
 
   // --- Drag-to-dismiss infrastructure (Animated + PanResponder, Expo Go compatible) ---
-  const translateY = useRef(new Animated.Value(windowHeight)).current;
+  const internalTranslateY = useRef(new Animated.Value(windowHeight)).current;
+  const translateY = externalTranslateY ?? internalTranslateY;
   const scrollViewRef = useRef<ScrollViewInstance>(null);
   const scrollOffsetY = useRef(0);
+  const dragStartDyRef = useRef<number | null>(null);
   const closing = useRef(false);
 
   const setNativeScrollEnabled = useCallback((enabled: boolean) => {
@@ -153,8 +163,8 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
     closing.current = true;
     setNativeScrollEnabled(false);
     Animated.timing(translateY, {
-      toValue: windowHeightRef.current,
-      duration: 240,
+      toValue: sheetMaxHeightRef.current || windowHeightRef.current,
+      duration: 180,
       useNativeDriver: true,
     }).start(() => {
       closing.current = false;
@@ -166,23 +176,28 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
 
   const requestClose = useCallback(() => dismissThen(), [dismissThen]);
 
-  // Opening: slide in from the bottom
+  // Opening: spring smoothly from current position (supports interactive pull-up)
   useEffect(() => {
     if (visible) {
       closing.current = false;
       scrollOffsetY.current = 0;
+      dragStartDyRef.current = null;
       setNativeScrollEnabled(true);
-      translateY.setValue(windowHeightRef.current);
-      Animated.timing(translateY, {
+      if (!externalTranslateY) {
+        translateY.setValue(sheetMaxHeightRef.current || windowHeightRef.current);
+      }
+      Animated.spring(translateY, {
         toValue: 0,
-        duration: 180,
+        damping: 28,
+        stiffness: 320,
+        mass: 0.85,
         useNativeDriver: true,
       }).start();
     }
-  }, [visible, translateY, setNativeScrollEnabled]);
+  }, [visible, translateY, externalTranslateY, setNativeScrollEnabled]);
 
   // Catch pull-down when the inner ScrollView is at the top, track finger 1:1
-  // without triggering React state re-renders mid-drag.
+  // without jumping or triggering React state re-renders mid-drag.
   const sheetPanResponder = useMemo(
     () =>
       PanResponder.create({
@@ -190,43 +205,49 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
         onMoveShouldSetPanResponder: (_, gesture) =>
           !closing.current &&
           !selectedTagRef.current &&
-          gesture.dy > 10 &&
+          gesture.dy > 5 &&
           Math.abs(gesture.dy) > Math.abs(gesture.dx) &&
           scrollOffsetY.current <= 0,
         onMoveShouldSetPanResponderCapture: (_, gesture) =>
           !closing.current &&
           !selectedTagRef.current &&
-          gesture.dy > 10 &&
-          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.2 &&
+          gesture.dy > 5 &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.15 &&
           scrollOffsetY.current <= 0,
-        onPanResponderGrant: () => {
+        onPanResponderGrant: (_, gesture) => {
+          dragStartDyRef.current = gesture?.dy ?? 0;
           (translateY as any).stopAnimation?.();
           setNativeScrollEnabled(false);
         },
         onPanResponderMove: (_, gesture) => {
-          // Resist upward pushes, track downward ones exactly
-          translateY.setValue(gesture.dy > 0 ? gesture.dy : gesture.dy * 0.25);
+          const deltaY = gesture.dy - (dragStartDyRef.current ?? 0);
+          // Resist upward pushes, track downward ones 1:1 from zero
+          translateY.setValue(deltaY > 0 ? deltaY : deltaY * 0.2);
         },
         onPanResponderRelease: (_, gesture) => {
+          const startDy = dragStartDyRef.current ?? 0;
+          dragStartDyRef.current = null;
+          const deltaY = gesture.dy - startDy;
           setNativeScrollEnabled(true);
-          if (gesture.dy > DISMISS_THRESHOLD || gesture.vy > 0.7) {
+          if (deltaY > DISMISS_THRESHOLD || gesture.vy > 0.55) {
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             dismissThen();
           } else {
             Animated.spring(translateY, {
               toValue: 0,
-              damping: 26,
-              stiffness: 300,
+              damping: 28,
+              stiffness: 320,
               useNativeDriver: true,
             }).start();
           }
         },
         onPanResponderTerminate: () => {
+          dragStartDyRef.current = null;
           setNativeScrollEnabled(true);
           Animated.spring(translateY, {
             toValue: 0,
-            damping: 26,
-            stiffness: 300,
+            damping: 28,
+            stiffness: 320,
             useNativeDriver: true,
           }).start();
         },
@@ -236,8 +257,8 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   );
 
   const backdropOpacity = translateY.interpolate({
-    inputRange: [0, Math.max(1, windowHeight)],
-    outputRange: [0.5, 0],
+    inputRange: [0, Math.max(1, sheetMaxHeight)],
+    outputRange: [0.55, 0],
     extrapolate: 'clamp',
   });
 
@@ -506,17 +527,13 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
   const menuTop = Math.min(Math.max(menuPosition.y - 40, minMenuTop), maxMenuTop);
 
   if (!post) return null;
+  if (!useModal && !visible && !isPeeking) return null;
 
-  return (
-    <Modal
-      visible={visible}
-      animationType="none"
-      transparent
-      presentationStyle="overFullScreen"
-      statusBarTranslucent
-      onRequestClose={requestClose}
+  const sheetContent = (
+    <View
+      style={[styles.backdropContainer, { paddingTop: insetTop }, !useModal && styles.inlineOverlay]}
+      pointerEvents={visible || isPeeking ? 'auto' : 'none'}
     >
-      <View style={[styles.backdropContainer, { paddingTop: insetTop }]}>
         <TouchableWithoutFeedback onPress={requestClose}>
           <Animated.View style={[styles.backdrop, { opacity: backdropOpacity }]} />
         </TouchableWithoutFeedback>
@@ -563,6 +580,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
         <ScrollView
           ref={scrollViewRef}
           style={styles.scrollArea}
+          bounces={false}
           contentContainerStyle={[
             styles.scrollContent,
             {
@@ -915,7 +933,23 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = ({
           </TouchableWithoutFeedback>
         )}
         </Animated.View>
-      </View>
+    </View>
+  );
+
+  if (!useModal) {
+    return sheetContent;
+  }
+
+  return (
+    <Modal
+      visible={visible}
+      animationType="none"
+      transparent
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      onRequestClose={requestClose}
+    >
+      {sheetContent}
     </Modal>
   );
 };
@@ -924,6 +958,11 @@ const styles = StyleSheet.create({
   backdropContainer: {
     flex: 1,
     justifyContent: 'flex-end',
+  },
+  inlineOverlay: {
+    ...StyleSheet.absoluteFill,
+    zIndex: 1100,
+    elevation: 1100,
   },
   backdrop: {
     ...StyleSheet.absoluteFill,

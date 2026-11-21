@@ -61,9 +61,18 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   const currentSourceId = posts[currentIndex]?.sourceId;
   const source = originSource?.id === currentSourceId
     ? originSource : AVAILABLE_SOURCES.find((item) => item.id === currentSourceId);
-  const handleClose = useCallback(() => {
+  const handleClose = useCallback((immediate?: boolean) => {
     if (!closingRef.current && navigation.canGoBack()) {
       closingRef.current = true;
+      if (immediate) {
+        navigation.setOptions({ animation: 'none' });
+        if (typeof requestAnimationFrame === 'function') {
+          requestAnimationFrame(() => navigation.goBack());
+        } else {
+          navigation.goBack();
+        }
+        return;
+      }
       navigation.goBack();
     }
   }, [navigation]);
