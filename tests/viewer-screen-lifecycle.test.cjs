@@ -142,3 +142,61 @@ test('videos keep native stack swipe-back enabled while excluding the timeline a
   await act(() => { root.root.findByType('Viewer').props.onScrubbingChange(false); });
   assert.equal(setOptionsCalls.at(-1).gestureEnabled, true);
 });
+
+test('immediate close cancels pending rAF on unmount and re-checks canGoBack', async () => {
+  let backCount = 0;
+  let canGoBackVal = true;
+  const scheduled = new Map();
+  const cancelled = [];
+  let nextId = 10;
+  const load = createLoader({
+    react: React,
+    'react-native': { useWindowDimensions: () => ({ width: 390, height: 844 }) },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) },
+    '@react-navigation/native': { useIsFocused: () => true },
+    '../navigation/postsCache': { getCachedPosts: () => [{ id: '1', sourceId: 'a' }], deleteCachedPosts() {} },
+    '../navigation/rootNavigation': { pushSearchDetail() {} },
+    '../components/ImageViewerModal': { ImageViewerModal: 'Viewer' },
+    '../services/storage': { StorageService: { addRecentView: async () => {} } },
+    '../utils/media': { isVideoPost: () => false },
+    '../context/MediaPlaybackContext': { useMediaPlaybackAllowed: () => true },
+    '../services/sources': { AVAILABLE_SOURCES: [{ id: 'a' }] },
+  }, {
+    requestAnimationFrame: (cb) => { const id = ++nextId; scheduled.set(id, cb); return id; },
+    cancelAnimationFrame: (id) => { cancelled.push(id); scheduled.delete(id); },
+  });
+  const { ViewerScreen } = load(path.resolve(__dirname, '../src/screens/ViewerScreen.tsx'));
+  await act(() => {
+    root = create(React.createElement(ViewerScreen, {
+      route: { params: { postsKey: 'k2', initialIndex: 0 } },
+      navigation: {
+        canGoBack: () => canGoBackVal,
+        goBack: () => { backCount++; },
+        setOptions() {},
+      },
+    }));
+  });
+  await act(() => { root.root.findByType('Viewer').props.onClose(true); });
+  assert.equal(scheduled.size, 1);
+  const [rafId] = scheduled.keys();
+  await act(() => { root.unmount(); });
+  root = null;
+  assert.deepEqual(cancelled, [rafId]);
+  assert.equal(backCount, 0);
+
+  // Also verify canGoBack() is re-checked inside the rAF callback
+  await act(() => {
+    root = create(React.createElement(ViewerScreen, {
+      route: { params: { postsKey: 'k3', initialIndex: 0 } },
+      navigation: {
+        canGoBack: () => canGoBackVal,
+        goBack: () => { backCount++; },
+        setOptions() {},
+      },
+    }));
+  });
+  await act(() => { root.root.findByType('Viewer').props.onClose(true); });
+  canGoBackVal = false;
+  for (const cb of scheduled.values()) cb();
+  assert.equal(backCount, 0);
+});

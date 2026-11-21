@@ -30,7 +30,17 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
   const [currentIndex, setCurrentIndex] = useState(initialIndex);
   const [isScrubbing, setIsScrubbing] = useState(false);
   const closingRef = useRef(false);
+  const closeRafRef = useRef<number | null>(null);
   useEffect(() => { if (isFocused) closingRef.current = false; }, [isFocused]);
+
+  useEffect(() => {
+    return () => {
+      if (closeRafRef.current !== null && typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(closeRafRef.current);
+        closeRafRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (posts.length === 0 && navigation.canGoBack()) {
@@ -79,7 +89,15 @@ export const ViewerScreen: React.FC<Props> = ({ route, navigation }) => {
       if (immediate) {
         navigation.setOptions({ animation: 'none' });
         if (typeof requestAnimationFrame === 'function') {
-          requestAnimationFrame(() => navigation.goBack());
+          if (closeRafRef.current !== null && typeof cancelAnimationFrame === 'function') {
+            cancelAnimationFrame(closeRafRef.current);
+          }
+          closeRafRef.current = requestAnimationFrame(() => {
+            closeRafRef.current = null;
+            if (navigation.canGoBack()) {
+              navigation.goBack();
+            }
+          });
         } else {
           navigation.goBack();
         }

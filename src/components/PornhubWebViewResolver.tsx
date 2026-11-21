@@ -22,13 +22,17 @@ export const PornhubWebViewResolver: React.FC<Props> = ({ pageUrl, onResolve }) 
   // If the page connection hangs, neither message nor error arrives: always
   // terminate the resolver with an absolute ceiling so the spinner never spins forever.
   useEffect(() => {
+    doneRef.current = false;
     const t = setTimeout(() => {
       if (!doneRef.current) {
         doneRef.current = true;
         onResolveRef.current(null);
       }
     }, 20000);
-    return () => clearTimeout(t);
+    return () => {
+      doneRef.current = true;
+      clearTimeout(t);
+    };
   }, [pageUrl]);
 
   const injected = useMemo(
@@ -64,22 +68,22 @@ export const PornhubWebViewResolver: React.FC<Props> = ({ pageUrl, onResolve }) 
       const data = JSON.parse(e.nativeEvent.data);
       if (!data || data.ok !== true || typeof data.chunk !== 'string') {
         doneRef.current = true;
-        onResolve(null);
+        onResolveRef.current(null);
         return;
       }
       const files = parsePornhubDetail(data.chunk);
       doneRef.current = true;
-      onResolve(files.high || files.hls || files.low ? files : null);
+      onResolveRef.current(files.high || files.hls || files.low ? files : null);
     } catch {
       doneRef.current = true;
-      onResolve(null);
+      onResolveRef.current(null);
     }
   };
 
   const failFast = () => {
     if (doneRef.current) return;
     doneRef.current = true;
-    onResolve(null);
+    onResolveRef.current(null);
   };
 
   // On Android onHttpError also fires for sub-resource (ad/tracker) errors;

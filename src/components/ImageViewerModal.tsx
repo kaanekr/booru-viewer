@@ -468,6 +468,48 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     },
     [setGalleryScrollSynchronously, onScrubbingChange]
   );
+
+  const handleCloseInfoSheet = useCallback(() => {
+    setShowDetailsSheet(false);
+    isPeekingDetailsRef.current = false;
+    setIsPeekingDetails(false);
+  }, []);
+
+  const handlePreviewOriginal = useCallback((p: BooruPost) => {
+    setPreviewOriginalId(getPostKey(p));
+  }, []);
+
+  const handleInfoSearchTag = useCallback((tag: string) => {
+    setShowDetailsSheet(false);
+    if (!asScreen && dismissOnTagPress) {
+      onClose();
+    }
+    onTagPress(tag);
+  }, [asScreen, dismissOnTagPress, onClose, onTagPress]);
+
+  const handleInfoAddTagToSearch = useCallback((tag: string) => {
+    setShowDetailsSheet(false);
+    if (!asScreen && dismissOnTagPress) {
+      onClose();
+    }
+    if (onAddTagToSearch) {
+      onAddTagToSearch(tag);
+    } else {
+      onTagPress(tag);
+    }
+  }, [asScreen, dismissOnTagPress, onAddTagToSearch, onClose, onTagPress]);
+
+  const handleInfoExcludeTagFromSearch = useCallback((tag: string) => {
+    setShowDetailsSheet(false);
+    if (!asScreen && dismissOnTagPress) {
+      onClose();
+    }
+    if (onExcludeTagFromSearch) {
+      onExcludeTagFromSearch(tag);
+    } else {
+      onTagPress(`-${tag}`);
+    }
+  }, [asScreen, dismissOnTagPress, onClose, onExcludeTagFromSearch, onTagPress]);
   const handleOpenDetails = useCallback(() => {
     infoSheetTranslateY.setValue(sheetMaxHeightRef.current);
     setShowDetailsSheet(true);
@@ -749,41 +791,11 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             isPeeking={isPeekingDetails && !suspended}
             externalTranslateY={infoSheetTranslateY}
             post={currentPost}
-            onClose={() => {
-              setShowDetailsSheet(false);
-              isPeekingDetailsRef.current = false;
-              setIsPeekingDetails(false);
-            }}
-            onPreviewOriginal={(p) => setPreviewOriginalId(getPostKey(p))}
-            onSearchTag={(tag) => {
-              setShowDetailsSheet(false);
-              if (!asScreen && dismissOnTagPress) {
-                onClose();
-              }
-              onTagPress(tag);
-            }}
-            onAddTagToSearch={(tag) => {
-              setShowDetailsSheet(false);
-              if (!asScreen && dismissOnTagPress) {
-                onClose();
-              }
-              if (onAddTagToSearch) {
-                onAddTagToSearch(tag);
-              } else {
-                onTagPress(tag);
-              }
-            }}
-            onExcludeTagFromSearch={(tag) => {
-              setShowDetailsSheet(false);
-              if (!asScreen && dismissOnTagPress) {
-                onClose();
-              }
-              if (onExcludeTagFromSearch) {
-                onExcludeTagFromSearch(tag);
-              } else {
-                onTagPress(`-${tag}`);
-              }
-            }}
+            onClose={handleCloseInfoSheet}
+            onPreviewOriginal={handlePreviewOriginal}
+            onSearchTag={handleInfoSearchTag}
+            onAddTagToSearch={handleInfoAddTagToSearch}
+            onExcludeTagFromSearch={handleInfoExcludeTagFromSearch}
           />
           {showPageJump && (
             <View style={styles.jumpOverlay}>
@@ -989,6 +1001,8 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
   const [gifError, setGifError] = useState('');
   const [gifProgress, setGifProgress] = useState<number | null>(null);
   const [gifProxyAttempt, setGifProxyAttempt] = useState(false);
+  const gifProgressThrottleRef = useRef<{ time: number; ratio: number }>({ time: 0, ratio: -1 });
+  const fullProgressThrottleRef = useRef<{ time: number; ratio: number }>({ time: 0, ratio: -1 });
   const [isScrubbingActive, setIsScrubbingActive] = useState(false);
   const isScrubbingRef = useRef(false);
   const [upgradedMp4Url, setUpgradedMp4Url] = useState<string | null>(null);
@@ -1165,17 +1179,28 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
           })
           .catch(() => {});
       } else if (post.sourceId === 'pornhub') {
+        const triggerPornhubFallback = () => {
+          if (Platform.OS === 'web') {
+            setVideoResolveFailed(true);
+          } else {
+            setPornhubWebviewOn(true);
+          }
+        };
         resolvePornhubVideoUrls(post, abortCtrl.signal)
           .then((files) => {
             if (!alive) return;
-            if (files) {
-              setResolvedOriginalUrl(files.high || files.hls || files.low || null);
+            const playable = files?.high || files?.hls || files?.low || null;
+            if (playable) {
+              setResolvedOriginalUrl(playable);
             } else {
-              // Fast path hit the bot wall → hidden WebView fallback
-              setPornhubWebviewOn(true);
+              // Fast path hit the bot wall or returned no playable URL → hidden WebView fallback
+              triggerPornhubFallback();
             }
           })
-          .catch(() => {});
+          .catch((err: any) => {
+            if (!alive || abortCtrl.signal.aborted || err?.name === 'AbortError') return;
+            triggerPornhubFallback();
+          });
       } else if (post.sourceId === 'realbooru') {
         // Listing tags carry no file extension (the scraper guesses .mp4),
         // so resolve the real mp4/webm/gif from the detail page.
@@ -1214,7 +1239,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
 
   const handleSelectHhEpisode = useCallback(
     (ep: HentaiHavenEpisode) => {
-      if (!isActive || suspended || hhEpisodeRequestRef.current || ep.ep === hhActiveEp) return;
+      if (!isActive || suspended || hhEpisodeRequestRef.current || (ep.ep === hhActiveEp && Boolean(resolvedOriginalUrl))) return;
       const ctrl = new AbortController();
       hhEpisodeRequestRef.current = ctrl;
       const baseM = post.sourceLink?.match(/^https?:\/\/[^/]+/i);
@@ -1244,7 +1269,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
           setHhEpLoading(false);
         });
     },
-    [isActive, suspended, hhActiveEp, post.id, post.sourceLink]
+    [isActive, suspended, hhActiveEp, resolvedOriginalUrl, post.id, post.sourceLink]
   );
 
   // Fuse: if fetch + WebView exceed 30s total, kill the spinner and
@@ -1276,6 +1301,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
     dragY.setValue(0);
     setMangaLoading(false);
     setIsMangaZoomed(false);
+    isMangaZoomedRef.current = false;
     mangaOffsetYRef.current = 0;
     mangaZoomScaleRef.current = 1;
     setHasUpgradedToFull(false);
@@ -1288,7 +1314,13 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
     setFullTotalBytes(0);
     setGifLoaded(false);
     setGifFailed(false);
-  }, [post.id]);
+    setGifError('');
+    setGifProgress(null);
+    setGifProxyAttempt(false);
+    setRealDims(null);
+    gifProgressThrottleRef.current = { time: 0, ratio: -1 };
+    fullProgressThrottleRef.current = { time: 0, ratio: -1 };
+  }, [post.sourceId, post.id]);
 
   // Real resolution: for the zoom-ceiling computation (session-cached, one-shot).
   // Replaces the scrape placeholder (800x1000) with the real WxH from the post page.
@@ -2109,11 +2141,25 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
                   transition={150}
                   onLoad={() => setGifLoaded(true)}
                   onProgress={({ loaded, total }) => {
-                    if (total > 0) setGifProgress(Math.min(1, loaded / total));
+                    if (total > 0) {
+                      const ratio = Math.min(1, Math.max(0, loaded / total));
+                      const now = Date.now();
+                      const last = gifProgressThrottleRef.current;
+                      if (
+                        ratio >= 1 ||
+                        last.ratio < 0 ||
+                        now - last.time >= 150 ||
+                        Math.abs(ratio - last.ratio) >= 0.02
+                      ) {
+                        gifProgressThrottleRef.current = { time: now, ratio };
+                        setGifProgress(ratio);
+                      }
+                    }
                   }}
                   onError={({ error }) => {
                     console.warn('[Viewer GIF] image load failed', post.id, error);
                     if (!gifProxyAttempt && proxyService.hasWorker() && !proxyService.isProxiedUrl(gifMediaUrl)) {
+                      gifProgressThrottleRef.current = { time: 0, ratio: -1 };
                       setGifProgress(null);
                       setGifProxyAttempt(true);
                       return;
@@ -2152,6 +2198,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
                   allowDownscaling={false}
                   transition={150}
                   onLoadStart={() => {
+                    fullProgressThrottleRef.current = { time: 0, ratio: -1 };
                     setFullLoading(true);
                   }}
                   onLoad={() => {
@@ -2167,17 +2214,30 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
                   onProgress={(e: any) => {
                     const loaded = e?.loaded ?? e?.nativeEvent?.loaded;
                     let total = e?.total ?? e?.nativeEvent?.total;
-                    if (typeof loaded === 'number' && loaded > 0) {
-                      setFullLoadedBytes(loaded);
-                    }
                     if ((!total || total <= 0) && post.fileSize && post.fileSize > 0) {
                       total = post.fileSize;
+                    }
+                    const ratio =
+                      typeof loaded === 'number' && typeof total === 'number' && total > 0
+                        ? Math.min(1, Math.max(0, loaded / total))
+                        : -1;
+                    const now = Date.now();
+                    const last = fullProgressThrottleRef.current;
+                    const shouldUpdate =
+                      ratio >= 1 ||
+                      last.time === 0 ||
+                      now - last.time >= 150 ||
+                      (ratio >= 0 && last.ratio >= 0 && Math.abs(ratio - last.ratio) >= 0.02);
+                    if (!shouldUpdate) return;
+                    fullProgressThrottleRef.current = { time: now, ratio: ratio >= 0 ? ratio : last.ratio };
+                    if (typeof loaded === 'number' && loaded > 0) {
+                      setFullLoadedBytes(loaded);
                     }
                     if (typeof total === 'number' && total > 0) {
                       setFullTotalBytes(total);
                     }
-                    if (typeof loaded === 'number' && typeof total === 'number' && total > 0) {
-                      setFullProgress(Math.min(1, Math.max(0, loaded / total)));
+                    if (ratio >= 0) {
+                      setFullProgress(ratio);
                     }
                   }}
                 />
@@ -2414,6 +2474,17 @@ const VideoTimelineBar: React.FC<VideoTimelineBarProps> = React.memo(({
   durationRef.current = duration;
   const isScrubbingRef = useRef(false);
   isScrubbingRef.current = isScrubbing;
+  const onScrubbingChangeRef = useRef(onScrubbingChange);
+  onScrubbingChangeRef.current = onScrubbingChange;
+
+  useEffect(() => {
+    return () => {
+      if (isScrubbingRef.current) {
+        isScrubbingRef.current = false;
+        onScrubbingChangeRef.current(false);
+      }
+    };
+  }, []);
 
   const trackLayoutRef = useRef<{ pageX: number; width: number }>({ pageX: 0, width: 0 });
   const trackWrapperRef = useRef<ViewInstance>(null);
@@ -2594,6 +2665,8 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
   const hideTimerRef = useRef<any>(null);
   const wasPlayingRef = useRef(false);
   const isScrubbingRef = useRef(false);
+  const onScrubbingChangeRef = useRef(onScrubbingChange);
+  onScrubbingChangeRef.current = onScrubbingChange;
   const suspendedRef = useRef(suspended);
   suspendedRef.current = suspended;
 
@@ -2615,6 +2688,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
   const localFallbackDoneRef = useRef(false);
   const localDownloadAbortRef = useRef<AbortController | null>(null);
   const activeMediaUriRef = useRef(url);
+  const loadGenRef = useRef(0);
   // If fallbacks die, go to a terminal error state instead of a black screen.
   const [loadFailed, setLoadFailed] = useState(false);
   const [isLocalDownloading, setIsLocalDownloading] = useState(false);
@@ -2626,14 +2700,20 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      loadGenRef.current += 1;
       localDownloadAbortRef.current?.abort();
       localDownloadAbortRef.current = null;
+      if (isScrubbingRef.current) {
+        isScrubbingRef.current = false;
+        onScrubbingChangeRef.current?.(false);
+      }
     };
   }, []);
   // A format iOS AVPlayer cannot open (WebM) is never handed to the player:
   // show the error card directly instead of a -11828 warning storm.
   const blockedUrl = Platform.OS === 'ios' && isUnsupportedOnIOS(url);
   useEffect(() => {
+    loadGenRef.current += 1;
     localDownloadAbortRef.current?.abort();
     localDownloadAbortRef.current = null;
     proxyFallbackDoneRef.current = false;
@@ -2649,6 +2729,56 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
     p.muted = sessionVideoMuted;
     p.timeUpdateEventInterval = 0.25;
   });
+
+  const tryLocalDownloadFallback = useCallback(
+    (gen: number): boolean => {
+      const canTryLocalDownload =
+        !blockedUrl &&
+        !localFallbackDoneRef.current &&
+        Platform.OS !== 'web' &&
+        /^https?:\/\//i.test(url) &&
+        !proxyService.isProxiedUrl(url);
+
+      if (!canTryLocalDownload) return false;
+
+      localFallbackDoneRef.current = true;
+      localDownloadAbortRef.current?.abort();
+      const ctrl = new AbortController();
+      localDownloadAbortRef.current = ctrl;
+      setIsLocalDownloading(true);
+      setLocalDownloadProgress(null);
+
+      (async () => {
+        try {
+          const localUri = await downloadVideoViaAppSession(
+            url,
+            getMediaHeaders(url),
+            ctrl.signal,
+            (ratio) => {
+              if (mountedRef.current && !ctrl.signal.aborted && loadGenRef.current === gen) {
+                setLocalDownloadProgress(ratio);
+              }
+            }
+          );
+          if (!mountedRef.current || ctrl.signal.aborted || loadGenRef.current !== gen) return;
+          activeMediaUriRef.current = localUri;
+          setIsLocalDownloading(false);
+          setLocalDownloadProgress(null);
+          await player.replaceAsync({ uri: localUri });
+          if (!mountedRef.current || ctrl.signal.aborted || loadGenRef.current !== gen) return;
+          if (!suspendedRef.current) player.play();
+        } catch (e: any) {
+          if (!mountedRef.current || ctrl.signal.aborted || loadGenRef.current !== gen || e?.name === 'AbortError') return;
+          console.warn('[VideoPlayerView] Local download fallback failed:', e);
+          setIsLocalDownloading(false);
+          setLocalDownloadProgress(null);
+          setLoadFailed(true);
+        }
+      })();
+      return true;
+    },
+    [blockedUrl, player, url]
+  );
 
   useEffect(() => {
     return () => {
@@ -2670,6 +2800,8 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
     }
     if (payload.status !== 'error') return;
 
+    const gen = loadGenRef.current;
+
     if (
       proxyService.hasWorker() &&
       !proxyService.isProxiedUrl(url) &&
@@ -2686,58 +2818,21 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
               headers: getMediaHeaders(viaProxy),
               useCaching: canUseExpoVideoCache(viaProxy),
             });
-            if (!mountedRef.current) return;
+            if (!mountedRef.current || loadGenRef.current !== gen) return;
             if (!suspendedRef.current) player.play();
           } catch (e) {
-            if (mountedRef.current) console.warn('[VideoPlayerView] Proxy fallback failed:', e);
+            if (!mountedRef.current || loadGenRef.current !== gen) return;
+            console.warn('[VideoPlayerView] Proxy fallback failed:', e);
+            if (!tryLocalDownloadFallback(gen)) {
+              setLoadFailed(true);
+            }
           }
         })();
         return;
       }
     }
 
-    const canTryLocalDownload =
-      !blockedUrl &&
-      !localFallbackDoneRef.current &&
-      Platform.OS !== 'web' &&
-      /^https?:\/\//i.test(url) &&
-      !proxyService.isProxiedUrl(url);
-
-    if (canTryLocalDownload) {
-      localFallbackDoneRef.current = true;
-      localDownloadAbortRef.current?.abort();
-      const ctrl = new AbortController();
-      localDownloadAbortRef.current = ctrl;
-      setIsLocalDownloading(true);
-      setLocalDownloadProgress(null);
-
-      (async () => {
-        try {
-          const localUri = await downloadVideoViaAppSession(
-            url,
-            getMediaHeaders(url),
-            ctrl.signal,
-            (ratio) => {
-              if (mountedRef.current && !ctrl.signal.aborted) {
-                setLocalDownloadProgress(ratio);
-              }
-            }
-          );
-          if (!mountedRef.current || ctrl.signal.aborted) return;
-          activeMediaUriRef.current = localUri;
-          setIsLocalDownloading(false);
-          setLocalDownloadProgress(null);
-          await player.replaceAsync({ uri: localUri });
-          if (!mountedRef.current || ctrl.signal.aborted) return;
-          if (!suspendedRef.current) player.play();
-        } catch (e: any) {
-          if (!mountedRef.current || ctrl.signal.aborted || e?.name === 'AbortError') return;
-          console.warn('[VideoPlayerView] Local download fallback failed:', e);
-          setIsLocalDownloading(false);
-          setLocalDownloadProgress(null);
-          setLoadFailed(true);
-        }
-      })();
+    if (tryLocalDownloadFallback(gen)) {
       return;
     }
 
@@ -2746,6 +2841,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
 
   useEffect(() => {
     let isCurrent = true;
+    const gen = ++loadGenRef.current;
 
     if (!videoSource.uri || blockedUrl) {
       if (blockedUrl && mountedRef.current) setLoadFailed(true);
@@ -2757,22 +2853,30 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
     (async () => {
       try {
         await player.replaceAsync(videoSource);
-        if (!mountedRef.current) return;
-        if (isCurrent && !suspendedRef.current) {
+        if (!mountedRef.current || !isCurrent || loadGenRef.current !== gen) return;
+        if (!suspendedRef.current) {
           player.play();
         }
       } catch (error) {
-        if (isCurrent && mountedRef.current) console.warn('[VideoPlayerView] Async source failed:', error);
+        if (!isCurrent || !mountedRef.current || loadGenRef.current !== gen) return;
+        console.warn('[VideoPlayerView] Async source failed:', error);
+        if (!tryLocalDownloadFallback(gen)) {
+          setLoadFailed(true);
+        }
       }
     })();
 
     return () => {
       isCurrent = false;
     };
-  }, [player, videoSource, blockedUrl]);
+  }, [player, videoSource, blockedUrl, tryLocalDownloadFallback]);
 
   useEffect(() => {
     if (suspended) {
+      if (isScrubbingRef.current) {
+        isScrubbingRef.current = false;
+        onScrubbingChangeRef.current?.(false);
+      }
       try {
         wasPlayingRef.current = player.playing;
       } catch {
@@ -2885,6 +2989,7 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
 
   const handleRetryLoad = useCallback(() => {
     if (!mountedRef.current || blockedUrl) return;
+    const gen = ++loadGenRef.current;
     localDownloadAbortRef.current?.abort();
     localDownloadAbortRef.current = null;
     setLoadFailed(false);
@@ -2896,15 +3001,17 @@ const VideoPlayerView: React.FC<VideoPlayerViewProps> = React.memo(({
     (async () => {
       try {
         await player.replaceAsync(videoSource);
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || loadGenRef.current !== gen) return;
         if (!suspendedRef.current) player.play();
       } catch (e) {
-        if (!mountedRef.current) return;
+        if (!mountedRef.current || loadGenRef.current !== gen) return;
         console.warn('[VideoPlayerView] Manual retry failed:', e);
-        setLoadFailed(true);
+        if (!tryLocalDownloadFallback(gen)) {
+          setLoadFailed(true);
+        }
       }
     })();
-  }, [player, videoSource, blockedUrl, url]);
+  }, [player, videoSource, blockedUrl, url, tryLocalDownloadFallback]);
 
   return (
     <View style={{ width: screenWidth, height: screenHeight, alignItems: 'center', justifyContent: 'center' }}>

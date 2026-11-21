@@ -73,6 +73,9 @@ export const LockScreen: React.FC<LockScreenProps> = ({
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isMountedRef = useRef(true);
   const isSubmittingRef = useRef(false);
+  const isAuthenticatingRef = useRef(false);
+  const onSuccessRef = useRef(onSuccess);
+  onSuccessRef.current = onSuccess;
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -138,7 +141,7 @@ export const LockScreen: React.FC<LockScreenProps> = ({
 
         // Auto trigger biometrics if unlock mode and biometrics enabled
         if (mode === 'unlock' && available) {
-          triggerBiometricAuth();
+          triggerBiometricAuth(status.biometryType);
         }
       }
     }
@@ -150,21 +153,24 @@ export const LockScreen: React.FC<LockScreenProps> = ({
     };
   }, [mode]);
 
-  const triggerBiometricAuth = async () => {
-    if (isAuthenticating) return;
+  const triggerBiometricAuth = async (overrideBiometryType?: BiometryType | null) => {
+    if (isAuthenticatingRef.current) return;
+    isAuthenticatingRef.current = true;
     setIsAuthenticating(true);
+    const activeBiometryType = overrideBiometryType !== undefined ? overrideBiometryType : biometryType;
     try {
       const ok = await SecurityService.authenticateWithBiometrics(
-        biometryType ? `Unlock with ${biometryType}` : 'Biometric Authentication'
+        activeBiometryType ? `Unlock with ${activeBiometryType}` : 'Biometric Authentication'
       );
       if (ok && isMountedRef.current) {
         setPin('');
         setErrorMsg(null);
         setIsErrorState(false);
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-        onSuccess?.();
+        onSuccessRef.current?.();
       }
     } finally {
+      isAuthenticatingRef.current = false;
       if (isMountedRef.current) {
         setIsAuthenticating(false);
       }
@@ -245,6 +251,11 @@ export const LockScreen: React.FC<LockScreenProps> = ({
   };
 
   const handleDelete = () => {
+    if (isSubmittingRef.current || isErrorState) return;
+    if (errorTimerRef.current) {
+      clearTimeout(errorTimerRef.current);
+      errorTimerRef.current = null;
+    }
     if (pin.length > 0) {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       setPin((prev) => prev.slice(0, -1));
@@ -353,7 +364,7 @@ export const LockScreen: React.FC<LockScreenProps> = ({
             {biometricsAvailable && mode === 'unlock' ? (
               <TouchableOpacity
                 style={styles.actionKeyButton}
-                onPress={triggerBiometricAuth}
+                onPress={() => triggerBiometricAuth()}
                 activeOpacity={0.6}
               >
                 {renderBiometricIcon()}
