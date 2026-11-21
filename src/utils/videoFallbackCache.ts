@@ -1,4 +1,12 @@
 import { Directory, File, Paths } from 'expo-file-system';
+import { DEFAULT_CACHE_LIMIT_MB, StorageService } from '../services/storage';
+
+interface VideoIndexRecord {
+  lastAccess: number;
+  size: number;
+}
+
+type VideoIndexMap = Record<string, VideoIndexRecord>;
 
 function hashVideoCacheKey(url: string): string {
   let hash = 2166136261;
@@ -9,10 +17,141 @@ function hashVideoCacheKey(url: string): string {
   return (hash >>> 0).toString(36);
 }
 
+function hasDiskFs(): boolean {
+  return (
+    typeof Directory === 'function' &&
+    typeof File === 'function' &&
+    Boolean(Paths?.cache)
+  );
+}
+
+function getVideoDir(): Directory | null {
+  if (!hasDiskFs()) return null;
+  try {
+    const dir = new Directory(Paths.cache, 'video-fallback');
+    dir.create({ intermediates: true, idempotent: true });
+    return dir;
+  } catch {
+    return null;
+  }
+}
+
+function readIndex(dir: Directory): VideoIndexMap {
+  try {
+    const idxFile = new File(dir, 'index.json');
+    if (!idxFile.exists || typeof idxFile.textSync !== 'function') return {};
+    const parsed = JSON.parse(idxFile.textSync());
+    return parsed && typeof parsed === 'object' ? (parsed as VideoIndexMap) : {};
+  } catch {
+    return {};
+  }
+}
+
+async function writeIndex(dir: Directory, index: VideoIndexMap): Promise<void> {
+  try {
+    const idxFile = new File(dir, 'index.json');
+    if (typeof idxFile.write === 'function') {
+      await idxFile.write(JSON.stringify(index));
+    }
+  } catch {}
+}
+
+export function getVideoBudgetBytes(limitMb: number): number {
+  const safeMb = Number.isFinite(limitMb) && limitMb > 0 ? limitMb : DEFAULT_CACHE_LIMIT_MB;
+  // Allocate 60% of the user's manual cache budget (min 50 MB) to local video cache
+  const videoMb = Math.max(50, Math.round(safeMb * 0.6));
+  return videoMb * 1024 * 1024;
+}
+
+export async function enforceVideoCacheLimit(limitMb: number, protectedFilename?: string): Promise<void> {
+  const dir = getVideoDir();
+  if (!dir) return;
+
+  try {
+    const budgetBytes = getVideoBudgetBytes(limitMb);
+    const index = readIndex(dir);
+    const rawEntries = dir.list();
+
+    let totalBytes = 0;
+    const tracked: { entry: File; name: string; size: number; lastAccess: number }[] = [];
+
+    for (const item of rawEntries) {
+      const name = (item as any).name as string | undefined;
+      if (!name || name === 'index.json') continue;
+      const size = (item as any).size || 0;
+      if (size <= 0 || name.endsWith('.tmp')) {
+        try { item.delete(); } catch {}
+        delete index[name];
+        continue;
+      }
+      totalBytes += size;
+      tracked.push({
+        entry: item as File,
+        name,
+        size,
+        lastAccess: index[name]?.lastAccess ?? 0,
+      });
+    }
+
+    if (totalBytes > budgetBytes) {
+      tracked.sort((a, b) => a.lastAccess - b.lastAccess);
+      for (const item of tracked) {
+        if (totalBytes <= budgetBytes) break;
+        if (protectedFilename && item.name === protectedFilename) continue;
+        try {
+          item.entry.delete();
+        } catch {}
+        delete index[item.name];
+        totalBytes -= item.size;
+      }
+    }
+
+    const liveNames = new Set(tracked.map((t) => t.name).filter((n) => index[n]));
+    for (const k of Object.keys(index)) {
+      if (!liveNames.has(k)) delete index[k];
+    }
+    await writeIndex(dir, index);
+  } catch {}
+}
+
+export function getVideoCacheStats(): { bytes: number; files: number } {
+  const dir = getVideoDir();
+  if (!dir) return { bytes: 0, files: 0 };
+  try {
+    let bytes = 0;
+    let files = 0;
+    for (const item of dir.list()) {
+      const name = (item as any).name as string | undefined;
+      if (!name || name === 'index.json') continue;
+      const size = (item as any).size || 0;
+      if (size > 0) {
+        bytes += size;
+        files++;
+      }
+    }
+    return { bytes, files };
+  } catch {
+    return { bytes: 0, files: 0 };
+  }
+}
+
+export async function clearVideoCache(): Promise<void> {
+  const dir = getVideoDir();
+  if (!dir) return;
+  try {
+    for (const entry of dir.list()) {
+      try {
+        entry.delete();
+      } catch {}
+    }
+  } catch {}
+}
+
 /**
  * Downloads a video through the app process's NSURLSession into Paths.cache
  * when AVFoundation/mediaserverd fails directly (e.g. -1202 on realbooru.com)
- * and no proxy worker is configured.
+ * and no proxy worker is configured. Evicts oldest entries by byte-size LRU
+ * according to the user's configured cache size limit.
  */
 export async function downloadVideoViaAppSession(
   url: string,
@@ -23,28 +162,28 @@ export async function downloadVideoViaAppSession(
   if (typeof File?.downloadFileAsync !== 'function' || !Paths?.cache) {
     throw new Error('expo-file-system File.downloadFileAsync unavailable');
   }
-  const dir = new Directory(Paths.cache, 'video-fallback');
-  dir.create({ intermediates: true, idempotent: true });
+  const dir = getVideoDir();
+  if (!dir) {
+    throw new Error('Could not initialize video cache directory');
+  }
 
   const cleanExtMatch = url.split('?')[0].match(/\.(mp4|m4v|mov)(?:$)/i);
   const ext = cleanExtMatch ? `.${cleanExtMatch[1].toLowerCase()}` : '.mp4';
-  const target = new File(dir, `v_${hashVideoCacheKey(url)}${ext}`);
+  const filename = `v_${hashVideoCacheKey(url)}${ext}`;
+  const target = new File(dir, filename);
 
   if (target.exists && target.size > 0) {
+    const index = readIndex(dir);
+    index[filename] = { lastAccess: Date.now(), size: target.size };
+    void writeIndex(dir, index);
     return target.uri;
   }
 
-  // Keep bounded cache size (max 8 fallback videos)
-  try {
-    const entries = dir.list();
-    if (entries.length >= 8) {
-      for (const entry of entries.slice(0, entries.length - 7)) {
-        try {
-          entry.delete();
-        } catch {}
-      }
-    }
-  } catch {}
+  const limitMb =
+    typeof StorageService?.getCacheLimitMb === 'function'
+      ? await StorageService.getCacheLimitMb().catch(() => DEFAULT_CACHE_LIMIT_MB)
+      : DEFAULT_CACHE_LIMIT_MB;
+  await enforceVideoCacheLimit(limitMb);
 
   const downloaded = await File.downloadFileAsync(url, target, {
     headers,
@@ -56,5 +195,12 @@ export async function downloadVideoViaAppSession(
         }
       : undefined,
   });
+
+  const finalSize = downloaded.size || target.size || 0;
+  const index = readIndex(dir);
+  index[filename] = { lastAccess: Date.now(), size: finalSize };
+  await writeIndex(dir, index);
+  await enforceVideoCacheLimit(limitMb, filename);
+
   return downloaded.uri;
 }

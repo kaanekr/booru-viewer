@@ -9,7 +9,19 @@ import { SourceCatalog, SourceMark, sourcePresentation } from '../components/Sou
 import { PasscodeModal } from '../components/PasscodeModal';
 import { SettingsButton, SettingsRow, SettingsSection, settingsStyles as ui } from './settings/SettingsUI';
 import { useSettings } from './settings/useSettings';
+import { CACHE_LIMIT_PRESETS_MB, MAX_CACHE_LIMIT_MB, MIN_CACHE_LIMIT_MB } from '../services/storage';
 import { Colors } from '../theme/colors';
+
+function formatCacheBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 KB';
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function formatLimitLabel(mb: number): string {
+  return mb >= 1024 && mb % 1024 === 0 ? `${mb / 1024} GB` : `${mb} MB`;
+}
 
 type Page = 'home' | 'sources' | 'source' | 'appearance' | 'privacy' | 'storage' | 'network' | 'about';
 interface SettingsScreenProps {
@@ -204,17 +216,73 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: pr
     </SettingsSection>
   </>;
 
-  const renderStorage = () => <>
-    <Text style={styles.pageIntro}>Back up your library and manage local data.</Text>
-    <SettingsSection title="Backup & transfer" hint="Supports AnimeBoxes (.abbj) and JSON files. Export your favorites and tags before moving to another device.">
-      <SettingsRow title="Import backup" subtitle="Choose an .abbj or JSON file" icon={icon(Download)} onPress={settings.importBackup} busy={settings.busy === 'import'} />
-      <SettingsRow title="Export library" subtitle="Save or share a JSON backup" icon={icon(Upload)} onPress={settings.exportBackup} busy={settings.busy === 'export'} last />
-    </SettingsSection>
-    <SettingsSection title="Free up space" hint="These actions do not delete your favorites, API keys or preferences.">
-      <SettingsRow title="Clear media cache" subtitle="Thumbnails & temporary post data" icon={icon(HardDrive)} onPress={settings.clearCache} />
-      <SettingsRow title="Clear search history" subtitle="Remove searches saved on this device" icon={icon(Trash2, true)} onPress={settings.clearHistory} danger last />
-    </SettingsSection>
-  </>;
+  const renderStorage = () => {
+    const videoBudgetMb = Math.max(50, Math.round(settings.cacheLimitMb * 0.6));
+    const listBudgetMb = Math.min(50, Math.max(8, Math.round(settings.cacheLimitMb * 0.1)));
+    return <>
+      <Text style={styles.pageIntro}>Back up your library and manage local cache limits.</Text>
+      <SettingsSection title="Cache limit" hint={`Controls how much disk space local video and list caches can use (${MIN_CACHE_LIMIT_MB}–${MAX_CACHE_LIMIT_MB} MB). Lowering the limit frees older files immediately.`}>
+        <View style={styles.cachePresetRow}>
+          {CACHE_LIMIT_PRESETS_MB.map((mb) => {
+            const selected = settings.cacheLimitMb === mb;
+            return (
+              <TouchableOpacity
+                key={mb}
+                accessibilityRole="radio"
+                accessibilityLabel={`Cache limit ${formatLimitLabel(mb)}`}
+                accessibilityState={{ selected, disabled: !!settings.busy }}
+                disabled={!!settings.busy}
+                onPress={() => settings.changeCacheLimit(mb)}
+                style={[styles.cachePresetChip, selected && styles.cachePresetChipActive]}
+              >
+                <Text style={[styles.cachePresetText, selected && styles.cachePresetTextActive]}>
+                  {formatLimitLabel(mb)}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+        <View style={ui.form}>
+          <View>
+            <Text style={ui.label}>Custom limit (MB)</Text>
+            <TextInput
+              accessibilityLabel="Custom cache size MB"
+              placeholder={`${MIN_CACHE_LIMIT_MB}–${MAX_CACHE_LIMIT_MB}`}
+              placeholderTextColor={Colors.dark.textMuted}
+              value={settings.cacheLimitInput}
+              onChangeText={settings.setCacheLimitInput}
+              keyboardType="number-pad"
+              style={ui.input}
+            />
+          </View>
+          <View style={ui.actions}>
+            <SettingsButton
+              title="Save limit"
+              busy={settings.busy === 'cacheLimit'}
+              disabled={!!settings.busy}
+              onPress={settings.saveCustomCacheLimit}
+            />
+          </View>
+          <Text style={ui.status}>
+            Active limit: {formatLimitLabel(settings.cacheLimitMb)} (Video ~{videoBudgetMb} MB · Lists ~{listBudgetMb} MB)
+          </Text>
+        </View>
+      </SettingsSection>
+      <SettingsSection title="Cache storage" hint="Clear individual caches without affecting your favorites, API keys or preferences.">
+        <SettingsRow title="Clear image cache" subtitle="Thumbnails & full-resolution viewer images" icon={icon(ImageIcon)} onPress={settings.clearImageCache} />
+        <SettingsRow title="Clear video cache" subtitle={`${formatCacheBytes(settings.cacheStats.videoBytes)} · ${settings.cacheStats.videoFiles} cached videos`} icon={icon(HardDrive)} onPress={settings.clearVideoCache} />
+        <SettingsRow title="Clear list & API cache" subtitle={`${formatCacheBytes(settings.cacheStats.listBytes)} · ${settings.cacheStats.listEntries} cached pages`} icon={icon(Database)} onPress={settings.clearApiCache} last />
+      </SettingsSection>
+      <SettingsSection title="Backup & transfer" hint="Supports AnimeBoxes (.abbj) and JSON files. Export your favorites and tags before moving to another device.">
+        <SettingsRow title="Import backup" subtitle="Choose an .abbj or JSON file" icon={icon(Download)} onPress={settings.importBackup} busy={settings.busy === 'import'} />
+        <SettingsRow title="Export library" subtitle="Save or share a JSON backup" icon={icon(Upload)} onPress={settings.exportBackup} busy={settings.busy === 'export'} last />
+      </SettingsSection>
+      <SettingsSection title="Free up space" hint="These actions do not delete your favorites, API keys or preferences.">
+        <SettingsRow title="Clear media cache" subtitle="Clear all image, video & list caches at once" icon={icon(HardDrive)} onPress={settings.clearCache} />
+        <SettingsRow title="Clear search history" subtitle="Remove searches saved on this device" icon={icon(Trash2, true)} onPress={settings.clearHistory} danger last />
+      </SettingsSection>
+    </>;
+  };
 
   const renderNetwork = () => <>
     <Text style={styles.pageIntro}>Choose how you connect.</Text>
@@ -330,4 +398,9 @@ const styles = StyleSheet.create({
   resultValue: { color: '#999FB8', flex: 1, fontSize: 10, textAlign: 'right' },
   resultHeader: { color: '#747B96', flex: 1, fontSize: 8, fontWeight: '700', letterSpacing: 0.7, textAlign: 'right' },
   appMark: { width: 76, height: 76, borderRadius: 24, backgroundColor: '#1B1E39', alignItems: 'center', justifyContent: 'center' },
+  cachePresetRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, paddingHorizontal: 16, paddingTop: 16 },
+  cachePresetChip: { paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: '#1E2233', borderWidth: 1, borderColor: '#2E344B' },
+  cachePresetChipActive: { backgroundColor: '#6366F128', borderColor: Colors.dark.primary },
+  cachePresetText: { color: '#B4B9CE', fontSize: 12, fontWeight: '600' },
+  cachePresetTextActive: { color: '#E8EAFF' },
 });

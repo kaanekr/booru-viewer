@@ -51,6 +51,13 @@ function setup(sourceOverride = {}) {
     '../context/SourceContext': { useSource: () => ({ activeSource: source }) },
     '../utils/scrollAwayHeader': scrollHeader.hook,
     '../components/ScrollAwayHeader': scrollHeader.component,
+    '../utils/imagePrefetch': { prefetchGridImages() {} },
+    '../utils/listCache': {
+      buildListCacheKey: () => 'search-key',
+      SEARCH_LIST_TTL_MS: 1800000,
+      getListCache: async () => null,
+      setListCache: async () => {},
+    },
   }, { console: { ...console, warn() {} } });
   return {
     Screen: load(path.resolve(__dirname, '../src/screens/SearchScreen.tsx')).SearchScreen,
@@ -244,6 +251,13 @@ test('SearchDetail bottom padding includes safe-area bottom inset and suggestion
     '../context/SourceContext': { useSource: () => ({ activeSource: { id: 'a', type: 'danbooru', name: 'A' } }) },
     '../utils/scrollAwayHeader': scrollHeader.hook,
     '../components/ScrollAwayHeader': scrollHeader.component,
+    '../utils/imagePrefetch': { prefetchGridImages() {} },
+    '../utils/listCache': {
+      buildListCacheKey: () => 'search-key',
+      SEARCH_LIST_TTL_MS: 1800000,
+      getListCache: async () => null,
+      setListCache: async () => {},
+    },
   }, { console: { ...console, warn() {} } });
   const Screen = load(path.resolve(__dirname, '../src/screens/SearchScreen.tsx')).SearchScreen;
   const defaults = load(path.resolve(__dirname, '../src/types/booru.ts')).DEFAULT_FILTER_CONFIG;

@@ -8,7 +8,7 @@ import { BookOpen, Heart, Play, Volume2 } from 'lucide-react-native';
 import { BooruPost } from '../types/booru';
 import { getPostKey } from '../utils/postIdentity';
 import { Colors } from '../theme/colors';
-import { getMediaHeaders, getMediaUrl, isUnsupportedOnIOS } from '../utils/media';
+import { getImageCacheKey, getMediaHeaders, getMediaUrl, isUnsupportedOnIOS } from '../utils/media';
 import { urlEndsWith } from '../utils/guards';
 import { proxyService } from '../services/proxyService';
 import { GridColumn, useLoadGate } from '../utils/imageLoadGate';
@@ -241,12 +241,14 @@ const PostCardComponent: React.FC<PostCardProps> = ({
     }
   }, [imageFallbacks, currentUri, releaseSlot, primaryRaw]);
 
-  // URL keys share cached bytes with prefetch and the viewer sample layer.
+  // Normalized cacheKey deduplicates direct vs proxied URLs and token-rotated CDNs.
   const imageSource = React.useMemo(() => {
     if (!currentUri) return undefined;
+    const key = typeof getImageCacheKey === 'function' ? getImageCacheKey(currentUri) : currentUri;
     return {
       uri: currentUri,
       headers: getMediaHeaders(currentUri),
+      ...(key ? { cacheKey: key } : {}),
     };
   }, [currentUri]);
 
@@ -257,10 +259,15 @@ const PostCardComponent: React.FC<PostCardProps> = ({
   }, [canLoad, needsLoadSlot, releaseSlot]);
 
   const frameUri = currentFrame ? (getMediaUrl(currentFrame) || currentFrame) : '';
-  const frameSource = React.useMemo(
-    () => (frameUri ? { uri: frameUri, headers: getMediaHeaders(frameUri) } : undefined),
-    [frameUri]
-  );
+  const frameSource = React.useMemo(() => {
+    if (!frameUri) return undefined;
+    const key = typeof getImageCacheKey === 'function' ? getImageCacheKey(frameUri) : frameUri;
+    return {
+      uri: frameUri,
+      headers: getMediaHeaders(frameUri),
+      ...(key ? { cacheKey: key } : {}),
+    };
+  }, [frameUri]);
   const handleFrameError = React.useCallback(() => {
     if (!currentFrame) return;
     setFailedFrames((previous) => {
@@ -317,7 +324,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
           recyclingKey={`${postKey}:${currentUri}`}
           priority="normal"
           autoplay={false}
-          cachePolicy="memory-disk"
+          cachePolicy="disk"
           allowDownscaling={true}
           onLoadEnd={releaseSlot}
           onError={handleImageError}
@@ -339,7 +346,7 @@ const PostCardComponent: React.FC<PostCardProps> = ({
           contentFit="cover"
           priority="normal"
           autoplay={false}
-          cachePolicy="memory-disk"
+          cachePolicy="disk"
           allowDownscaling={true}
           transition={200}
         />

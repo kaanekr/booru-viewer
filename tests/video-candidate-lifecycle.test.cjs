@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const ts = require('typescript');
+const { createLoader } = require('./helpers/load-typescript.cjs');
+const lruCache = createLoader()(path.resolve(__dirname, '../src/utils/lruCache.ts'));
 
 // Gercek media.ts yuklenir; yalnizca platform + modul baglari mocklanir.
 // AVFoundation -11828 regresyonu: cozulmus webm, oynatilabilir aday varken
@@ -24,6 +26,7 @@ function loadMedia(platformOS) {
       if (id === '../services/xhamster') return {};
       if (id === '../services/pornhub') return {};
       if (id === './postIdentity') return { getPostKey: () => '' };
+      if (id === './lruCache') return lruCache;
       if (id === './guards') return {
         urlEndsWith: (url, ...suffixes) => {
           if (typeof url !== 'string') return false;

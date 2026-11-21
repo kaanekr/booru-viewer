@@ -6,8 +6,13 @@ import { parseXhamsterDetail, XHAMSTER_BASE, XHAMSTER_UA } from '../services/xha
 import { parsePornhubDetail, PORNHUB_BASE, PORNHUB_UA } from '../services/pornhub';
 import { getPostKey } from './postIdentity';
 import { urlEndsWith } from './guards';
+import { LruCache, getOrDedup } from './lruCache';
 
-const DIMS_CACHE = new Map<string, { w: number; h: number; bytes?: number }>();
+const RESOLVE_CACHE_MAX = 500;
+const NEGATIVE_RESOLVE_TTL_MS = 60_000;
+
+const DIMS_CACHE = new LruCache<string, { w: number; h: number; bytes?: number }>(RESOLVE_CACHE_MAX);
+const DIMS_IN_FLIGHT = new Map<string, Promise<{ w: number; h: number; bytes?: number } | null>>();
 
 /**
  * Resolves the real dimensions from the original-image link on the post page.
@@ -30,6 +35,8 @@ export async function resolveRealDimensions(post: {
   if (cacheKey && DIMS_CACHE.has(cacheKey)) return DIMS_CACHE.get(cacheKey)!;
   const pageUrl = post.sourceLink;
   if (!pageUrl || typeof pageUrl !== 'string' || !/^https?:\/\//i.test(pageUrl)) return null;
+  const dedupKey = cacheKey || pageUrl;
+  return getOrDedup(DIMS_IN_FLIGHT, dedupKey, async () => {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 8000);
@@ -112,6 +119,7 @@ export async function resolveRealDimensions(post: {
   } catch {
     return null;
   }
+  });
 }
 
 export interface ImageUris {
@@ -214,12 +222,56 @@ export function getMediaUrl(url: string | undefined): string {
   return proxyService.proxyUrl(normalized);
 }
 
+const EPHEMERAL_QUERY_PARAMS = new Set([
+  't', 'e', 'exp', 'expires', 'token', 'sig', 'signature', 'hash', 's',
+  'hdnts', 'policy', 'key-pair-id', 'validfrom', 'validto', 'ip', 'ipa', 'h',
+]);
+
+/**
+ * Produces a stable expo-image cacheKey by unwrapping any Worker proxy prefix
+ * (?url=...) and stripping ephemeral auth/expiry query params so direct and
+ * proxied loads (and token-rotated URLs) share a single disk cache entry.
+ */
+export function getImageCacheKey(url: string | undefined): string {
+  if (!url || typeof url !== 'string') return '';
+  let candidate = url.trim();
+  if (!candidate) return '';
+
+  // Unwrap proxy worker URL: https://worker.dev?url=<encoded>
+  try {
+    const parsed = new URL(candidate);
+    const wrapped = parsed.searchParams.get('url');
+    if (wrapped && /^https?:\/\//i.test(wrapped)) {
+      candidate = wrapped;
+    }
+  } catch {}
+
+  candidate = normalizeBooruMediaUrl(candidate);
+  if (!candidate) return '';
+
+  try {
+    const parsed = new URL(candidate);
+    let changed = false;
+    for (const key of Array.from(parsed.searchParams.keys())) {
+      if (EPHEMERAL_QUERY_PARAMS.has(key.toLowerCase())) {
+        parsed.searchParams.delete(key);
+        changed = true;
+      }
+    }
+    if (changed) {
+      return parsed.toString();
+    }
+  } catch {}
+  return candidate;
+}
+
 /**
  * The original image extension can't be guessed from the list thumbnail in a
  * Gelbooru/Realbooru scrape (.jpg/.jpeg/.png/.webp varies by CDN).
  * Resolves the real original URL from the post detail page (cached, abortable).
  */
-const ORIGINAL_RESOLVE_CACHE = new Map<string, string | null>();
+const ORIGINAL_RESOLVE_CACHE = new LruCache<string, string | null>(RESOLVE_CACHE_MAX);
+const ORIGINAL_IN_FLIGHT = new Map<string, Promise<string | null>>();
 
 export async function resolveGelbooruOriginalUrl(
   post: {
@@ -242,72 +294,77 @@ export async function resolveGelbooruOriginalUrl(
     return ORIGINAL_RESOLVE_CACHE.get(cacheKey) ?? null;
   }
 
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 8000);
-  if (signal) {
-    signal.addEventListener('abort', () => ctrl.abort(), { once: true });
-  }
-
-  try {
-    const response = await proxyService.fetchWithFallback(post.sourceLink, {
-      headers: getMediaHeaders(post.sourceLink),
-      signal: ctrl.signal,
-    });
-    clearTimeout(timeout);
-    if (!response.ok) throw new Error(`Post view status ${response.status}`);
-    const html = await response.text();
-
-    // 1) Look for the "Original image" or "View larger size" link
-    const originalLinkMatch =
-      html.match(/<a\s+[^>]*href=["']([^"']+)["'][^>]*>(?:Original image|View larger size|High resolution)<\/a>/i) ||
-      html.match(/<a\s+[^>]*href=["']([^"']+\/images\/[^"']+)["']/i);
-
-    let resolved: string | null = null;
-    if (originalLinkMatch && originalLinkMatch[1]) {
-      resolved = originalLinkMatch[1].replace(/&amp;/g, '&').trim();
+  return getOrDedup(ORIGINAL_IN_FLIGHT, cacheKey, async () => {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 8000);
+    const onAbort = () => ctrl.abort();
+    if (signal) {
+      signal.addEventListener('abort', onAbort, { once: true });
     }
 
-    // 2) Scan the page for /images/ file paths
-    if (!resolved) {
-      const imageUrls = Array.from(
-        html.matchAll(/https?:\\?\/\\?\/[^'"\s<>]+\/images\/[^'"\s<>]+\.(?:jpe?g|png|webp|gif)(?:\?[^'"\s<>]*)?/gi),
-        (m) => m[0]
-      );
-      if (imageUrls.length > 0) {
-        resolved = imageUrls[0].replaceAll('\\/', '/');
+    try {
+      const response = await proxyService.fetchWithFallback(post.sourceLink!, {
+        headers: getMediaHeaders(post.sourceLink!),
+        signal: ctrl.signal,
+      });
+      clearTimeout(timeout);
+      if (!response.ok) throw new Error(`Post view status ${response.status}`);
+      const html = await response.text();
+
+      // 1) Look for the "Original image" or "View larger size" link
+      const originalLinkMatch =
+        html.match(/<a\s+[^>]*href=["']([^"']+)["'][^>]*>(?:Original image|View larger size|High resolution)<\/a>/i) ||
+        html.match(/<a\s+[^>]*href=["']([^"']+\/images\/[^"']+)["']/i);
+
+      let resolved: string | null = null;
+      if (originalLinkMatch && originalLinkMatch[1]) {
+        resolved = originalLinkMatch[1].replace(/&amp;/g, '&').trim();
       }
-    }
 
-    // 3) OpenGraph image fallback
-    if (!resolved) {
-      const metaMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
-      if (metaMatch && metaMatch[1] && /\/images\//i.test(metaMatch[1])) {
-        resolved = metaMatch[1].trim();
+      // 2) Scan the page for /images/ file paths
+      if (!resolved) {
+        const imageUrls = Array.from(
+          html.matchAll(/https?:\\?\/\\?\/[^'"\s<>]+\/images\/[^'"\s<>]+\.(?:jpe?g|png|webp|gif)(?:\?[^'"\s<>]*)?/gi),
+          (m) => m[0]
+        );
+        if (imageUrls.length > 0) {
+          resolved = imageUrls[0].replaceAll('\\/', '/');
+        }
       }
-    }
 
-    if (resolved) {
-      if (resolved.startsWith('//')) {
-        resolved = `https:${resolved}`;
-      } else if (resolved.startsWith('/')) {
-        const baseMatch = post.sourceLink.match(/^https?:\/\/[^/]+/i);
-        const base = baseMatch ? baseMatch[0] : 'https://gelbooru.com';
-        resolved = `${base}${resolved}`;
+      // 3) OpenGraph image fallback
+      if (!resolved) {
+        const metaMatch = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i);
+        if (metaMatch && metaMatch[1] && /\/images\//i.test(metaMatch[1])) {
+          resolved = metaMatch[1].trim();
+        }
       }
-      ORIGINAL_RESOLVE_CACHE.set(cacheKey, resolved);
-      return resolved;
-    }
 
-    ORIGINAL_RESOLVE_CACHE.set(cacheKey, null);
-    return null;
-  } catch (err: any) {
-    clearTimeout(timeout);
-    if (err?.name === 'AbortError') {
+      if (resolved) {
+        if (resolved.startsWith('//')) {
+          resolved = `https:${resolved}`;
+        } else if (resolved.startsWith('/')) {
+          const baseMatch = post.sourceLink!.match(/^https?:\/\/[^/]+/i);
+          const base = baseMatch ? baseMatch[0] : 'https://gelbooru.com';
+          resolved = `${base}${resolved}`;
+        }
+        ORIGINAL_RESOLVE_CACHE.set(cacheKey, resolved);
+        return resolved;
+      }
+
+      ORIGINAL_RESOLVE_CACHE.set(cacheKey, null, NEGATIVE_RESOLVE_TTL_MS);
       return null;
+    } catch (err: any) {
+      clearTimeout(timeout);
+      if (err?.name === 'AbortError') {
+        return null;
+      }
+      ORIGINAL_RESOLVE_CACHE.set(cacheKey, null, NEGATIVE_RESOLVE_TTL_MS);
+      return null;
+    } finally {
+      signal?.removeEventListener('abort', onAbort);
     }
-    ORIGINAL_RESOLVE_CACHE.set(cacheKey, null);
-    return null;
-  }
+  });
 }
 
 /**
@@ -586,7 +643,8 @@ export function selectRealbooruPlayable(files: { mp4: string; webm: string; imag
  * detail page. File URLs are permanent (no expiring tokens), so results
  * are cached per post for the session.
  */
-const REALBOORU_RESOLVE_CACHE = new Map<string, { mp4: string; webm: string; image: string }>();
+const REALBOORU_RESOLVE_CACHE = new LruCache<string, { mp4: string; webm: string; image: string }>(RESOLVE_CACHE_MAX);
+const REALBOORU_IN_FLIGHT = new Map<string, Promise<{ mp4: string; webm: string; image: string } | null>>();
 
 export async function resolveRealbooruVideoUrls(
   post: {
@@ -602,37 +660,39 @@ export async function resolveRealbooruVideoUrls(
     return REALBOORU_RESOLVE_CACHE.get(cacheKey) ?? null;
   }
 
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 10000);
-  const abort = () => ctrl.abort();
-  signal?.addEventListener('abort', abort, { once: true });
+  return getOrDedup(REALBOORU_IN_FLIGHT, cacheKey, async () => {
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 10000);
+    const abort = () => ctrl.abort();
+    signal?.addEventListener('abort', abort, { once: true });
 
-  try {
-    const response = await proxyService.fetchWithFallback(detailUrl, {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
-        Referer: 'https://realbooru.com/',
-        Accept: 'text/html,application/xhtml+xml',
-      },
-      signal: ctrl.signal,
-    });
-    if (!response.ok) {
+    try {
+      const response = await proxyService.fetchWithFallback(detailUrl, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148',
+          Referer: 'https://realbooru.com/',
+          Accept: 'text/html,application/xhtml+xml',
+        },
+        signal: ctrl.signal,
+      });
+      if (!response.ok) {
+        return null;
+      }
+      const files = parseRealbooruDetail(await response.text());
+      if (ctrl.signal.aborted) return null;
+      if (!files.mp4 && !files.webm && !files.image) {
+        return null;
+      }
+      REALBOORU_RESOLVE_CACHE.set(cacheKey, files);
+      return files;
+    } catch {
       return null;
+    } finally {
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abort);
     }
-    const files = parseRealbooruDetail(await response.text());
-    if (ctrl.signal.aborted) return null;
-    if (!files.mp4 && !files.webm && !files.image) {
-      return null;
-    }
-    REALBOORU_RESOLVE_CACHE.set(cacheKey, files);
-    return files;
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(timeout);
-    signal?.removeEventListener('abort', abort);
-  }
+  });
 }
 
 /** Known video/archive formats cannot be prefetched or rendered as an image. */
@@ -735,13 +795,22 @@ export function getMp4UpgradeUrl(webmUrl: string | undefined): string | null {
   return `${base}.mp4${queryOrHash}`;
 }
 
-const mp4UpgradeCache = new Map<string, Promise<string | null>>();
+const mp4UpgradeCache = new LruCache<string, string | null>(RESOLVE_CACHE_MAX);
+const mp4UpgradeInFlight = new Map<string, Promise<string | null>>();
+
+/** Clears all in-memory media resolve caches (dims, original URLs, Realbooru, MP4 upgrades). */
+export function clearResolveCaches(): void {
+  DIMS_CACHE.clear();
+  ORIGINAL_RESOLVE_CACHE.clear();
+  REALBOORU_RESOLVE_CACHE.clear();
+  mp4UpgradeCache.clear();
+}
 
 /**
  * Checks via a HEAD request whether an .mp4 version of a .webm video is available.
  * Attaches proxy headers via getMediaHeaders.
  * Returns the mp4 URL if HTTP status is 200-299, otherwise null.
- * Results are cached in memory so the same URL is never checked twice.
+ * Results are cached in bounded LRU memory (negative results expire after 60s).
  */
 export async function checkMp4UpgradeAvailable(
   webmUrl: string | undefined,
@@ -754,12 +823,11 @@ export async function checkMp4UpgradeAvailable(
   const mp4Url = getMp4UpgradeUrl(trimmed);
   if (!mp4Url) return null;
 
-  const cached = mp4UpgradeCache.get(trimmed);
-  if (cached) {
-    return cached;
+  if (mp4UpgradeCache.has(trimmed)) {
+    return mp4UpgradeCache.get(trimmed) ?? null;
   }
 
-  const checkPromise = (async (): Promise<string | null> => {
+  return getOrDedup(mp4UpgradeInFlight, trimmed, async () => {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
       controller.abort();
@@ -778,17 +846,17 @@ export async function checkMp4UpgradeAvailable(
       });
 
       if (response.status >= 200 && response.status < 300) {
+        mp4UpgradeCache.set(trimmed, mp4Url);
         return mp4Url;
       }
+      mp4UpgradeCache.set(trimmed, null, NEGATIVE_RESOLVE_TTL_MS);
       return null;
     } catch {
+      mp4UpgradeCache.set(trimmed, null, NEGATIVE_RESOLVE_TTL_MS);
       return null;
     } finally {
       clearTimeout(timeoutId);
     }
-  })();
-
-  mp4UpgradeCache.set(trimmed, checkPromise);
-  return checkPromise;
+  });
 }
 
