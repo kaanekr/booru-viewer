@@ -50,7 +50,7 @@ async function setup(post, options = {}) {
     },
     'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) },
     'expo-screen-orientation': { lockAsync: async () => {}, OrientationLock: { PORTRAIT_UP: 'portrait' } },
-    expo: {}, 'expo-image': { Image: 'Image' }, 'expo-video': {},
+    expo: {}, 'expo-file-system': {}, 'expo-image': { Image: 'Image' }, 'expo-video': {},
     'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
     'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
     '../services/proxyService': { proxyService }, '../theme/colors': { Colors: { dark: {} } },
