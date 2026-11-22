@@ -647,16 +647,18 @@ export function normalizeRealbooruFileUrl(url: string | undefined): string {
     .replace(/^(https?:\/\/[^/]+)\/{2,}/, '$1/');
 }
 
+type RealbooruDetail = { mp4: string; webm: string; image: string; tags: string[] };
+
 /**
- * Extracts playable video files from a Realbooru post detail page.
+ * Extracts playable files and canonical tags from a Realbooru post detail page.
  * The listing carries no file extension (video-ness comes from tags),
  * so the list scraper guesses `.mp4` — but some posts are webm-only.
  * The detail `<video><source>` tags carry the real files (mp4 preferred).
  * GIF posts have no `<video>` tag; their full file comes from the detail
  * `<img>` instead (`image`).
  */
-export function parseRealbooruDetail(html: string): { mp4: string; webm: string; image: string } {
-  const out = { mp4: '', webm: '', image: '' };
+export function parseRealbooruDetail(html: string): RealbooruDetail {
+  const out: RealbooruDetail = { mp4: '', webm: '', image: '', tags: [] };
   if (!html) return out;
   const sourceRe = /<source\s+[^>]*src="([^"]+)"[^>]*>/gi;
   let m: RegExpExecArray | null;
@@ -680,6 +682,19 @@ export function parseRealbooruDetail(html: string): { mp4: string; webm: string;
       }
     }
   }
+  const tags = new Set<string>();
+  for (const [anchor] of html.matchAll(/<a\b[^>]*>/gi)) {
+    const classes = anchor.match(/\sclass\s*=\s*(["'])(.*?)\1/i)?.[2];
+    if (!classes || !/(?:^|\s)tag-type-[\w-]+(?:\s|$)/.test(classes)) continue;
+    const href = anchor.match(/\shref\s*=\s*(["'])(.*?)\1/i)?.[2];
+    const rawTag = href?.match(/(?:[?&]|&amp;)tags=([^&#]+)/i)?.[1];
+    if (!rawTag) continue;
+    try {
+      const tag = decodeURIComponent(rawTag.replace(/\+/g, ' ')).trim().replace(/\s+/g, '_');
+      if (tag) tags.add(tag);
+    } catch {}
+  }
+  out.tags = [...tags];
   return out;
 }
 
@@ -690,12 +705,10 @@ export function selectRealbooruPlayable(files: { mp4: string; webm: string; imag
 }
 
 /**
- * Resolves the real playable file for a Realbooru video post from its
- * detail page. File URLs are permanent (no expiring tokens), so results
- * are cached per post for the session.
+ * Realbooru detail results are cached per post for the session.
  */
-const REALBOORU_RESOLVE_CACHE = new LruCache<string, { mp4: string; webm: string; image: string }>(RESOLVE_CACHE_MAX);
-const REALBOORU_IN_FLIGHT = new Map<string, Promise<{ mp4: string; webm: string; image: string } | null>>();
+const REALBOORU_RESOLVE_CACHE = new LruCache<string, RealbooruDetail>(RESOLVE_CACHE_MAX);
+const REALBOORU_IN_FLIGHT = new Map<string, Promise<RealbooruDetail | null>>();
 
 export async function resolveRealbooruVideoUrls(
   post: {
@@ -703,7 +716,7 @@ export async function resolveRealbooruVideoUrls(
     sourceLink?: string;
   },
   signal?: AbortSignal
-): Promise<{ mp4: string; webm: string; image: string } | null> {
+): Promise<RealbooruDetail | null> {
   const detailUrl = post.sourceLink?.replace(/&amp;/gi, '&');
   if (!detailUrl || !/^https?:\/\//i.test(detailUrl) || signal?.aborted) return null;
   const cacheKey = detailUrl;
@@ -732,7 +745,7 @@ export async function resolveRealbooruVideoUrls(
       }
       const files = parseRealbooruDetail(await response.text());
       if (ctrl.signal.aborted) return null;
-      if (!files.mp4 && !files.webm && !files.image) {
+      if (!files.mp4 && !files.webm && !files.image && !files.tags.length) {
         return null;
       }
       REALBOORU_RESOLVE_CACHE.set(cacheKey, files);

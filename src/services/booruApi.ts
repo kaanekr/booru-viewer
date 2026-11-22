@@ -1119,11 +1119,8 @@ export class BooruApiService {
       const thumbSrc = match[3];
       const imgAttrs = match[4];
 
-      const altMatch = imgAttrs.match(/alt=["']([^"']*)["']/i);
-      const titleMatch = imgAttrs.match(/title=["']([^"']*)["']/i);
-
-      const alt = altMatch ? altMatch[1] : '';
-      const title = titleMatch ? titleMatch[1] : '';
+      const alt = imgAttrs.match(/\salt=(["'])(.*?)\1/i)?.[2] ?? '';
+      const title = imgAttrs.match(/\stitle=(["'])(.*?)\1/i)?.[2] ?? '';
 
       let rating: 's' | 'q' | 'e' | 'g' = 's';
       if (title.includes('rating:questionable') || title.includes('rating:q')) rating = 'q';
@@ -1141,13 +1138,11 @@ export class BooruApiService {
       const thumbPattern = /thumbnails\/([a-f0-9]+)\/([a-f0-9]+)\/thumbnail_([a-f0-9]+)\./i;
       const thumbMatch = rawThumb.match(thumbPattern);
 
-      const rawTags = Array.from(
-        new Set<string>(
-          title
-            ? title.replace(/score:\d+/g, '').replace(/rating:\w+/g, '').split(/[\s,]+/).filter(Boolean)
-            : alt.split(/[\s,]+/).filter(Boolean)
-        )
-      );
+      const tagText = title ? title.replace(/score:-?\d+/gi, '').replace(/rating:\w+/gi, '') : alt;
+      // Realbooru separates display labels with commas. Only legacy tag strings use spaces as delimiters.
+      const rawTags = [...new Set(tagText.split(tagText.includes(',') ? ',' : /\s+/)
+        .map((tag) => tag.trim().replace(/\s+/g, '_'))
+        .filter(Boolean))];
 
       const lowerTags = rawTags.map((t) => t.toLowerCase());
       const hasGifTag = lowerTags.includes('gif');

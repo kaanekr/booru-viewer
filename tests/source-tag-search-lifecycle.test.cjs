@@ -47,6 +47,22 @@ test('XVideos uses its own tag index and opens the paged source tag results', as
   assert.equal(calls[1].pathname, '/tags/retro-costume/1');
 });
 
+test('Realbooru preserves compound listing tags and searches the native underscore token', async () => {
+  const requests = [];
+  const { api, src, source, filter } = setup(async (url) => {
+    requests.push(new URL(url));
+    return new Response('<div class="thumb" id="s42"><a href="/index.php?page=post&amp;s=view&amp;id=42">' +
+      '<img src="/thumbnails/ab/cd/thumbnail_deadbeef.jpg" title="brown eyes, blue jacket, brown_eyes"></a></div>');
+  });
+  const rb = source('realbooru');
+  const { sourceTagQuery } = src('utils/tagSearch.ts');
+  const [post] = await api.fetchPostsWithFilter(filter([]), 1, 24, rb);
+  assert.deepEqual(Array.from(post.tags.general), ['brown_eyes', 'blue_jacket']);
+
+  await api.fetchPostsWithFilter(filter([sourceTagQuery(rb.type, post.tags.general[0], 'general')]), 1, 24, rb);
+  assert.equal(requests.at(-1).searchParams.get('tags'), 'brown_eyes');
+});
+
 test('XHamster uses its related searches and keeps the multiword term on later pages', async () => {
   const requests = [];
   const { api, source, filter } = setup(async (url) => {

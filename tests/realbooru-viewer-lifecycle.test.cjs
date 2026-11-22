@@ -74,7 +74,7 @@ async function setup(post, options = {}) {
   const item = outer.root.findByType('FlatList').props.renderItem({ item: post, index: 0 });
   await act(async () => { page = create(item); });
   roots.push(page);
-  return { page, calls, item };
+  return { outer, page, calls, item };
 }
 
 test('fresh Realbooru GIF resolves detail even though original differs from sample; cover and animation mount', async () => {
@@ -97,6 +97,22 @@ test('old mp4 metadata cannot bypass detail resolution and the resulting GIF nev
   assert.equal(calls.length, 1);
   assert.ok(page.root.findAllByType('Image').some((i) => i.props.source.uri === gif));
   assert.ok(page.root.findAllByType('Image').every((i) => !i.props.source.uri.endsWith('.mp4')));
+});
+
+test('Realbooru refreshes old split tags in the Info panel using the existing detail request', async () => {
+  const post = makePost({ allTags: ['brown', 'eyes'], tags: { ...makePost().tags, general: ['brown', 'eyes'] } });
+  const { outer, calls } = await setup(post, {
+    response: async () => ({
+      ok: true,
+      text: async () => '<a class="tag-type-general" href="/index.php?page=post&amp;s=list&amp;tags=brown_eyes">brown eyes</a>' +
+        '<a class="tag-type-general" href="/index.php?page=post&s=list&tags=blue+jacket">blue jacket</a>' +
+        '<a href="/index.php?page=post&s=list&tags=unrelated">unrelated</a>',
+    }),
+  });
+  const info = outer.root.findByType('PostInfo').props.post;
+  assert.deepEqual(Array.from(info.tags.general), ['brown_eyes', 'blue_jacket']);
+  assert.deepEqual(Array.from(info.allTags), ['brown_eyes', 'blue_jacket']);
+  assert.equal(calls.length, 1);
 });
 
 test('GIF native failure retries once through configured worker, then shows the actual error', async () => {

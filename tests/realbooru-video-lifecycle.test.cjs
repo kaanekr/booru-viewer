@@ -211,7 +211,16 @@ test('realbooru scrape keeps GIFs out of the video path (live tag shapes)', asyn
   assert.ok(gif.originalUrl.endsWith('.gif'));
   assert.equal(video.fileExt, 'mp4');
   assert.ok(video.tags.meta.includes('video'));
+  assert.ok(gif.tags.general.includes('big_breasts'));
+  assert.ok(!gif.tags.general.includes('big'));
   assert.ok(video.sampleUrl.endsWith('.mp4'));
+});
+
+test('Realbooru keeps legacy space-separated underscore tags', async () => {
+  const api = loadBooruApi(thumb('42', 'brown_eyes blue_jacket rating:safe score:2'));
+  const source = { id: 'realbooru', name: 'Realbooru', type: 'realbooru', baseUrl: 'https://realbooru.com' };
+  const [post] = await api.fetchRealbooruPosts(source, 1, 42, '', false);
+  assert.deepEqual(Array.from(post.allTags), ['brown_eyes', 'blue_jacket']);
 });
 
 function loadGifMedia() {

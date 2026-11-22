@@ -1270,6 +1270,9 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
         resolveRealbooruVideoUrls(postForResolve, abortCtrl.signal)
           .then((files) => {
             if (!alive || !files) return;
+            if (files.tags.length) {
+              onTagsResolved?.(post, { ...post.tags, general: files.tags }, files.tags);
+            }
             const playable = selectRealbooruPlayable(files);
             if (playable) setResolvedOriginalUrl(playable);
           })
