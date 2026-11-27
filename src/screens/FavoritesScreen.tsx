@@ -495,7 +495,7 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
   const layoutMapRef = useRef(layoutMap);
   layoutMapRef.current = layoutMap;
   const [visibleIds, updateVisible] = useVisibleIds();
-  const [focusedIds, updateFocused] = useFocusedCardIds(150, 4);
+  const [focusedIds, updateFocused] = useFocusedCardIds(350, 1);
   const [mountedIds, updateMounted] = useMountedIds(1200, layoutMap, windowHeight);
   const playableKeys = useMemo(() => {
     const set = new Set<string>();

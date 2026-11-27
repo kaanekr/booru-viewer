@@ -6,6 +6,19 @@ import { quoteSearchTag, splitSearchTags } from '../utils/tagSearch';
 import { DEFAULT_SOURCE } from './sources';
 import { proxyService } from './proxyService';
 import { StorageService } from './storage';
+
+type SiteSessionApi = typeof import('./siteSession');
+let cachedSiteSession: SiteSessionApi | null | undefined;
+function getSiteSession(): SiteSessionApi | null {
+  if (cachedSiteSession !== undefined) return cachedSiteSession;
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    cachedSiteSession = require('./siteSession') as SiteSessionApi;
+  } catch {
+    cachedSiteSession = null;
+  }
+  return cachedSiteSession;
+}
 import {
   buildXVideosSearchCandidates,
   buildXVideosSearchUrl,
@@ -1270,6 +1283,14 @@ export class BooruApiService {
   }
 
   private async getRedGifsToken(rejectedToken?: string): Promise<string> {
+    const sess = getSiteSession();
+    await sess?.initSiteSessions?.();
+    const userToken = sess?.getSiteBearerToken?.('redgifs') || '';
+    if (rejectedToken && userToken && rejectedToken === userToken) {
+      void sess?.saveSiteSession?.('redgifs', { bearerToken: '' });
+    } else if (userToken) {
+      return userToken;
+    }
     await proxyService.ensureInitialized();
     const scope = proxyService.isEnabled() ? proxyService.getWorkerUrl() : 'direct';
     // A late-arriving 401 from another request must not wipe a newer, valid token.
@@ -1406,11 +1427,17 @@ export class BooruApiService {
     // (the library's search_user equivalent, verified live).
     // Note: this endpoint returns empty with order=trending (latest is required) and doesn't
     // support tags (adding tags returns 0); with user+tags combined, tags are filtered client-side.
+    const sess = getSiteSession();
+    await sess?.initSiteSessions?.();
     const searchUsername = filter?.user?.trim() || tokenUsername;
+    const usePersonalizedHome =
+      filter?.sortBy === 'recommended' && !searchUsername && !nicheId && !includeTags && Boolean(sess?.getSiteBearerToken?.('redgifs'));
     const searchUrl = searchUsername
       ? `https://api.redgifs.com/v2/users/${encodeURIComponent(searchUsername)}/search?page=${page}&count=${count}&order=latest&type=g`
       : nicheId
       ? `https://api.redgifs.com/v2/niches/${encodeURIComponent(nicheId)}/gifs?count=${count}&page=${page}`
+      : usePersonalizedHome
+      ? `https://api.redgifs.com/v2/feeds/home?page=${page}&count=${count}`
       : includeTags
       ? `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}&tags=${encodeURIComponent(includeTags)}`
       : `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}`;
@@ -1652,18 +1679,28 @@ export class BooruApiService {
       sort = 'length';
     }
 
-    const bestMonth = !k && page > 1 && sort !== 'uploaddate' ? await this.resolveXVideosBestMonth(source.baseUrl || XVIDEOS_BASE) : this.xvideosBestMonth;
+    const sess = getSiteSession();
+    await sess?.initSiteSessions?.();
+    const siteCookie = sess?.getSiteCookieHeader?.(source.id) || '';
+    const bestMonth = !k && page > 1 && sort !== 'uploaddate' && sb !== 'recommended'
+      ? await this.resolveXVideosBestMonth(source.baseUrl || XVIDEOS_BASE)
+      : this.xvideosBestMonth;
     const base = source.baseUrl || XVIDEOS_BASE;
-    const candidates = buildXVideosSearchCandidates(base, page, k, sort, datef, bestMonth);
-    if (sort === 'relevance' && query.tags.length === 1 && !query.keywords.length) {
+    const cleanBase = base.replace(/\/$/, '');
+    const candidates =
+      !k && sb === 'recommended'
+        ? (page <= 1 ? [`${cleanBase}/`] : [`${cleanBase}/new/${page}`])
+        : buildXVideosSearchCandidates(base, page, k, sort, datef, bestMonth);
+    if (sort === 'relevance' && sb !== 'recommended' && query.tags.length === 1 && !query.keywords.length) {
       const slug = encodeURIComponent(query.tags[0].toLowerCase().replace(/\s+/g, '-'));
-      candidates.unshift(`${base.replace(/\/$/, '')}/tags/${slug}${page > 1 ? `/${page - 1}` : ''}`);
+      candidates.unshift(`${cleanBase}/tags/${slug}${page > 1 ? `/${page - 1}` : ''}`);
     }
-    const headers = {
+    const headers: Record<string, string> = {
       'User-Agent': XVIDEOS_UA,
       Referer: `${XVIDEOS_BASE}/`,
       'Accept-Language': 'en-US,en;q=0.9',
       Accept: 'text/html,application/xhtml+xml',
+      ...(siteCookie ? { Cookie: siteCookie } : {}),
     };
 
     let lastError: Error | null = null;
@@ -1893,12 +1930,22 @@ export class BooruApiService {
       sort = 'relevance';
     }
 
-    const candidates = buildXhamsterSearchCandidates(source.baseUrl || XHAMSTER_BASE, page, k, sort, date);
-    const headers = {
+    const sess = getSiteSession();
+    await sess?.initSiteSessions?.();
+    const siteCookie = sess?.getSiteCookieHeader?.(source.id) || '';
+    const xhBase = (source.baseUrl || XHAMSTER_BASE).replace(/\/$/, '');
+    const candidates =
+      !k && sb === 'recommended'
+        ? (page <= 1
+            ? [`${xhBase}/recommended`, `${xhBase}/`]
+            : [`${xhBase}/recommended/${page}`, `${xhBase}/recommended?page=${page}`, `${xhBase}/${page}`])
+        : buildXhamsterSearchCandidates(source.baseUrl || XHAMSTER_BASE, page, k, sort, date);
+    const headers: Record<string, string> = {
       'User-Agent': XHAMSTER_UA,
       Referer: `${XHAMSTER_BASE}/`,
       'Accept-Language': 'en-US,en;q=0.9',
       Accept: 'text/html,application/xhtml+xml',
+      ...(siteCookie ? { Cookie: siteCookie } : {}),
     };
 
     let lastError: Error | null = null;
@@ -2005,11 +2052,35 @@ export class BooruApiService {
       }
     }
 
+    const sess = getSiteSession();
+    await sess?.initSiteSessions?.();
+    const siteCookie = sess?.getSiteCookieHeader?.(source.id) || '';
     const url = buildPornhubSearchUrl(page, k, ordering, period, firstTag);
-    const htmlHeaders = {
+    const htmlHeaders: Record<string, string> = {
       'User-Agent': PORNHUB_UA,
       Referer: `${PORNHUB_BASE}/`,
+      'Accept-Language': 'en-US,en;q=0.9',
+      Cookie: siteCookie ? `${siteCookie}; accessAgeDisclaimerPH=1; accessPH=1` : 'accessAgeDisclaimerPH=1; accessPH=1;',
     };
+
+    // Site-native Recommended feed (pure HTTP fetch with captured session cookies — zero WebView)
+    if (isDiscover && filter?.sortBy === 'recommended') {
+      const recUrls =
+        page <= 1
+          ? [`${PORNHUB_BASE}/recommended`, `${PORNHUB_BASE}/`]
+          : [`${PORNHUB_BASE}/recommended?page=${page}`, `${PORNHUB_BASE}/?page=${page}`];
+      for (const recUrl of recUrls) {
+        try {
+          const recRes = await this.fetchWithRetry(recUrl, { headers: htmlHeaders }, 1, 12000);
+          if (!recRes.ok) continue;
+          const recHtml = await recRes.text();
+          const recPosts = parsePornhubHtmlListing(recHtml, source);
+          if (recPosts.length > 0) {
+            return await this.filterBlacklistedPosts(recPosts, includeBlacklisted);
+          }
+        } catch {}
+      }
+    }
 
     // Explore page 1: the homepage (what the site currently features). On
     // failure it falls back to the API flow below; deeper pages come from the API.
@@ -2031,11 +2102,12 @@ export class BooruApiService {
         console.warn('[BooruAPI] Pornhub homepage discover failed, fallback to API:', homeErr);
       }
     }
-    const headers = {
+    const headers: Record<string, string> = {
       'User-Agent': PORNHUB_UA,
       Referer: `${PORNHUB_BASE}/`,
       'Accept-Language': 'en-US,en;q=0.9',
       Accept: 'application/json',
+      ...(siteCookie ? { Cookie: siteCookie } : {}),
     };
 
     let response: Response;

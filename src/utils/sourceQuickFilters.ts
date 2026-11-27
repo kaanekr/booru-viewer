@@ -16,6 +16,7 @@ const month = order('month', 'Monthly Top', 'score', '1m');
 const day = order('day', 'Daily Top', 'score', '1d');
 const relevance = order('default', 'Relevance', 'default');
 const discover = order('default', 'Discover', 'default');
+const recommended = order('recommended', 'Recommended', 'recommended');
 const safe: SourceQuickFilter = { id: 'safe', label: 'Safe', kind: 'toggle', patch: { rating: 'safe' } };
 const score: SourceQuickFilter = { id: 'score50', label: '50+ Points', kind: 'toggle', patch: { minScore: 50 } };
 
@@ -32,7 +33,9 @@ export function getSourceQuickFilters(source: BooruSource, context: 'feed' | 'se
     case 'realbooru':
       return [latest, top, ...(search ? [safe, score] : [])];
     case 'redgifs':
-      return [order('default', 'Trending', 'default'), latest, week, month];
+      return search
+        ? [order('default', 'Trending', 'default'), latest, week, month]
+        : [order('default', 'Trending', 'default'), recommended, latest, week, month];
     case 'cumst':
       // /posts/popular is a keywordless leaderboard. With q=... this adapter
       // switches to /posts and loses period, so don't promise timed search tops.
@@ -42,11 +45,23 @@ export function getSourceQuickFilters(source: BooruSource, context: 'feed' | 'se
         { id: 'fansly', label: 'Fansly', kind: 'toggle' as const, patch: { cumstService: 'fansly' as const } },
       ] : [])];
     case 'xvideos':
-      return search && hasQuery ? [relevance, latest, top, week, month, order('rated', 'Top Rated', 'rating')] : [discover, latest, order('monthly-best', 'Monthly Best', 'score', '1m')];
+      return search && hasQuery
+        ? [relevance, latest, top, week, month, order('rated', 'Top Rated', 'rating')]
+        : search
+          ? [discover, latest, order('monthly-best', 'Monthly Best', 'score', '1m')]
+          : [discover, recommended, latest, order('monthly-best', 'Monthly Best', 'score', '1m')];
     case 'xhamster':
-      return search && hasQuery ? [relevance, latest, top, week, month, order('rated', 'Top Rated', 'rating')] : [discover, top, week, month];
+      return search && hasQuery
+        ? [relevance, latest, top, week, month, order('rated', 'Top Rated', 'rating')]
+        : search
+          ? [discover, top, week, month]
+          : [discover, recommended, top, week, month];
     case 'pornhub':
-      return search && hasQuery ? [relevance, latest, top, week, month, order('rated', 'Top Rated', 'rating')] : [discover];
+      return search && hasQuery
+        ? [relevance, latest, top, week, month, order('rated', 'Top Rated', 'rating')]
+        : search
+          ? [discover]
+          : [discover, recommended];
     case 'sexcom':
       return [];
     case 'nhentai':

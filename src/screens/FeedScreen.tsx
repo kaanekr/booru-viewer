@@ -36,6 +36,13 @@ import { getPostKey } from '../utils/postIdentity';
 import { getGridPreviewFrames, getGridPreviewVideoCandidates } from '../utils/gridPreviewMedia';
 import { useScrollAwayHeader } from '../utils/scrollAwayHeader';
 import { ScrollAwayHeader } from '../components/ScrollAwayHeader';
+import { SiteLoginModal } from '../components/SiteLoginModal';
+import {
+  hasSiteSession,
+  initSiteSessions,
+  subscribeSiteSessions,
+  supportsSiteAccount,
+} from '../services/siteSession';
 
 const GOLD_ACCENT = '#F5A623';
 
@@ -59,6 +66,7 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
   const hookNavigation = useNavigation<any>();
   const navigation = propNavigation ?? hookNavigation;
   const [isSourceSheetOpen, setIsSourceSheetOpen] = useState(false);
+  const [siteLoginOpen, setSiteLoginOpen] = useState(false);
 
   const handleManageSources = useCallback(() => {
     setIsSourceSheetOpen(false);
@@ -106,11 +114,18 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
     sortBy: normalizedOrder.sortBy ?? 'default', timeRange: normalizedOrder.timeRange ?? 'all',
     hentaiHavenSection: normalizedOrder.hentaiHavenSection,
   };
+  const isSiteRecommended = selectedOrder.sortBy === 'recommended' && supportsSiteAccount(activeSource);
+  const [siteSignedIn, setSiteSignedIn] = useState(() => hasSiteSession(activeSource.id));
+  useEffect(() => {
+    void initSiteSessions();
+    setSiteSignedIn(hasSiteSession(activeSource.id));
+    return subscribeSiteSessions(() => setSiteSignedIn(hasSiteSession(activeSource.id)));
+  }, [activeSource.id]);
   const feedKey = `${activeSource.id}|${feedOrderKey(selectedOrder)}`;
   const header = useScrollAwayHeader({
     enabled: !loading && !error && posts.length > 0,
     resetKey: feedKey,
-    pinned: !isFocused || refreshing || isSourceSheetOpen,
+    pinned: !isFocused || refreshing || isSourceSheetOpen || siteLoginOpen,
   });
   const feedKeyRef = useRef(feedKey);
   feedKeyRef.current = feedKey;
@@ -171,8 +186,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
   // Video covers play only while on screen (prevents stutter)
   const [visibleIds, updateVisible] = useVisibleIds();
-  // Focused-player architecture: up to 4 on-screen cards nearest center play after a short 150ms dwell
-  const [focusedIds, updateFocused] = useFocusedCardIds(150, 4);
+  // Focused-player architecture: single card nearest center plays after a 350ms dwell
+  const [focusedIds, updateFocused] = useFocusedCardIds(350, 1);
   // Mount window: seeded for the top viewport on first paint so 24+ cards don't mount at once.
   const [mountedIds, updateMounted] = useMountedIds(1200, layoutMap, windowHeight);
 
@@ -455,6 +470,30 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
           </ScrollView>
         </View>
       )}
+      {/* Site-native personalized discover session bar (pure HTTP cookie/token, zero background WebView) */}
+      {isSiteRecommended && (
+        <View style={styles.siteSessionBar}>
+          <Text style={styles.siteSessionText} numberOfLines={1}>
+            {siteSignedIn
+              ? `Signed in · ${activeSource.name} recommendations`
+              : `Sign in to ${activeSource.name} for personal recommendations`}
+          </Text>
+          <TouchableOpacity
+            accessibilityRole="button"
+            accessibilityLabel={siteSignedIn ? `${activeSource.name} Account` : `Sign in to ${activeSource.name}`}
+            style={[styles.siteSessionBtn, !siteSignedIn && styles.siteSessionBtnPrimary]}
+            onPress={() => {
+              Haptics.selectionAsync();
+              setSiteLoginOpen(true);
+            }}
+            activeOpacity={0.75}
+          >
+            <Text style={[styles.siteSessionBtnText, !siteSignedIn && styles.siteSessionBtnTextPrimary]}>
+              {siteSignedIn ? 'Account' : 'Sign In'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
       {/* Trending tags: reserve bar height while RedGifs tags load so ScrollAwayHeader doesn't jump */}
       {isRedGifs && (trendingLoading || trendingTags.length > 0) && (
         <View style={styles.trendingBar}>
@@ -636,6 +675,18 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
       )}
 
 
+      {supportsSiteAccount(activeSource) && (
+        <SiteLoginModal
+          visible={siteLoginOpen}
+          source={activeSource}
+          onClose={() => setSiteLoginOpen(false)}
+          onSessionChanged={() => {
+            setSiteLoginOpen(false);
+            void handleRefresh();
+          }}
+        />
+      )}
+
       <SourceSheet
         visible={isSourceSheetOpen}
         onClose={handleCloseSourceSheet}
@@ -715,6 +766,41 @@ const styles = StyleSheet.create({
   orderChipTextActive: {
     color: '#111216',
     fontWeight: '700',
+  },
+  siteSessionBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.07)',
+  },
+  siteSessionText: {
+    flex: 1,
+    fontSize: 12,
+    color: Colors.dark.textSecondary,
+  },
+  siteSessionBtn: {
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    borderRadius: 14,
+    backgroundColor: '#181A22',
+    borderWidth: 1,
+    borderColor: '#292D3B',
+  },
+  siteSessionBtnPrimary: {
+    backgroundColor: GOLD_ACCENT,
+    borderColor: GOLD_ACCENT,
+  },
+  siteSessionBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: Colors.dark.text,
+  },
+  siteSessionBtnTextPrimary: {
+    color: '#111216',
   },
   trendingBar: {
     borderBottomWidth: 1,

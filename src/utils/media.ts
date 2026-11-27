@@ -1,6 +1,16 @@
 import { Platform } from 'react-native';
 import { proxyService } from '../services/proxyService';
 import { ImageQuality } from '../services/storage';
+
+function getOptionalSiteCookie(sourceId: string): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = require('../services/siteSession');
+    return typeof mod?.getSiteCookieHeader === 'function' ? mod.getSiteCookieHeader(sourceId) : '';
+  } catch {
+    return '';
+  }
+}
 import { parseXVideosFiles, parseXVideosTags, XVIDEOS_BASE, XVIDEOS_UA } from '../services/xvideos';
 import { parseXhamsterDetail, XHAMSTER_BASE, XHAMSTER_UA, type XHamsterFiles } from '../services/xhamster';
 import { parsePornhubDetail, parsePornhubVideoTags, PORNHUB_API_BASE, PORNHUB_BASE, PORNHUB_UA } from '../services/pornhub';
@@ -524,11 +534,13 @@ export async function resolveXVideosVideoUrls(
   signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
+    const xvCookie = getOptionalSiteCookie('xvideos');
     const response = await proxyService.fetchWithFallback(post.sourceLink, {
       headers: {
         'User-Agent': XVIDEOS_UA,
         Referer: `${XVIDEOS_BASE}/`,
         'Accept-Language': 'en-US,en;q=0.9',
+        ...(xvCookie ? { Cookie: xvCookie } : {}),
       },
       signal: ctrl.signal,
     });
@@ -580,11 +592,13 @@ export async function resolveXHamsterVideoUrls(
   signal?.addEventListener('abort', onAbort, { once: true });
 
   try {
+    const xhCookie = getOptionalSiteCookie('xhamster');
     const response = await proxyService.fetchWithFallback(post.sourceLink, {
       headers: {
         'User-Agent': XHAMSTER_UA,
         Referer: `${XHAMSTER_BASE}/`,
         'Accept-Language': 'en-US,en;q=0.9',
+        ...(xhCookie ? { Cookie: xhCookie } : {}),
       },
       signal: ctrl.signal,
     });
@@ -640,22 +654,27 @@ export async function resolvePornhubVideoUrls(
   const onAbort = () => ctrl.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
 
+  const phCookie = getOptionalSiteCookie('pornhub');
   const headers = {
     'User-Agent': PORNHUB_UA,
     Referer: `${PORNHUB_BASE}/`,
     'Accept-Language': 'en-US,en;q=0.9',
     Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Upgrade-Insecure-Requests': '1',
-    Cookie: 'accessAgeDisclaimerPH=1; accessPH=1;',
+    Cookie: phCookie ? `${phCookie}; accessAgeDisclaimerPH=1; accessPH=1` : 'accessAgeDisclaimerPH=1; accessPH=1;',
   };
 
-  // 1) Light embed page first (when a viewkey exists), 2) full watch page.
-  // Embed is hundreds of KB smaller: cheaper download + parse, so the
-  // video starts earlier. Falls back to watch when embed has no mediaDefinitions.
+  // When signed in, hit the real watch page first so watch history & recommendations update;
+  // otherwise try the lighter embed page first for faster start.
   const urls: string[] = [];
   const keyM = post.sourceLink.match(/viewkey=([a-z0-9]+)/i);
-  if (keyM && keyM[1]) urls.push(`${PORNHUB_BASE}/embed/${keyM[1]}`);
-  urls.push(post.sourceLink);
+  if (phCookie) {
+    urls.push(post.sourceLink);
+    if (keyM && keyM[1]) urls.push(`${PORNHUB_BASE}/embed/${keyM[1]}`);
+  } else {
+    if (keyM && keyM[1]) urls.push(`${PORNHUB_BASE}/embed/${keyM[1]}`);
+    urls.push(post.sourceLink);
+  }
 
   try {
     for (const pageUrl of urls) {

@@ -37,6 +37,13 @@ function loadFeed(sourceOverride = {}) {
     '../components/PostCard': { PostCard: 'PostCard' },
     '../components/TagChip': { TagChip: 'TagChip' },
     '../components/SourceSheet': { SourceSheet: 'SourceSheet' },
+    '../components/SiteLoginModal': { SiteLoginModal: 'SiteLoginModal' },
+    '../services/siteSession': {
+      supportsSiteAccount: () => false,
+      hasSiteSession: () => false,
+      initSiteSessions: async () => {},
+      subscribeSiteSessions: () => () => {},
+    },
     '../navigation/rootNavigation': { pushViewer() {}, pushSearchDetail() {} },
     '@react-navigation/native': { useNavigation: () => ({ navigate: (...args) => navigated.push(args) }), useIsFocused: () => true },
     '../theme/colors': { Colors: { dark: {} } },

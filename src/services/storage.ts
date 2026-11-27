@@ -34,7 +34,7 @@ export function clampCacheLimitMb(value: number | null): number | null {
   return Math.max(MIN_CACHE_LIMIT_MB, Math.round(value));
 }
 
-const VALID_SORT: SortOption[] = ['default', 'id', 'score', 'rating', 'user', 'height', 'width'];
+const VALID_SORT: SortOption[] = ['default', 'recommended', 'id', 'score', 'rating', 'user', 'height', 'width'];
 const VALID_RANGE: TimeRangeOption[] = ['all', '1d', '1w', '1m', '1y'];
 const VALID_HH_SECTION: HentaiHavenFeedSection[] = [
   'latest',

@@ -1,5 +1,48 @@
 import ExpoModulesCore
 import Foundation
+import WebKit
+
+private func matchesCookieDomain(_ cookieDomain: String, target: String) -> Bool {
+  let cleanTarget = target.trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased()
+    .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+  guard !cleanTarget.isEmpty else { return false }
+  let cleanCookie = cookieDomain.trimmingCharacters(in: .whitespacesAndNewlines)
+    .lowercased()
+    .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+  return cleanCookie == cleanTarget || cleanCookie.hasSuffix("." + cleanTarget) || cleanTarget.hasSuffix("." + cleanCookie)
+}
+
+@MainActor
+private func readWebViewCookies(for domain: String) async -> String {
+  var pairs: [String: String] = [:]
+  let wkCookies = await WKWebsiteDataStore.default().httpCookieStore.allCookies()
+  for cookie in wkCookies where matchesCookieDomain(cookie.domain, target: domain) {
+    pairs[cookie.name] = cookie.value
+  }
+  if let sharedCookies = HTTPCookieStorage.shared.cookies {
+    for cookie in sharedCookies where matchesCookieDomain(cookie.domain, target: domain) {
+      if pairs[cookie.name] == nil {
+        pairs[cookie.name] = cookie.value
+      }
+    }
+  }
+  return pairs.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "; ")
+}
+
+@MainActor
+private func removeWebViewCookies(for domain: String) async {
+  let store = WKWebsiteDataStore.default().httpCookieStore
+  let wkCookies = await store.allCookies()
+  for cookie in wkCookies where matchesCookieDomain(cookie.domain, target: domain) {
+    await store.deleteCookie(cookie)
+  }
+  if let sharedCookies = HTTPCookieStorage.shared.cookies {
+    for cookie in sharedCookies where matchesCookieDomain(cookie.domain, target: domain) {
+      HTTPCookieStorage.shared.deleteCookie(cookie)
+    }
+  }
+}
 
 private actor HlsPlaybackSessions {
   static let shared = HlsPlaybackSessions()
@@ -49,6 +92,12 @@ public final class BooruHlsCacheModule: Module {
     }
     AsyncFunction("clear") { () async in
       await HlsSegmentStore.shared.clear()
+    }
+    AsyncFunction("getWebViewCookies") { (domain: String) async -> String in
+      await readWebViewCookies(for: domain)
+    }
+    AsyncFunction("clearWebViewCookies") { (domain: String) async in
+      await removeWebViewCookies(for: domain)
     }
     OnDestroy {
       Task { await HlsPlaybackSessions.shared.closeAll() }

@@ -93,7 +93,7 @@ export interface RedGifsTrendingTag {
   count: number;
 }
 
-export type SortOption = 'default' | 'id' | 'score' | 'rating' | 'user' | 'height' | 'width';
+export type SortOption = 'default' | 'recommended' | 'id' | 'score' | 'rating' | 'user' | 'height' | 'width';
 export type TimeRangeOption = 'all' | '1d' | '1w' | '1m' | '1y';
 export type RatingFilterOption = 'all' | 'safe' | 'questionable' | 'explicit';
 export type CumstServiceOption = 'all' | 'onlyfans' | 'fansly';
