@@ -171,8 +171,8 @@ export const FeedScreen: React.FC<FeedScreenProps> = ({
 
   // Video covers play only while on screen (prevents stutter)
   const [visibleIds, updateVisible] = useVisibleIds();
-  // Focused-player architecture: single card nearest center plays after a 350ms dwell
-  const [focusedIds, updateFocused] = useFocusedCardIds(350, 1);
+  // Focused-player architecture: up to 4 on-screen cards nearest center play after a short 150ms dwell
+  const [focusedIds, updateFocused] = useFocusedCardIds(150, 4);
   // Mount window: seeded for the top viewport on first paint so 24+ cards don't mount at once.
   const [mountedIds, updateMounted] = useMountedIds(1200, layoutMap, windowHeight);
 

@@ -48,7 +48,8 @@ import { Colors, TagColors } from '../theme/colors';
 import { getPostKey } from '../utils/postIdentity';
 import { useScrollAwayHeader } from '../utils/scrollAwayHeader';
 import { ScrollAwayHeader } from '../components/ScrollAwayHeader';
-import { useMountedIds, type CardLayout } from '../utils/gridVisibility';
+import { useFocusedCardIds, useMountedIds, useVisibleIds, type CardLayout } from '../utils/gridVisibility';
+import { getGridPreviewFrames, getGridPreviewVideoCandidates } from '../utils/gridPreviewMedia';
 
 const GOLD_ACCENT = '#F5A623';
 
@@ -493,7 +494,23 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
   }, [filteredFavorites, displayLimit, columnWidth]);
   const layoutMapRef = useRef(layoutMap);
   layoutMapRef.current = layoutMap;
+  const [visibleIds, updateVisible] = useVisibleIds();
+  const [focusedIds, updateFocused] = useFocusedCardIds(150, 4);
   const [mountedIds, updateMounted] = useMountedIds(1200, layoutMap, windowHeight);
+  const playableKeys = useMemo(() => {
+    const set = new Set<string>();
+    filteredFavorites.slice(0, displayLimit).forEach((p) => {
+      if (
+        getGridPreviewVideoCandidates(p, Platform.OS).length > 0 ||
+        getGridPreviewFrames(p).some((u) => !/\.gif(?:$|[?#])/i.test(u))
+      ) {
+        set.add(getPostKey(p));
+      }
+    });
+    return set;
+  }, [filteredFavorites, displayLimit]);
+  const playableKeysRef = useRef(playableKeys);
+  playableKeysRef.current = playableKeys;
 
   const filteredFavoritesRef = useRef(filteredFavorites);
   filteredFavoritesRef.current = filteredFavorites;
@@ -565,16 +582,16 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
     pinned: !effectiveIsActive || refreshing || isInputFocused || showFilterSheet,
   });
   const lastLoadMoreRef = useRef(0);
-  const updateFavoritesViewport = useCallback(() => {
+  const updateFavoritesViewport = useCallback((immediate = false) => {
     const covered = header.occlusionRef.current;
-    updateMounted(
-      layoutMapRef.current,
-      favoritesOffsetRef.current - gridTopRef.current + covered,
-      Math.max(0, viewportHeightRef.current - covered)
-    );
-  }, [header.occlusionRef, updateMounted]);
+    const offset = favoritesOffsetRef.current - gridTopRef.current + covered;
+    const height = Math.max(0, viewportHeightRef.current - covered);
+    updateVisible(layoutMapRef.current, offset, height);
+    updateMounted(layoutMapRef.current, offset, height);
+    updateFocused(layoutMapRef.current, offset, height, playableKeysRef.current, immediate);
+  }, [header.occlusionRef, updateVisible, updateMounted, updateFocused]);
   useEffect(() => {
-    updateFavoritesViewport();
+    updateFavoritesViewport(true);
   }, [layoutMap, header.height, header.enabled, activeSegment, updateFavoritesViewport]);
 
   return (
@@ -1141,6 +1158,8 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                   <PostCard
                     key={getPostKey(post)}
                     screenActive={effectiveIsActive && mediaAllowed && !showFilterSheet}
+                    videoActive={focusedIds.has(getPostKey(post))}
+                    onScreen={visibleIds.has(getPostKey(post))}
                     column="left"
                     columnWidth={columnWidth}
                     post={post}
@@ -1156,6 +1175,8 @@ export const FavoritesScreen: React.FC<FavoritesScreenProps> = ({
                   <PostCard
                     key={getPostKey(post)}
                     screenActive={effectiveIsActive && mediaAllowed && !showFilterSheet}
+                    videoActive={focusedIds.has(getPostKey(post))}
+                    onScreen={visibleIds.has(getPostKey(post))}
                     column="right"
                     columnWidth={columnWidth}
                     post={post}

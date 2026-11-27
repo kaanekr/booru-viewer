@@ -470,10 +470,42 @@ const CardVideoPreview: React.FC<{
   // One-shot selective proxy fallback on TLS drop (this preview only).
   const proxyTriedRef = React.useRef(false);
   const mountedRef = React.useRef(true);
+  const firstFrameFiredRef = React.useRef(false);
+  const playingFallbackTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearPlayingFallback = React.useCallback(() => {
+    if (playingFallbackTimerRef.current) {
+      clearTimeout(playingFallbackTimerRef.current);
+      playingFallbackTimerRef.current = null;
+    }
+  }, []);
+  const emitFirstFrame = React.useCallback(() => {
+    clearPlayingFallback();
+    if (!mountedRef.current || firstFrameFiredRef.current) return;
+    firstFrameFiredRef.current = true;
+    onFirstFrame();
+  }, [clearPlayingFallback, onFirstFrame]);
   React.useEffect(() => {
     mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
+    firstFrameFiredRef.current = false;
+    return () => {
+      mountedRef.current = false;
+      clearPlayingFallback();
+    };
+  }, [url, clearPlayingFallback]);
+  // iOS expo-video occasionally misses onFirstFrameRender on cached or fast-starting
+  // clips while the player is already playing underneath the static cover.
+  useEventListener(player, 'playingChange', (payload) => {
+    if (!mountedRef.current || firstFrameFiredRef.current) return;
+    if (payload.isPlaying) {
+      clearPlayingFallback();
+      playingFallbackTimerRef.current = setTimeout(() => {
+        playingFallbackTimerRef.current = null;
+        emitFirstFrame();
+      }, 250);
+    } else {
+      clearPlayingFallback();
+    }
+  });
   useEventListener(player, 'statusChange', (payload) => {
     if (!mountedRef.current) return;
     if (payload.status === 'readyToPlay') {
@@ -512,7 +544,7 @@ const CardVideoPreview: React.FC<{
       contentFit="cover"
       surfaceType="textureView"
       useExoShutter={false}
-      onFirstFrameRender={() => { if (mountedRef.current) onFirstFrame(); }}
+      onFirstFrameRender={emitFirstFrame}
       nativeControls={false}
       allowsVideoFrameAnalysis={false}
       allowsPictureInPicture={false}
