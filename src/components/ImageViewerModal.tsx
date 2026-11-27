@@ -160,6 +160,10 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
   const edgeStartDxRef = useRef<number | null>(null);
   const [, setGalleryScrollFallback] = useState(true);
   const galleryScrollEnabledRef = useRef(true);
+  const isZoomedLockRef = useRef(false);
+  const isScrubbingLockRef = useRef(false);
+  const isVerticalDraggingLockRef = useRef(false);
+  const horizontalScrollingRef = useRef(false);
   // One-shot full-preview request from the Original row in the info modal
   const [previewOriginalId, setPreviewOriginalId] = useState<string | null>(null);
   const flatListRef = useRef<FlatList>(null);
@@ -206,10 +210,22 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     }
   }, []);
 
+  const syncGalleryScrollLock = useCallback(() => {
+    const shouldEnable =
+      !isZoomedLockRef.current &&
+      !isScrubbingLockRef.current &&
+      !isVerticalDraggingLockRef.current;
+    setGalleryScrollSynchronously(shouldEnable);
+  }, [setGalleryScrollSynchronously]);
+
   useEffect(() => {
     onIndexChange?.(currentIndex);
     // Reset the scroll lock on page change: a page unmounting mid
-    // zoom/scrub could leave the lock stuck on.
+    // zoom/scrub/drag could leave the lock stuck on.
+    isZoomedLockRef.current = false;
+    isScrubbingLockRef.current = false;
+    isVerticalDraggingLockRef.current = false;
+    horizontalScrollingRef.current = false;
     setGalleryScrollSynchronously(true);
   }, [currentIndex, onIndexChange, setGalleryScrollSynchronously]);
 
@@ -245,6 +261,10 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       isPeekingDetailsRef.current = false;
       infoSheetTranslateY.setValue(sheetMaxHeightRef.current);
       setIsPlayingSlideshow(false);
+      isZoomedLockRef.current = false;
+      isScrubbingLockRef.current = false;
+      isVerticalDraggingLockRef.current = false;
+      horizontalScrollingRef.current = false;
       setGalleryScrollSynchronously(true);
       setPreviewOriginalId(null);
 
@@ -468,16 +488,25 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
 
   const handleZoomChange = useCallback(
     (isZoomed: boolean) => {
-      setGalleryScrollSynchronously(!isZoomed);
+      isZoomedLockRef.current = isZoomed;
+      syncGalleryScrollLock();
     },
-    [setGalleryScrollSynchronously]
+    [syncGalleryScrollLock]
   );
   const handleScrubbingChange = useCallback(
     (isScrubbing: boolean) => {
-      setGalleryScrollSynchronously(!isScrubbing);
+      isScrubbingLockRef.current = isScrubbing;
+      syncGalleryScrollLock();
       onScrubbingChange?.(isScrubbing);
     },
-    [setGalleryScrollSynchronously, onScrubbingChange]
+    [syncGalleryScrollLock, onScrubbingChange]
+  );
+  const handleVerticalDragChange = useCallback(
+    (isDragging: boolean) => {
+      isVerticalDraggingLockRef.current = isDragging;
+      syncGalleryScrollLock();
+    },
+    [syncGalleryScrollLock]
   );
 
   const handleCloseInfoSheet = useCallback(() => {
@@ -610,8 +639,15 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
     }),
     [windowWidth]
   );
+  const handleScrollBeginDrag = useCallback(() => {
+    horizontalScrollingRef.current = true;
+  }, []);
+  const handleScrollEndDrag = useCallback(() => {
+    horizontalScrollingRef.current = false;
+  }, []);
   const handleMomentumScrollEnd = useCallback(
     (e: any) => {
+      horizontalScrollingRef.current = false;
       const newIndex = Math.round(e.nativeEvent.contentOffset.x / windowWidth);
       if (newIndex !== currentIndexRef.current && newIndex >= 0 && newIndex < postsLengthRef.current) {
         setCurrentIndex(newIndex);
@@ -640,6 +676,8 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
         onTagPress={onTagPress}
         onZoomChange={handleZoomChange}
         onScrubbingChange={handleScrubbingChange}
+        onVerticalDragChange={handleVerticalDragChange}
+        horizontalScrollingRef={horizontalScrollingRef}
       />
     ),
     [
@@ -660,6 +698,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
       onTagPress,
       handleZoomChange,
       handleScrubbingChange,
+      handleVerticalDragChange,
     ]
   );
 
@@ -701,6 +740,7 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             keyExtractor={viewerKeyExtractor}
             horizontal
             pagingEnabled
+            directionalLockEnabled
             scrollEnabled={galleryScrollEnabledRef.current}
             showsHorizontalScrollIndicator={false}
             initialScrollIndex={Math.min(initialIndex, posts.length - 1)}
@@ -709,6 +749,8 @@ export const ImageViewerModal: React.FC<ImageViewerModalProps> = ({
             initialNumToRender={1}
             removeClippedSubviews
             getItemLayout={getItemLayout}
+            onScrollBeginDrag={handleScrollBeginDrag}
+            onScrollEndDrag={handleScrollEndDrag}
             onMomentumScrollEnd={handleMomentumScrollEnd}
             renderItem={renderPostPageItem}
           />
@@ -989,6 +1031,8 @@ interface PostPageItemProps {
   onTagPress: (tag: string) => void;
   onZoomChange?: (isZoomed: boolean) => void;
   onScrubbingChange?: (isScrubbing: boolean) => void;
+  onVerticalDragChange?: (isDragging: boolean) => void;
+  horizontalScrollingRef?: React.RefObject<boolean>;
 }
 
 const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
@@ -1009,6 +1053,8 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
   onClose,
   onZoomChange,
   onScrubbingChange,
+  onVerticalDragChange,
+  horizontalScrollingRef,
 }) => {
   const insets = useSafeAreaInsets();
   const insetTop = insets.top ?? 0;
@@ -1071,12 +1117,26 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
   const lastTapRef = useRef<number>(0);
   const isZoomedRef = useRef<boolean>(false);
   const dismissingRef = useRef<boolean>(false);
+  const isVerticalDraggingRef = useRef<boolean>(false);
   const singleTapTimerRef = useRef<any>(null);
   const dragY = useRef(new Animated.Value(0)).current;
   const dragStartDyRef = useRef<number | null>(null);
 
+  const setVerticalDragging = useCallback(
+    (dragging: boolean) => {
+      if (isVerticalDraggingRef.current === dragging) return;
+      isVerticalDraggingRef.current = dragging;
+      onVerticalDragChange?.(dragging);
+    },
+    [onVerticalDragChange]
+  );
+
   useEffect(() => {
     return () => {
+      if (isVerticalDraggingRef.current) {
+        isVerticalDraggingRef.current = false;
+        onVerticalDragChange?.(false);
+      }
       if (singleTapTimerRef.current) {
         clearTimeout(singleTapTimerRef.current);
         singleTapTimerRef.current = null;
@@ -1086,7 +1146,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
         mangaSingleTapTimerRef.current = null;
       }
     };
-  }, []);
+  }, [onVerticalDragChange]);
 
   useEffect(() => {
     if (!isActive || suspended) return;
@@ -1621,6 +1681,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
   useEffect(() => {
     if (!isActive) {
       dismissingRef.current = false;
+      setVerticalDragging(false);
       dragY.setValue(0);
     }
     if (!isActive && isZoomedRef.current && scrollRef.current) {
@@ -1681,19 +1742,22 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
           !isZoomedRef.current &&
           !isScrubbingRef.current &&
           !dismissingRef.current &&
+          !horizontalScrollingRef?.current &&
           post.sourceId !== 'nhentai' &&
           gesture.numberActiveTouches <= 1 &&
-          Math.abs(gesture.dy) > 6 &&
-          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.15,
+          Math.abs(gesture.dy) > 5 &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx),
         onMoveShouldSetPanResponderCapture: (_, gesture) =>
           !isZoomedRef.current &&
           !isScrubbingRef.current &&
           !dismissingRef.current &&
+          !horizontalScrollingRef?.current &&
           post.sourceId !== 'nhentai' &&
           gesture.numberActiveTouches <= 1 &&
-          Math.abs(gesture.dy) > 6 &&
-          Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.15,
+          Math.abs(gesture.dy) > 5 &&
+          Math.abs(gesture.dy) > Math.abs(gesture.dx),
         onPanResponderGrant: (_, gesture) => {
+          setVerticalDragging(true);
           dragStartDyRef.current = gesture?.dy ?? 0;
           (dragY as any).stopAnimation?.();
           if ((gesture?.dy ?? 0) < 0) {
@@ -1726,9 +1790,11 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
               duration: 130,
               useNativeDriver: true,
             }).start(() => {
+              setVerticalDragging(false);
               onClose(true);
             });
           } else if (deltaY < -48 || gesture.vy < -0.4) {
+            setVerticalDragging(false);
             Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
             Animated.spring(dragY, {
               toValue: 0,
@@ -1742,6 +1808,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
               onOpenDetails();
             }
           } else {
+            setVerticalDragging(false);
             onInfoDragEnd?.(false);
             Animated.spring(dragY, {
               toValue: 0,
@@ -1753,6 +1820,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
         },
         onPanResponderTerminate: () => {
           dragStartDyRef.current = null;
+          setVerticalDragging(false);
           onInfoDragEnd?.(false);
           Animated.spring(dragY, {
             toValue: 0,
@@ -1763,7 +1831,7 @@ const PostPageItem: React.FC<PostPageItemProps> = React.memo(({
         },
         onPanResponderTerminationRequest: (_, gesture) => gesture.numberActiveTouches > 1,
       }),
-    [dragY, post.sourceId, screenHeight, onClose, onOpenDetails, onInfoDragStart, onInfoDragMove, onInfoDragEnd]
+    [dragY, post.sourceId, screenHeight, onClose, onOpenDetails, onInfoDragStart, onInfoDragMove, onInfoDragEnd, setVerticalDragging, horizontalScrollingRef]
   );
 
   const dragScale =

@@ -1,8 +1,8 @@
-import { BooruPost, BooruSource, BooruTagGroups, BooruTagSuggestion, RedGifsNiche, RedGifsTrendingTag, TagCategory, SearchFilterConfig } from '../types/booru';
+import { BooruPost, BooruSource, BooruTagGroups, BooruTagSuggestion, CumstCreator, RedGifsNiche, RedGifsTrendingTag, TagCategory, SearchFilterConfig } from '../types/booru';
 import { asTagList } from '../utils/guards';
 import { enrichPostAspectRatios } from '../utils/imageDimensions';
 import { getOrDedup, LruCache } from '../utils/lruCache';
-import { splitSearchTags } from '../utils/tagSearch';
+import { quoteSearchTag, splitSearchTags } from '../utils/tagSearch';
 import { DEFAULT_SOURCE } from './sources';
 import { proxyService } from './proxyService';
 import { StorageService } from './storage';
@@ -308,7 +308,7 @@ export class BooruApiService {
     // XVideos/XHamster/Pornhub have no profile-page search, the username is searched as a plain word)
     if (filter.user && filter.user.trim()) {
       if (activeSource.type === 'cumst') {
-        parts.push(`creator:${filter.user.trim()}`);
+        if (!filter.cumstCreator) parts.push(`creator:${quoteSearchTag(filter.user)}`);
       } else if (activeSource.type === 'xvideos' || activeSource.type === 'xhamster' || activeSource.type === 'pornhub' || activeSource.type === 'sexcom' || activeSource.type === 'hentaihaven' || activeSource.type === 'nhentai') {
         parts.push(filter.user.trim());
       } else if (activeSource.type !== 'redgifs') {
@@ -549,7 +549,7 @@ export class BooruApiService {
       } else if (source.type === 'realbooru') {
         return await this.fetchRealbooruPosts(source, page, limit, tags, includeBlacklisted);
       } else if (source.type === 'cumst') {
-        return await this.fetchCumStPosts(source, page, limit, tags, includeBlacklisted);
+        return await this.fetchCumStPosts(source, page, limit, tags, includeBlacklisted, filter?.cumstCreator);
       } else if (source.type === 'redgifs') {
         // Deduplication belongs to each screen's query session. A shared seen
         // set made browsing one list consume results from another open list.
@@ -2140,12 +2140,55 @@ export class BooruApiService {
     return out;
   }
 
+  private async searchCumStCreators(source: BooruSource, term: string, limit: number, service?: string): Promise<CumstCreator[]> {
+    const query = term.trim().replace(/^@/, '');
+    if (!query) return [];
+    const params = new URLSearchParams({ q: query, n: String(limit) });
+    if (service && service !== 'all') params.set('service', service);
+
+    try {
+      const response = await fetchBooru(`${source.baseUrl}/api/v1/creators?${params.toString()}`, {
+        headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+      });
+      if (!response.ok) return [];
+      const data = await response.json();
+      if (!Array.isArray(data?.creators)) return [];
+      return data.creators.flatMap((creator: any): CumstCreator[] => {
+        if (!creator || typeof creator.id !== 'string' || !creator.id || typeof creator.service !== 'string' ||
+          !creator.service || typeof creator.name !== 'string' || !creator.name) return [];
+        return [{
+          id: creator.id,
+          service: creator.service,
+          name: creator.name,
+          displayName: typeof creator.displayName === 'string' && creator.displayName ? creator.displayName : undefined,
+          postCount: Number(creator.postCount) || 0,
+        }];
+      });
+    } catch {
+      return [];
+    }
+  }
+
+  async findCumStCreator(source: BooruSource, term: string, service?: string): Promise<CumstCreator | undefined> {
+    if (source.type !== 'cumst') return undefined;
+    const query = term.trim();
+    const casefolded = query.replace(/^@/, '').toLowerCase();
+    if (!casefolded) return undefined;
+    const creators = await this.searchCumStCreators(source, query, 20, service);
+    const exactHandles = creators.filter((creator) => creator.name.toLowerCase() === casefolded);
+    const exact = exactHandles.length || query.startsWith('@')
+      ? exactHandles
+      : creators.filter((creator) => creator.displayName?.toLowerCase() === casefolded);
+    return exact.length === 1 ? exact[0] : undefined;
+  }
+
   private async fetchCumStPosts(
     source: BooruSource,
     page: number,
     limit: number,
     tags: string,
-    includeBlacklisted: boolean = false
+    includeBlacklisted: boolean = false,
+    selectedCreator?: CumstCreator
   ): Promise<BooruPost[]> {
     const cleanTags = tags.trim();
     const o = Math.max(0, (page - 1) * 50);
@@ -2157,10 +2200,11 @@ export class BooruApiService {
     let mediaType: string | null = null;
     let gender: string | null = null;
     let tagSlug: string | null = null;
+    let creatorName: string | undefined;
     const searchKeywords: string[] = [];
 
     if (cleanTags) {
-      const tokens = cleanTags.split(/\s+/);
+      const tokens = splitSearchTags(cleanTags);
       for (const token of tokens) {
         const lower = token.toLowerCase();
         if (lower.startsWith('period:')) {
@@ -2178,18 +2222,20 @@ export class BooruApiService {
         } else if (lower.startsWith('tag:')) {
           tagSlug = token.substring(4).trim();
         } else if (lower.startsWith('creator:') || lower.startsWith('user:')) {
-          const name = token.includes(':') ? token.split(':')[1] : token;
-          searchKeywords.push(name.replace(/_/g, ' '));
+          creatorName = token.slice(token.indexOf(':') + 1).replace(/^"|"$/g, '').trim();
         } else {
-          searchKeywords.push(token.replace(/_/g, ' '));
+          searchKeywords.push(token.replace(/^"|"$/g, '').replace(/_/g, ' '));
         }
       }
     }
 
+    const creator = selectedCreator ?? (creatorName ? await this.findCumStCreator(source, creatorName, service ?? undefined) : undefined);
+    if (creatorName && !creator) return [];
+
     let url: string;
     // With a word search always use the generic search endpoint (/api/v1/posts?q=...)!
     // /api/v1/posts/popular is only for wordless pure leaderboard / period searches.
-    if (searchKeywords.length === 0 && ((period && ['day', 'week', 'month'].includes(period.toLowerCase())) || dateAnchor)) {
+    if (!creator && searchKeywords.length === 0 && ((period && ['day', 'week', 'month'].includes(period.toLowerCase())) || dateAnchor)) {
       const queryParams = new URLSearchParams({
         period: period ? period.toLowerCase() : 'day',
         o: String(o),
@@ -2205,14 +2251,17 @@ export class BooruApiService {
         n: '50',
       });
       if (sort) queryParams.append('sort', sort);
-      if (service && service !== 'all') queryParams.append('service', service);
+      if (!creator && service && service !== 'all') queryParams.append('service', service);
       if (mediaType && mediaType !== 'all') queryParams.append('type', mediaType);
-      if (gender && gender !== 'all') queryParams.append('gender', gender);
+      if (!creator && gender && gender !== 'all') queryParams.append('gender', gender);
       if (tagSlug) queryParams.append('tag', tagSlug);
       if (searchKeywords.length > 0) {
         queryParams.append('q', searchKeywords.join(' '));
       }
-      url = `${source.baseUrl}/api/v1/posts?${queryParams.toString()}`;
+      const path = creator
+        ? `${encodeURIComponent(creator.service)}/user/${encodeURIComponent(creator.id)}/posts`
+        : 'posts';
+      url = `${source.baseUrl}/api/v1/${path}?${queryParams.toString()}`;
     }
 
     let response: Response;
@@ -2289,8 +2338,11 @@ export class BooruApiService {
         const height = att.height || 1000;
         const aspectRatio = width > 0 && height > 0 ? width / height : 0.75;
 
-        const artist = p.creatorName ? [p.creatorName] : [];
-        const copyright = p.service ? [p.service] : [];
+        const artistName = p.creatorName || creator?.name;
+        const artist = artistName ? [artistName] : [];
+        const serviceName = p.service || creator?.service;
+        const creatorId = p.creatorId || creator?.id;
+        const copyright = serviceName ? [serviceName] : [];
         const generalTags = Array.from(
           new Set<string>(
             Array.isArray(p.tags)
@@ -2329,8 +2381,8 @@ export class BooruApiService {
           },
           allTags,
           sourceLink:
-            p.service && p.creatorId
-              ? `${source.baseUrl}/creators/${p.service}/${p.creatorId}/post/${p.id}`
+            serviceName && creatorId
+              ? `${source.baseUrl}/creators/${encodeURIComponent(serviceName)}/${encodeURIComponent(creatorId)}/post/${p.id}`
               : undefined,
           fileExt: ext,
           fileSize: att.bytes,
@@ -2527,6 +2579,7 @@ export class BooruApiService {
                   name: s.text.toLowerCase().replace(/\s+/g, '_'),
                   category: 'general' as TagCategory,
                   postCount: Number(s.gifs) || 0,
+                  isTag: s.type === 'tag',
                 }));
             }
           }
@@ -2566,68 +2619,46 @@ export class BooruApiService {
           .filter((s) => s.name);
       } else if (source.type === 'cumst') {
         try {
-          const suggestions: BooruTagSuggestion[] = [];
           const lowerQ = query.trim().toLowerCase();
+          const creators = await this.searchCumStCreators(source, query, limit);
+          const suggestions = creators.map((creator): BooruTagSuggestion => ({
+            name: creator.name,
+            category: 'artist',
+            postCount: creator.postCount,
+            isTag: false,
+            cumstCreator: creator,
+          }));
+          if (type === 'creator') return suggestions.slice(0, limit);
 
-          // 1. Search creators by query (models, artists)
-          const creatorsUrl = `${source.baseUrl}/api/v1/creators?q=${encodeURIComponent(query.trim())}&n=${limit}`;
-          const cRes = await fetchBooru(creatorsUrl, {
-            headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-          });
-          if (cRes.ok) {
-            const cData = await cRes.json();
-            const creatorsList = Array.isArray(cData.creators) ? cData.creators : [];
-            creatorsList.forEach((c: any) => {
-              if (c && typeof c.name === 'string' && c.name) {
-                suggestions.push({
-                  name: c.name,
-                  category: 'artist' as TagCategory,
-                  postCount: Number(c.bookmarked) || 0,
-                });
-              }
-            });
-          }
-
-          // 2. Search tags if suggestions still has capacity
-          if (suggestions.length < limit) {
-            let tagsList: any[] | null = null;
-            if (
-              cumStTagsCache &&
-              cumStTagsCache.baseUrl === source.baseUrl &&
-              Date.now() - cumStTagsCache.at < CUMST_TAGS_CACHE_TTL_MS
-            ) {
-              tagsList = cumStTagsCache.tags;
-            } else {
-              const url = `${source.baseUrl}/api/v1/tags`;
-              const response = await fetchBooru(url, {
-                headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
-              });
-              if (response.ok) {
-                const data = await response.json();
-                const fetchedTags: any[] = Array.isArray(data.tags) ? data.tags : [];
-                tagsList = fetchedTags;
-                cumStTagsCache = { baseUrl: source.baseUrl, tags: fetchedTags, at: Date.now() };
-              }
-            }
-            if (tagsList) {
-              const matchedTags = tagsList
-                .filter(
-                  (t: any) =>
-                    (typeof t.slug === 'string' && t.slug.toLowerCase().includes(lowerQ)) ||
-                    (typeof t.label === 'string' && t.label.toLowerCase().includes(lowerQ))
-                )
-                .slice(0, limit - suggestions.length)
-                .map((t: any) => ({
-                  name: typeof t.slug === 'string' ? t.slug : typeof t.label === 'string' ? t.label : '',
-                  category: 'general' as TagCategory,
-                  postCount: Number(t.posts) || 0,
-                }))
-                .filter((s: { name: string }) => s.name);
-              suggestions.push(...matchedTags);
+          // Reserve room for an exact tag even when the creator results fill the suggestion list.
+          let tagsList: any[] = [];
+          if (cumStTagsCache?.baseUrl === source.baseUrl && Date.now() - cumStTagsCache.at < CUMST_TAGS_CACHE_TTL_MS) {
+            tagsList = cumStTagsCache.tags;
+          } else {
+            const url = `${source.baseUrl}/api/v1/tags`;
+            const response = await fetchBooru(url, {
+              headers: { 'User-Agent': USER_AGENT, Accept: 'application/json' },
+            }).catch(() => null);
+            if (response?.ok) {
+              const data = await response.json();
+              tagsList = Array.isArray(data.tags) ? data.tags : [];
+              cumStTagsCache = { baseUrl: source.baseUrl, tags: tagsList, at: Date.now() };
             }
           }
+          const matchedTags = tagsList
+            .filter((tag) => tag && [tag.slug, tag.label].some((value) =>
+              typeof value === 'string' && value.toLowerCase().includes(lowerQ)
+            ))
+            .map((tag): BooruTagSuggestion => ({
+              name: typeof tag.slug === 'string' && tag.slug ? tag.slug : tag.label,
+              category: 'general',
+              postCount: Number(tag.posts) || 0,
+            }));
+          const exactTag = matchedTags.find((tag) => tag.name.toLowerCase() === lowerQ);
+          if (exactTag) suggestions.unshift(exactTag);
+          suggestions.push(...matchedTags.filter((tag) => tag !== exactTag));
 
-          return suggestions;
+          return suggestions.slice(0, limit);
         } catch {
           return [];
         }

@@ -30,7 +30,7 @@ export function pushViewer(
 export function pushSearchDetail(tags: string[], baseFilter?: SearchFilterConfig, source?: BooruSource) {
   if (!navigationRef.isReady()) return;
   const clean = tags.map((t) => t.trim().toLowerCase()).filter(Boolean);
-  if (clean.length === 0) return;
+  if (clean.length === 0 && !(source?.type === 'cumst' && baseFilter?.cumstCreator)) return;
   navigationRef.dispatch(StackActions.push('SearchDetail', { tags: clean, baseFilter, source: source ? { ...source } : undefined }));
 }
 

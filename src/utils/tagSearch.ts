@@ -15,7 +15,7 @@ export function getTagCompletion(query: string, allowComma = false) {
   if (!last || (!quoted && separator.test(query))) return null;
 
   const term = last.replace(/^-+/, '');
-  const prefix = term.match(/^(tag|genre|artist|character|parody|group|language|category):/i)?.[1];
+  const prefix = term.match(/^(tag|genre|artist|character|parody|group|language|category|creator):/i)?.[1];
   return {
     previous: tokens.slice(0, -1),
     text: term.slice(prefix ? prefix.length + 1 : 0).replace(/^"|"$/g, '').trim(),

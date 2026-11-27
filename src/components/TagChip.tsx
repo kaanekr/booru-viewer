@@ -1,5 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { X } from 'lucide-react-native';
 import { TagCategory } from '../types/booru';
 import { TagColors } from '../theme/colors';
 
@@ -8,6 +9,8 @@ interface TagChipProps {
   category?: TagCategory;
   count?: number;
   onPress?: (name: string) => void;
+  onRemove?: () => void;
+  inline?: boolean;
   size?: 'sm' | 'md';
 }
 
@@ -22,23 +25,29 @@ export const TagChip: React.FC<TagChipProps> = React.memo(({
   category = 'general',
   count,
   onPress,
+  onRemove,
+  inline = false,
   size = 'md',
 }) => {
   const color = TagColors[category] || TagColors.general;
-  const displayName = React.useMemo(() => name.replace(/_/g, ' '), [name]);
+  const displayName = inline ? name : name.replace(/_/g, ' ');
   const handlePress = React.useCallback(() => {
-    onPress?.(name);
-  }, [onPress, name]);
+    if (onRemove) onRemove();
+    else onPress?.(name);
+  }, [onPress, onRemove, name]);
 
   return (
     <TouchableOpacity
       activeOpacity={0.7}
-      disabled={!onPress}
+      disabled={!onPress && !onRemove}
       onPress={handlePress}
+      accessibilityRole={onRemove ? 'button' : undefined}
+      accessibilityLabel={onRemove ? `Remove tag: ${displayName}` : undefined}
       style={[
         styles.chip,
         { backgroundColor: color.bg, borderColor: color.border },
         size === 'sm' && styles.chipSmall,
+        inline && styles.chipInline,
       ]}
     >
       <Text
@@ -46,6 +55,7 @@ export const TagChip: React.FC<TagChipProps> = React.memo(({
           styles.text,
           { color: color.text },
           size === 'sm' && styles.textSmall,
+          inline && styles.textInline,
         ]}
         numberOfLines={1}
         ellipsizeMode="tail"
@@ -59,6 +69,7 @@ export const TagChip: React.FC<TagChipProps> = React.memo(({
           </Text>
         </View>
       )}
+      {onRemove && <X size={13} color={color.text} style={styles.removeIcon} />}
     </TouchableOpacity>
   );
 });
@@ -80,15 +91,30 @@ const styles = StyleSheet.create({
     paddingVertical: 3,
     borderRadius: 8,
   },
+  chipInline: {
+    height: 28,
+    paddingVertical: 0,
+    justifyContent: 'center',
+    marginRight: 5,
+    marginBottom: 0,
+  },
   text: {
     fontSize: 13,
     fontWeight: '600',
     flexShrink: 1,
   },
+  textInline: {
+    lineHeight: 16,
+    includeFontPadding: false,
+    textAlignVertical: 'center',
+  },
   textSmall: {
     fontSize: 11,
     fontWeight: '500',
     flexShrink: 1,
+  },
+  removeIcon: {
+    marginLeft: 5,
   },
   countBadge: {
     marginLeft: 5,

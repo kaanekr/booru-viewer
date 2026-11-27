@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useState, useRef } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -36,7 +36,10 @@ import {
   BooruPost,
   BooruSource,
   BooruTagSuggestion,
+  BooruType,
+  CumstCreator,
   RedGifsNiche,
+  TagCategory,
   SearchFilterConfig,
   DEFAULT_FILTER_CONFIG,
 } from '../types/booru';
@@ -47,21 +50,34 @@ import { TagChip } from '../components/TagChip';
 import { applyQuickFilter, getSourceQuickFilters, isQuickFilterActive, SourceQuickFilter } from '../utils/sourceQuickFilters';
 import { useScrollAwayHeader } from '../utils/scrollAwayHeader';
 import { ScrollAwayHeader } from '../components/ScrollAwayHeader';
-import { pushViewer } from '../navigation/rootNavigation';
+import { pushSearchDetail, pushViewer } from '../navigation/rootNavigation';
 import { getPostKey } from '../utils/postIdentity';
 import { getGridPreviewFrames, getGridPreviewVideoCandidates } from '../utils/gridPreviewMedia';
 import { SearchFilterModal } from '../components/SearchFilterModal';
 import { SourceSheet } from '../components/SourceSheet';
-import { Colors } from '../theme/colors';
+import { Colors, TagColors } from '../theme/colors';
 import { getMediaHeaders, getMediaUrl, isImageMediaUrl } from '../utils/media';
 import { prefetchGridImages } from '../utils/imagePrefetch';
 import { buildListCacheKey, getListCache, SEARCH_LIST_TTL_MS, setListCache } from '../utils/listCache';
 import { useVisibleIds, useMountedIds, useFocusedCardIds, CardLayout } from '../utils/gridVisibility';
 import { useMediaPlaybackAllowed } from '../context/MediaPlaybackContext';
 import { useSource } from '../context/SourceContext';
+import { getOrDedup, LruCache } from '../utils/lruCache';
 
 const GOLD_ACCENT = '#F5A623';
 const SOURCE_TAG_CATALOGS = new Set(['xvideos', 'xhamster', 'pornhub', 'nhentai', 'hentaihaven']);
+const TAG_SEARCH_SOURCES = new Set(['danbooru', 'gelbooru', 'moebooru', 'realbooru']);
+const SPACE_SEPARATED_TAG_SOURCES = new Set(['xvideos', 'xhamster', 'pornhub', 'redgifs', 'hentaihaven']);
+const MAX_RECENT_TAG_SUGGESTIONS = 72;
+const CUMST_SERVICE_LABELS: Record<string, string> = { onlyfans: 'OnlyFans', fansly: 'Fansly', patreon: 'Patreon' };
+
+const cumstCreatorSubtitle = (creator: CumstCreator) =>
+  `@${creator.name} · ${CUMST_SERVICE_LABELS[creator.service] ?? creator.service}`;
+
+function getCumStCreatorTerm(query: string): string | undefined {
+  const term = query.trim().replace(/^(?:creator|user):\s*/i, '').replace(/^"|"$/g, '');
+  return term && !/(?:^|\s)(?:-\S|[a-z][a-z-]*:)/i.test(term) ? term : undefined;
+}
 
 const POPULAR_TAGS = [
   'original',
@@ -75,6 +91,182 @@ const POPULAR_TAGS = [
   'blue_archive',
   'cyberpunk',
 ];
+
+const POPULAR_TAG_SUGGESTIONS: BooruTagSuggestion[] = POPULAR_TAGS.map((name) => ({
+  name,
+  category: 'general',
+  postCount: 0,
+}));
+
+function searchTagKey(type: BooruType, token: string) {
+  const modifier = TAG_SEARCH_SOURCES.has(type) ? /^[-~]/ : /^-/;
+  const key = token.replace(modifier, '').replace(/"/g, '').toLowerCase();
+  return SPACE_SEPARATED_TAG_SOURCES.has(type) ? key.replace(/[_\s]+/g, ' ') : key;
+}
+
+function searchTagKeys(type: BooruType, tag: BooruTagSuggestion): string[] {
+  if (tag.isTag === false) return [];
+  const qualified = tag.query ?? sourceTagQuery(type, tag.name, tag.category);
+  const aliases = [tag.name, qualified];
+  if (type === 'hentaihaven' && qualified.startsWith('tag:')) {
+    aliases.push(qualified.replace(/^tag:/, 'genre:'));
+  }
+  if (type === 'xhamster') aliases.push(`tag:${tag.name}`);
+  return aliases.map((alias) => searchTagKey(type, alias));
+}
+
+interface QueryRange {
+  start: number;
+  end: number;
+}
+
+interface QueryTag extends QueryRange {
+  index: number;
+  category?: TagCategory;
+}
+
+function InlineSearchQuery({ query, tags, focused, label = 'Search tags or creators', onFocus, onBlur, onChange, onRemove, onSubmit }: {
+  query: string;
+  tags: QueryTag[];
+  focused: boolean;
+  label?: string;
+  onFocus: () => void;
+  onBlur: () => void;
+  onChange: (query: string) => void;
+  onRemove: (index: number) => void;
+  onSubmit: () => void;
+}) {
+  const input = useRef<React.ComponentRef<typeof TextInput>>(null);
+  const scroll = useRef<ScrollViewInstance>(null);
+  const [editing, setEditing] = useState<QueryRange>();
+  const lastTag = tags.at(-1);
+  const trailingTag = focused && lastTag?.end === query.length ? lastTag : undefined;
+  const afterLastTag = lastTag ? lastTag.end + (query.slice(lastTag.end).match(/^\s+/)?.[0].length ?? 0) : 0;
+  const { start, end } = editing ?? { start: trailingTag?.start ?? afterLastTag, end: query.length };
+  const draft = query.slice(start, end);
+  const draftTag = tags.find((tag) => tag.start === start && tag.end === end);
+  const draftColor = draftTag && TagColors[draftTag.category ?? 'general'];
+  const lastStart = useRef(start);
+
+  useLayoutEffect(() => {
+    if (start !== lastStart.current && focused) {
+      input.current?.setSelection?.(draft.length, draft.length);
+    }
+    lastStart.current = start;
+  }, [start, draft.length, focused]);
+
+  useEffect(() => {
+    if (!focused) setEditing(undefined);
+  }, [focused]);
+
+  const editText = (range: QueryRange) => {
+    setEditing(range);
+    input.current?.focus();
+  };
+
+  const renderText = (from: number, to: number) => {
+    if (from === to) return null;
+    const text = query.slice(from, to);
+    return (
+      <Text
+        key={`text-${from}`}
+        style={styles.inlineQueryText}
+        numberOfLines={1}
+        onPress={text.trim() ? () => editText({ start: from, end: to }) : undefined}
+      >
+        {text}
+      </Text>
+    );
+  };
+
+  const renderParts = (from: number, to: number) => {
+    const parts: React.ReactNode[] = [];
+    let offset = from;
+    for (const tag of tags) {
+      if (tag.start < from || tag.end > to) continue;
+      parts.push(renderText(offset, tag.start));
+      parts.push(
+        <TagChip
+          key={`tag-${tag.start}`}
+          name={query.slice(tag.start, tag.end)}
+          category={tag.category}
+          onRemove={() => {
+            setEditing(undefined);
+            onRemove(tag.index);
+            if (focused) input.current?.focus();
+          }}
+          inline
+        />
+      );
+      offset = tag.end;
+    }
+    parts.push(renderText(offset, to));
+    return parts;
+  };
+
+  return (
+    <ScrollView
+      ref={scroll}
+      style={styles.inlineQuery}
+      contentContainerStyle={styles.inlineQueryContent}
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      keyboardShouldPersistTaps="handled"
+      onContentSizeChange={() => {
+        if (!editing) scroll.current?.scrollToEnd({ animated: false });
+      }}
+    >
+      {renderParts(0, start)}
+      <View
+        key="editor"
+        testID={draftTag ? 'search-query-active-tag' : undefined}
+        style={[
+          styles.inlineQueryEditor,
+          draftColor ? {
+            backgroundColor: draftColor.bg,
+            borderColor: draftColor.border,
+            borderWidth: 1,
+            borderRadius: 12,
+          } : styles.inlineQueryEditorFill,
+        ]}
+      >
+        <Text
+          aria-hidden
+          pointerEvents="none"
+          numberOfLines={1}
+          style={[styles.inlineQueryText, styles.inlineQueryMeasure, draftColor && styles.inlineQueryTagText]}
+        >
+          {draft || ' '}
+        </Text>
+        <TextInput
+          ref={input}
+          style={[styles.inlineQueryText, styles.searchInput, draftColor && styles.inlineQueryTagText, draftColor && { color: draftColor.text }]}
+          accessibilityLabel={label}
+          placeholder={query ? undefined : `${label}...`}
+          placeholderTextColor={Colors.dark.textMuted}
+          underlineColorAndroid="transparent"
+          value={draft}
+          onFocus={onFocus}
+          onBlur={onBlur}
+          onChangeText={(text) => {
+            if (editing) setEditing({ start, end: start + text.length });
+            onChange(query.slice(0, start) + text + query.slice(end));
+          }}
+          onKeyPress={({ nativeEvent }) => {
+            if (nativeEvent.key === 'Backspace' && !editing && !draft && start > 0) {
+              onChange(query.slice(0, -1));
+            }
+          }}
+          onSubmitEditing={onSubmit}
+          returnKeyType="search"
+          autoCapitalize="none"
+          autoCorrect={false}
+        />
+      </View>
+      {renderParts(end, query.length)}
+    </ScrollView>
+  );
+}
 
 const NicheTagChip = React.memo(
   ({ niche, onSelect }: { niche: RedGifsNiche; onSelect: (query: string) => void }) => {
@@ -160,11 +352,16 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const [history, setHistory] = useState<string[]>([]);
   const [favoriteTags, setFavoriteTags] = useState<string[]>([]);
   const [suggestions, setSuggestions] = useState<BooruTagSuggestion[]>([]);
+  const [recentTagSuggestions, setRecentTagSuggestions] = useState<{ sourceId: string; tags: BooruTagSuggestion[] }>();
+  const tagLookups = useRef(new LruCache<string, BooruTagSuggestion[]>(96, 60_000));
+  const pendingTagLookups = useRef(new Map<string, Promise<BooruTagSuggestion[]>>());
   const [sourceTags, setSourceTags] = useState<{ sourceId: string; tags: BooruTagSuggestion[] }>();
   const [isInputFocused, setIsInputFocused] = useState(false);
 
   // Filter Configuration State
   const [filterConfig, setFilterConfig] = useState<SearchFilterConfig>(DEFAULT_FILTER_CONFIG);
+  const cumstCreator = activeSource.type === 'cumst' ? filterConfig.cumstCreator ?? initialFilter?.cumstCreator : undefined;
+  const creatorLookupRef = useRef<symbol | null>(null);
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
 
   // Search Results State
@@ -215,7 +412,28 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const hasSourceTagCatalog = SOURCE_TAG_CATALOGS.has(activeSource.type);
   const exploreTags: BooruTagSuggestion[] = hasSourceTagCatalog
     ? (sourceTags?.sourceId === activeSource.id ? sourceTags.tags : [])
-    : POPULAR_TAGS.map((name) => ({ name, category: 'general', postCount: 0 }));
+    : POPULAR_TAG_SUGGESTIONS;
+  const queryTokens = useMemo(() => splitSearchTags(query), [query]);
+  const knownSearchTags = useMemo(() => {
+    const tags = new Map<string, BooruTagSuggestion>();
+    const catalog = sourceTags?.sourceId === activeSource.id ? sourceTags.tags : [];
+    const recent = recentTagSuggestions?.sourceId === activeSource.id ? recentTagSuggestions.tags : [];
+    for (const tag of [...catalog, ...recent]) {
+      for (const key of searchTagKeys(activeSource.type, tag)) tags.set(key, tag);
+    }
+    return tags;
+  }, [activeSource.id, activeSource.type, sourceTags, recentTagSuggestions]);
+  const knownSearchTagsRef = useRef(knownSearchTags);
+  knownSearchTagsRef.current = knownSearchTags;
+  let queryOffset = 0;
+  const selectedQueryTags = queryTokens.flatMap((token, index): QueryTag[] => {
+    const start = query.indexOf(token, queryOffset);
+    const end = start + token.length;
+    queryOffset = end;
+    if ((token.match(/"/g)?.length ?? 0) % 2 !== 0) return [];
+    const knownTag = knownSearchTags.get(searchTagKey(activeSource.type, token));
+    return knownTag ? [{ index, start, end, category: knownTag.category }] : [];
+  });
 
   useEffect(() => {
     if (!isFocused || !hasSourceTagCatalog) return;
@@ -278,11 +496,16 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
   useEffect(() => () => {
     searchRequestIdRef.current++;
+    creatorLookupRef.current = null;
     if (blurTimerRef.current) {
       clearTimeout(blurTimerRef.current);
       blurTimerRef.current = null;
     }
   }, []);
+
+  useEffect(() => {
+    if (!isFocused) creatorLookupRef.current = null;
+  }, [isFocused]);
 
   const routeParams = route?.params;
   const effectiveTag = initialTag ?? routeParams?.tag;
@@ -338,7 +561,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   // Stable key for initialFilter/initialTag to prevent re-search loops on parent re-renders
   const lastInitialKeyRef = useRef<string>('');
   const initialFilterKey = initialFilter
-    ? `${JSON.stringify(initialFilter.tags)}|${initialFilter.rating}|${initialFilter.sortBy}|${initialFilter.timeRange}|${initialFilter.minScore ?? ''}|${initialFilter.cumstService ?? ''}|${initialFilter.cumstMediaType ?? ''}|${initialFilter.jumpToPage}|${initialFilter.hentaiHavenSection ?? ''}`
+    ? `${JSON.stringify(initialFilter.tags)}|${initialFilter.rating}|${initialFilter.sortBy}|${initialFilter.timeRange}|${initialFilter.minScore ?? ''}|${initialFilter.cumstService ?? ''}|${initialFilter.cumstMediaType ?? ''}|${initialFilter.jumpToPage}|${initialFilter.hentaiHavenSection ?? ''}|${initialFilter.cumstCreator?.service ?? ''}/${initialFilter.cumstCreator?.id ?? ''}`
     : '';
   const initialTagKey = effectiveTag ? `${effectiveTag}:${effectiveMode}` : '';
   const combinedInitialKey = initialFilterKey ? `f:${initialFilterKey}` : initialTagKey ? `t:${initialTagKey}` : '';
@@ -374,6 +597,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   useEffect(() => {
     if (lastActiveSourceIdRef.current !== activeSource.id) {
       lastActiveSourceIdRef.current = activeSource.id;
+      creatorLookupRef.current = null;
       // Invalidate any ongoing asynchronous search or tag suggestion requests
       searchRequestIdRef.current += 1;
       paginationPendingRef.current = null;
@@ -381,6 +605,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       resultsRef.current = [];
 
       setSuggestions([]);
+      setRecentTagSuggestions(undefined);
       setResults([]);
       setIsSearchActive(false);
       setLoading(false);
@@ -393,38 +618,79 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     }
   }, [activeSource.id, query]);
 
-  // Autocomplete debounce - only triggers when search input is focused and guards for source match
+  // Show suggestions for the current token and verify the rest of the query against the active source.
   useEffect(() => {
-    if (!isInputFocused || !filterConfig.autocompleteFromServer || !query) {
-      setSuggestions([]);
-      return;
-    }
-
     setSuggestions([]);
-    const completion = getTagCompletion(query);
-    if (!completion || completion.text.length < 2) {
-      return;
-    }
+    if (!isFocused || !filterConfig.autocompleteFromServer || !queryTokens.length) return;
 
-    const currentSourceId = activeSource.id;
+    const { id: sourceId, type } = activeSource;
+    const completion = isInputFocused ? getTagCompletion(query) : null;
+    const completedTokens = completion ? queryTokens.slice(0, -1) : queryTokens;
+    const canLookup = (term: ReturnType<typeof getTagCompletion>, key: string) =>
+      term && term.text.length >= 2 && (term.prefix || !/^[a-z][a-z-]*:/i.test(key));
+    const activeLookup = canLookup(completion, searchTagKey(type, queryTokens.at(-1) ?? '')) ? completion : null;
+    const creatorTerm = type === 'cumst' && !cumstCreator ? getCumStCreatorTerm(query) : undefined;
+    const fullCreatorLookup = activeLookup && creatorTerm && creatorTerm !== activeLookup.text
+      ? { ...activeLookup, text: creatorTerm, prefix: 'creator' }
+      : null;
+    const completedLookups = [...new Set(completedTokens)].flatMap((token) => {
+      const key = searchTagKey(type, token);
+      if (knownSearchTagsRef.current.has(key) || (token.match(/"/g)?.length ?? 0) % 2 !== 0) return [];
+      const term = getTagCompletion(TAG_SEARCH_SOURCES.has(type) ? token.replace(/^~/, '') : token);
+      return term && canLookup(term, key) ? [{ key, term }] : [];
+    });
+    if (!activeLookup && !completedLookups.length) return;
+
     let cancelled = false;
-    const timer = setTimeout(async () => {
-      try {
-        const list = await booruApi.searchTags(completion.text, 12, activeSource, completion.prefix);
-        if (!cancelled && currentSourceId === lastActiveSourceIdRef.current) {
-          setSuggestions(list);
-        }
-      } catch (e) {
-        if (!cancelled && currentSourceId === lastActiveSourceIdRef.current) {
-          setSuggestions([]);
-        }
+    const isCurrent = () => !cancelled && sourceId === lastActiveSourceIdRef.current;
+    const lookup = (term: NonNullable<ReturnType<typeof getTagCompletion>>) => {
+      const key = JSON.stringify([sourceId, term.prefix, term.text.toLowerCase()]);
+      const cached = tagLookups.current.get(key);
+      if (cached) return Promise.resolve(cached);
+      return getOrDedup(pendingTagLookups.current, key, async () => {
+        const list = await booruApi.searchTags(term.text, 12, activeSource, term.prefix);
+        tagLookups.current.set(key, list);
+        return list;
+      }).catch((): BooruTagSuggestion[] => []);
+    };
+    const remember = (list: BooruTagSuggestion[]) => {
+      const verified = list.filter((tag) => tag.isTag !== false);
+      if (!isCurrent() || !verified.length) return;
+      setRecentTagSuggestions((previous) => {
+        const existing = previous?.sourceId === sourceId ? previous.tags : [];
+        const incoming = new Set(verified.map((tag) => tag.query ?? tag.name));
+        const tags = [...existing.filter((tag) => !incoming.has(tag.query ?? tag.name)), ...verified];
+        return { sourceId, tags: tags.slice(-MAX_RECENT_TAG_SUGGESTIONS) };
+      });
+    };
+    const verifyCompletedTokens = async () => {
+      for (const { key, term } of completedLookups) {
+        if (!isCurrent()) return;
+        if (knownSearchTagsRef.current.has(key)) continue;
+        const list = await lookup(term);
+        remember(list.filter((tag) => searchTagKeys(type, tag).includes(key)));
       }
+    };
+    const timer = setTimeout(() => {
+      if (activeLookup) {
+        const suggestionsLookup = fullCreatorLookup
+          ? Promise.all([lookup(activeLookup), lookup(fullCreatorLookup)])
+            .then(([list, creators]) => [...creators, ...list.filter((tag) => !tag.cumstCreator)].slice(0, 12))
+          : lookup(activeLookup);
+        void suggestionsLookup.then((list) => {
+          if (!isCurrent()) return;
+          setSuggestions(cumstCreator ? list.filter((item) => !item.cumstCreator) : list);
+          remember(list);
+        });
+      }
+      void verifyCompletedTokens();
     }, 250);
 
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [query, isInputFocused, filterConfig.autocompleteFromServer, activeSource.id]);
+  }, [query, queryTokens, isFocused, isInputFocused, filterConfig.autocompleteFromServer, activeSource.id, cumstCreator]);
 
   const executeSearchWithConfig = async (config: SearchFilterConfig) => {
+    creatorLookupRef.current = null;
     Keyboard.dismiss();
     setIsInputFocused(false);
     Haptics.selectionAsync();
@@ -467,7 +733,8 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       'search',
       activeSource.id,
       config.tags.join(' '),
-      `${config.sortBy}|${config.timeRange}|${config.rating}|${config.minScore ?? ''}|${config.user ?? ''}|${config.cumstService ?? ''}|${config.cumstMediaType ?? ''}|${config.leaderboardDate ?? ''}|${config.includeBlacklisted ? 1 : 0}|${config.hentaiHavenSection ?? ''}`,
+      `${config.sortBy}|${config.timeRange}|${config.rating}|${config.minScore ?? ''}|${config.user ?? ''}|${config.cumstService ?? ''}|${config.cumstMediaType ?? ''}|${config.leaderboardDate ?? ''}|${config.includeBlacklisted ? 1 : 0}|${config.hentaiHavenSection ?? ''}` +
+        (config.cumstCreator ? `|creator:${config.cumstCreator.service}/${config.cumstCreator.id}` : ''),
       startPage
     );
 
@@ -517,8 +784,40 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     }
   };
 
+  const openCumStCreator = (creator: CumstCreator) => {
+    creatorLookupRef.current = null;
+    Keyboard.dismiss();
+    setIsInputFocused(false);
+    setSuggestions([]);
+    pushSearchDetail([], {
+      ...DEFAULT_FILTER_CONFIG,
+      includeBlacklisted: filterConfig.includeBlacklisted,
+      autocompleteFromServer: filterConfig.autocompleteFromServer,
+      cumstCreator: creator,
+    }, activeSource);
+  };
+
+  const submitQuery = async () => {
+    const term = getCumStCreatorTerm(query);
+    if (activeSource.type === 'cumst' && !cumstCreator && term) {
+      const request = Symbol();
+      creatorLookupRef.current = request;
+      const creator = await booruApi.findCumStCreator(activeSource, term, filterConfig.cumstService);
+      if (creatorLookupRef.current !== request || activeSourceRef.current.id !== activeSource.id) return;
+      if (creator) {
+        openCumStCreator(creator);
+        return;
+      }
+    }
+    executeSearch(query, 'replace');
+  };
+
   const handleSelectSuggestion = (suggestion: BooruTagSuggestion) => {
     Haptics.selectionAsync();
+    if (suggestion.cumstCreator && activeSource.type === 'cumst') {
+      openCumStCreator(suggestion.cumstCreator);
+      return;
+    }
     const completion = getTagCompletion(query);
     const qualified = suggestion.query ?? sourceTagQuery(activeSource.type, suggestion.name, suggestion.category);
     const parts = completion?.previous ?? splitSearchTags(query);
@@ -582,6 +881,16 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
     executeSearchRef.current(tag);
   }, []);
 
+  const removeQueryTag = (index: number) => {
+    const nextQuery = queryTokens.filter((_, position) => position !== index).join(' ');
+    if (isSearchActive && !isInputFocused) {
+      executeSearch(nextQuery);
+    } else {
+      setQuery(nextQuery);
+      Haptics.selectionAsync();
+    }
+  };
+
   const handleApplyFilterModal = useCallback((newConfig: SearchFilterConfig) => {
     setIsFilterModalOpen(false);
     setFilterConfig(newConfig);
@@ -593,6 +902,16 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   const renderSuggestionItem = useCallback(
     ({ item }: { item: BooruTagSuggestion }) => {
       const onSelect = () => handleSelectSuggestionRef.current(item);
+      if (item.cumstCreator) {
+        const title = item.cumstCreator.displayName || item.cumstCreator.name;
+        const subtitle = cumstCreatorSubtitle(item.cumstCreator);
+        return (
+          <TouchableOpacity accessibilityRole="button" accessibilityLabel={`Open creator ${title}, ${subtitle}`} style={styles.creatorSuggestion} onPress={onSelect}>
+            <Text style={styles.creatorSuggestionTitle} numberOfLines={1}>{title}</Text>
+            <Text style={styles.topHeaderSubtitle} numberOfLines={1}>{subtitle}</Text>
+          </TouchableOpacity>
+        );
+      }
       return (
         <TouchableOpacity style={styles.suggestionRow} onPress={onSelect}>
           <TagChip
@@ -685,6 +1004,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
   };
 
   const handleExitSearch = () => {
+    creatorLookupRef.current = null;
     searchRequestIdRef.current++;
     paginationPendingRef.current = null;
     resultsRef.current = [];
@@ -709,7 +1029,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
 
   const resultsScrollRef = useRef<ScrollViewInstance>(null);
 
-  const quickOptions = getSourceQuickFilters(activeSource, 'search', query.trim().length > 0);
+  const quickOptions = getSourceQuickFilters(activeSource, 'search', Boolean(cumstCreator || query.trim()));
   const handleQuickPreset = (option: SourceQuickFilter) => {
     // Also work before the first search, and use text currently in the input.
     const updated = applyQuickFilter(option, { ...filterConfig, tags: parseQueryToTags(query) });
@@ -761,7 +1081,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
       <View style={[styles.contentWrapper, { paddingTop: insets.top }]}>
         <ScrollAwayHeader controller={header} top={insets.top}>
         {/* Top Header with Active Source Badge (when search is not active) */}
-        {!isSearchActive && (
+        {!isSearchActive && !cumstCreator && (
           <View style={styles.topHeader}>
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
               {onBackPress && (
@@ -800,9 +1120,16 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
           </View>
         )}
 
+        {cumstCreator && (
+          <View style={styles.creatorHeader}>
+            <Text accessibilityRole="header" style={styles.topHeaderTitle} numberOfLines={1}>{cumstCreator.displayName || cumstCreator.name}</Text>
+            <Text style={styles.topHeaderSubtitle} numberOfLines={1}>{cumstCreatorSubtitle(cumstCreator)}</Text>
+          </View>
+        )}
+
         {/* Search Bar & Filter Header */}
         <View
-          style={styles.searchBarWrapper}
+          style={styles.searchBarControls}
           onLayout={({ nativeEvent }) => {
             const bottom = Math.ceil(nativeEvent.layout.y + nativeEvent.layout.height);
             if (bottom > 0) setSearchBarBottom(bottom);
@@ -819,13 +1146,13 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
             </TouchableOpacity>
           )}
 
-          <View style={styles.searchInputContainer}>
+          <View style={[styles.searchInputContainer, isInputFocused && styles.searchInputFocused]}>
             <Search size={18} color={isInputFocused ? GOLD_ACCENT : Colors.dark.textMuted} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Search tags or creators..."
-              placeholderTextColor={Colors.dark.textMuted}
-              value={query}
+            <InlineSearchQuery
+              query={query}
+              tags={selectedQueryTags}
+              focused={isInputFocused}
+              label={cumstCreator ? 'Search creator posts' : undefined}
               onFocus={() => {
                 if (blurTimerRef.current) {
                   clearTimeout(blurTimerRef.current);
@@ -840,22 +1167,18 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
                   setIsInputFocused(false);
                 }, 250);
               }}
-              onChangeText={(text) => {
+              onChange={(text) => {
+                creatorLookupRef.current = null;
                 setQuery(text);
                 if (!isInputFocused) setIsInputFocused(true);
               }}
-              onSubmitEditing={() => {
-                setIsInputFocused(false);
-                setSuggestions([]);
-                executeSearch(query, 'replace');
-              }}
-              returnKeyType="search"
-              autoCapitalize="none"
-              autoCorrect={false}
+              onRemove={removeQueryTag}
+              onSubmit={submitQuery}
             />
             {query.length > 0 && (
               <TouchableOpacity
                 onPress={() => {
+                  creatorLookupRef.current = null;
                   setQuery('');
                   setSuggestions([]);
                   setIsInputFocused(false);
@@ -871,11 +1194,7 @@ export const SearchScreen: React.FC<SearchScreenProps> = ({
           {/* Search Submit Button */}
           <TouchableOpacity
             style={styles.searchButton}
-            onPress={() => {
-              setIsInputFocused(false);
-              setSuggestions([]);
-              executeSearch(query, 'replace');
-            }}
+            onPress={submitQuery}
             activeOpacity={0.7}
           >
             <Search size={18} color="#FFFFFF" />
@@ -1298,7 +1617,7 @@ const styles = StyleSheet.create({
   contentWrapper: {
     flex: 1,
   },
-  searchBarWrapper: {
+  searchBarControls: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
@@ -1326,11 +1645,55 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#292D3B',
   },
-  searchInput: {
+  searchInputFocused: {
+    borderColor: 'rgba(245, 166, 35, 0.45)',
+  },
+  inlineQuery: {
     flex: 1,
+    height: '100%',
     marginLeft: 8,
+  },
+  inlineQueryContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexGrow: 1,
+  },
+  inlineQueryText: {
     color: Colors.dark.text,
     fontSize: 14,
+    lineHeight: 18,
+    includeFontPadding: false,
+    textAlignVertical: 'center',
+  },
+  inlineQueryEditor: {
+    justifyContent: 'center',
+    height: 28,
+    minWidth: 12,
+  },
+  inlineQueryEditorFill: {
+    flexGrow: 1,
+  },
+  inlineQueryMeasure: {
+    opacity: 0,
+    paddingRight: 2,
+  },
+  inlineQueryTagText: {
+    fontSize: 13,
+    fontWeight: '600',
+    paddingHorizontal: 10,
+  },
+  searchInput: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    lineHeight: undefined,
+    paddingVertical: 0,
+    marginVertical: 0,
+    textAlignVertical: 'center',
+    includeFontPadding: false,
+    outlineWidth: 0,
   },
   clearIcon: {
     padding: 4,
@@ -1431,6 +1794,19 @@ const styles = StyleSheet.create({
   },
   suggestionRow: {
     paddingVertical: 4,
+  },
+  creatorHeader: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  creatorSuggestion: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  creatorSuggestionTitle: {
+    color: Colors.dark.text,
+    fontSize: 14,
+    fontWeight: '600',
   },
   exploreScroll: {
     flex: 1,

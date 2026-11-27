@@ -1205,3 +1205,99 @@ test('PostPageItem Pornhub rejection triggers WebView immediately and HentaiHave
     await act(async () => { pageRoot.unmount(); });
   }
 });
+
+test('vertical dismiss drag locks horizontal pager and ignores drags started during horizontal scroll', async () => {
+  const nativeScrollCalls = [];
+  const panConfigs = [];
+  let closes = 0;
+  const load = createLoader({
+    react: React,
+    'react-native': {
+      ...Object.fromEntries(['ActivityIndicator', 'FlatList', 'Modal', 'ScrollView', 'Text', 'TextInput', 'TouchableOpacity', 'TouchableWithoutFeedback', 'View'].map((n) => [n, n])),
+      Dimensions: { get: () => ({ width: 390, height: 844 }) },
+      useWindowDimensions: () => ({ width: 390, height: 844 }),
+      StyleSheet: { create: (v) => v, absoluteFill: {} },
+      Animated: { Value: class { setValue() {} stopAnimation() {} interpolate() { return 1; } }, View: 'AnimatedView', timing: () => ({ start: (cb) => cb?.() }), spring: () => ({ start: (cb) => cb?.() }) },
+      PanResponder: {
+        create: (cfg) => {
+          panConfigs.push(cfg);
+          return { panHandlers: { __panCfg: cfg } };
+        },
+      },
+      BackHandler: { addEventListener: () => ({ remove() {} }) },
+      Platform: { OS: 'ios' }, Alert: { alert() {} }, Linking: {},
+    },
+    'react-native-safe-area-context': { useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) },
+    'expo-screen-orientation': { lockAsync: async () => {}, OrientationLock: { PORTRAIT_UP: 'portrait' } },
+    expo: { useEvent: (_t, _e, init) => init, useEventListener() {} },
+    'expo-file-system': {},
+    'expo-image': { Image: Object.assign((p) => React.createElement('Image', p), { prefetch: async () => {} }) },
+    'expo-video': {},
+    'expo-haptics': { impactAsync() {}, selectionAsync() {}, ImpactFeedbackStyle: {} },
+    'lucide-react-native': new Proxy({}, { get: (_, name) => String(name) }),
+    '../services/proxyService': { proxyService: { hasWorker: () => false, isProxiedUrl: () => false, forceProxyUrl: (u) => u } },
+    '../theme/colors': { Colors: { dark: { primary: '#6366F1' } } },
+    '../services/storage': { StorageService: { isFavorite: async () => false, getImageQuality: async () => 'auto' } },
+    './TagChip': {}, './PostInfoModal': { PostInfoModal: 'PostInfo' },
+    './WebmWebViewPlayer': { WebmWebViewPlayer: 'WebmWebViewPlayer' },
+    './PornhubWebViewResolver': {},
+    '../utils/media': {
+      isVideoPost: () => false, getMediaUrl: (u) => u, getMediaHeaders: () => ({}),
+      getImageCacheKey: (u) => u, isImageMediaUrl: () => true,
+      getImageUris: () => ({ sampleUri: 'https://ex.com/s.jpg', fullUri: 'https://ex.com/f.jpg', placeholderUri: '' }),
+      getVideoCandidates: () => [], isUnsupportedOnIOS: () => false,
+      resolveGelbooruOriginalUrl: async () => null, resolveRealbooruVideoUrls: async () => null,
+      selectRealbooruPlayable: () => null, resolveRealDimensions: async () => null,
+      resolveXVideosVideoUrls: async () => null, resolveXHamsterVideoUrls: async () => null,
+      resolvePornhubVideoUrls: async () => null, selectPrimaryVideoCandidate: () => null,
+      checkMp4UpgradeAvailable: async () => null,
+    },
+    '../services/sexcom': {}, '../services/hentaihavens': {}, '../services/nhentai': {},
+  });
+  const Viewer = load(path.resolve(__dirname, '../src/components/ImageViewerModal.tsx')).ImageViewerModal;
+  const options = {
+    createNodeMock: ({ type }) => type === 'FlatList' ? {
+      scrollToIndex() {},
+      scrollToOffset() {},
+      getNativeScrollRef: () => ({ setNativeProps: (p) => nativeScrollCalls.push(p) }),
+    } : null,
+  };
+  await act(async () => {
+    root = create(React.createElement(Viewer, {
+      posts: [post('a', '1'), post('a', '2')], initialIndex: 0, visible: true, asScreen: true,
+      onClose: () => { closes++; }, onTagPress() {},
+    }), options);
+  });
+  const flatList = root.root.findByType('FlatList');
+  assert.equal(flatList.props.directionalLockEnabled, true);
+  let pageRoot;
+  await act(async () => { pageRoot = create(flatList.props.renderItem({ item: post('a', '1'), index: 0 })); });
+  try {
+    const verticalCfg = pageRoot.root.findByType('AnimatedView').props.__panCfg;
+    assert.ok(verticalCfg, 'verticalPanResponder should attach to AnimatedView');
+    // Slight diagonal downward swipe (|dy| > |dx|) is captured by vertical dismiss
+    assert.equal(verticalCfg.onMoveShouldSetPanResponder({}, { dy: 12, dx: 10, numberActiveTouches: 1 }), true);
+    // Horizontal swipe already in progress blocks vertical dismiss
+    await act(async () => { flatList.props.onScrollBeginDrag(); });
+    assert.equal(verticalCfg.onMoveShouldSetPanResponder({}, { dy: 12, dx: 2, numberActiveTouches: 1 }), false);
+    await act(async () => { flatList.props.onScrollEndDrag(); });
+
+    // Granting vertical drag synchronously locks the horizontal FlatList
+    await act(async () => { verticalCfg.onPanResponderGrant({}, { dy: 10, dx: 2 }); });
+    assert.equal(nativeScrollCalls.at(-1)?.scrollEnabled, false);
+
+    // Releasing without dismiss unlocks the horizontal FlatList
+    await act(async () => { verticalCfg.onPanResponderRelease({}, { dy: 20, dx: 18, vy: 0.1 }); });
+    assert.equal(nativeScrollCalls.at(-1)?.scrollEnabled, true);
+    assert.equal(closes, 0);
+
+    // Full downward dismiss closes and releases the lock
+    await act(async () => { verticalCfg.onPanResponderGrant({}, { dy: 10, dx: 0 }); });
+    assert.equal(nativeScrollCalls.at(-1)?.scrollEnabled, false);
+    await act(async () => { verticalCfg.onPanResponderRelease({}, { dy: 120, dx: 30, vy: 0.7 }); });
+    assert.equal(closes, 1);
+    assert.equal(nativeScrollCalls.at(-1)?.scrollEnabled, true);
+  } finally {
+    await act(async () => { pageRoot.unmount(); });
+  }
+});

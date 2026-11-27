@@ -4,6 +4,7 @@ const path = require('node:path');
 const React = require('react');
 const { create, act } = require('react-test-renderer');
 const { createLoader } = require('./helpers/load-typescript.cjs');
+const { AVAILABLE_SOURCES } = createLoader()(path.resolve(__dirname, '../src/services/sources.ts'));
 global.IS_REACT_ACT_ENVIRONMENT = true;
 let root;
 afterEach(async () => { if (root) await act(() => root.unmount()); root = undefined; });
@@ -13,6 +14,7 @@ function setup(sourceOverride = {}, apiOverrides = {}) {
   const scrollHeader = require('./helpers/scroll-away-header.cjs').loadScrollAwayHeader();
   const source = { id: 'a', type: 'danbooru', name: 'A', ...sourceOverride };
   const requests = [];
+  const detailNavigations = [];
   const viewport = {};
   const navigation = { setParams() {}, navigate() {} };
   const load = createLoader({
@@ -42,7 +44,7 @@ function setup(sourceOverride = {}, apiOverrides = {}) {
     '../components/PostCard': { PostCard: 'PostCard' }, '../components/TagChip': { TagChip: 'TagChip' },
     '../components/SearchFilterModal': { SearchFilterModal: 'SearchFilterModal' },
     '../components/SourceSheet': { SourceSheet: 'SourceSheet' },
-    '../navigation/rootNavigation': { pushViewer() {} }, '../theme/colors': { Colors: { dark: {} } },
+    '../navigation/rootNavigation': { pushViewer() {}, pushSearchDetail: (...args) => detailNavigations.push(args) },
     '../utils/media': { getMediaUrl: (url) => url, getMediaHeaders: () => ({}), isVideoPost: () => false, isImageMediaUrl: (url) => !/\.(mp4|webm|mov|m4v|m3u8|mpd|zip)(?:\?|$)/i.test(String(url || '')) },
     '../utils/gridVisibility': {
       useVisibleIds: () => [new Set(), (_layouts, offset, height) => { viewport.visible = { offset, height }; }],
@@ -64,7 +66,7 @@ function setup(sourceOverride = {}, apiOverrides = {}) {
   return {
     Screen: load(path.resolve(__dirname, '../src/screens/SearchScreen.tsx')).SearchScreen,
     defaults: load(path.resolve(__dirname, '../src/types/booru.ts')).DEFAULT_FILTER_CONFIG,
-    requests, viewport, navigation, headerAnimations: scrollHeader.animations,
+    requests, detailNavigations, viewport, navigation, headerAnimations: scrollHeader.animations,
   };
 }
 const apply = async (defaults, tag) => act(async () => {
@@ -115,7 +117,9 @@ test('autocomplete replaces a partially quoted phrase, preserving its qualifier 
   const { Screen, requests } = setup({ id: 'nhentai', type: 'nhentai' }, {
     searchTags: async (query, limit, source, type) => {
       calls.push({ query, type, source: source.id });
-      return [completed];
+      return type === 'language'
+        ? [{ name: 'English', query: 'language:"english"', category: 'meta', postCount: 12 }]
+        : [completed];
     },
   });
   await act(async () => { root = create(React.createElement(Screen)); });
@@ -125,11 +129,179 @@ test('autocomplete replaces a partially quoted phrase, preserving its qualifier 
     input.props.onChangeText('language:english -group:"lunar pr');
   });
   await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
-  assert.deepEqual(calls, [{ query: 'lunar pr', type: 'group', source: 'nhentai' }]);
+  assert.deepEqual(calls, [
+    { query: 'lunar pr', type: 'group', source: 'nhentai' },
+    { query: 'english', type: 'language', source: 'nhentai' },
+  ]);
   const list = root.root.findAllByType('FlatList').find((node) => node.props.data?.[0] === completed);
   const suggestion = list.props.renderItem({ item: completed });
   await act(async () => suggestion.props.onPress());
   assert.deepEqual(Array.from(requests[0].filter.tags), ['language:english', '-group:"lunar press"']);
+
+  const selected = root.root.findAllByType('TagChip').filter((chip) => chip.props.onRemove);
+  assert.deepEqual(selected.map((chip) => chip.props.name), ['language:english', '-group:"lunar press"']);
+  assert.equal(selected[1].props.category, 'artist');
+  await act(async () => selected[1].props.onRemove());
+  assert.equal(root.root.findAllByType('TagChip').find((chip) => chip.props.onRemove).props.name, 'language:english');
+  assert.deepEqual(Array.from(requests[1].filter.tags), ['language:english']);
+});
+
+test('recognized text stays in the search field as a tag and can be removed without submitting', async () => {
+  const { Screen, requests } = setup({}, {
+    searchTags: async (query) => query === 'blue_sky'
+      ? [{ name: 'blue_sky', category: 'general', postCount: 42 }]
+      : [],
+  });
+  await act(async () => { root = create(React.createElement(Screen)); });
+  const input = root.root.findByType('TextInput');
+  const queryChips = () => root.root.findAllByType('TagChip').filter((chip) => chip.props.onRemove);
+  await act(async () => {
+    input.props.onFocus();
+    input.props.onChangeText('blue_sky');
+  });
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
+  assert.equal(input.props.value, 'blue_sky');
+  assert.ok(root.root.findByProps({ testID: 'search-query-active-tag' }).findByType('TextInput'));
+  assert.equal(queryChips().length, 0);
+
+  await act(async () => input.props.onChangeText('blue_sky "typing a phrase"'));
+  const editor = root.root.findAllByType('ScrollView').find((node) => node.findAllByType('TextInput').length);
+  const chip = editor.findByType('TagChip');
+  assert.equal(chip.props.name, 'blue_sky');
+  assert.equal(chip.props.inline, true);
+  assert.equal(input.props.value, '"typing a phrase"');
+  await act(async () => queryChips()[0].props.onRemove());
+  assert.equal(input.props.value, '"typing a phrase"');
+  assert.equal(queryChips().length, 0);
+  assert.equal(requests.length, 0);
+});
+
+const tagFixtures = {
+  gelbooru: ['landscape'],
+  yandere: ['landscape'],
+  danbooru: ['landscape'],
+  realbooru: ['cosplay'],
+  rule34: ['landscape'],
+  cumst: ['costume'],
+  redgifs: ['retro_costume'],
+  xvideos: ['tag:"retro costume"', 'Retro Costume'],
+  xhamster: ['tag:retro_costume', 'Retro Costume', '"retro costume"'],
+  pornhub: ['tag:"retro costume"', 'retro_costume'],
+  sexcom: [],
+  hentaihaven: ['genre:comedy', 'Comedy', 'tag:comedy'],
+  nhentai: ['-group:"lunar press"', 'Lunar Press', 'group:"lunar press"'],
+};
+
+for (const source of AVAILABLE_SOURCES) {
+  test(`${source.id} only marks source-confirmed inline tags`, async () => {
+    const [token, name = token, qualified] = tagFixtures[source.id];
+    const lookupRequests = [];
+    const { Screen, requests } = setup(source, {
+      searchTags: async (text, _limit, requestedSource) => {
+        lookupRequests.push({ text, source: requestedSource.id });
+        if (text === 'unknown_keyword') {
+          return source.id === 'cumst'
+            ? [{ name: text, category: 'artist', isTag: false, postCount: 20 }]
+            : [{ name: 'unknown_keyword_extended', query: 'unknown_keyword_extended', category: 'general', postCount: 20 }];
+        }
+        if (text === 'fake_filter' || !token) return [];
+        return [{ name, query: qualified, category: 'general', postCount: 5 }];
+      },
+    });
+    await act(async () => { root = create(React.createElement(Screen)); });
+    const input = root.root.findByType('TextInput');
+    const inlineTags = () => root.root.findAllByType('TagChip').filter((chip) => chip.props.inline);
+    const query = [token, 'unknown_keyword', 'tag:fake_filter', 'sort:score'].filter(Boolean).join(' ');
+    await act(async () => {
+      input.props.onFocus();
+      input.props.onChangeText(query);
+    });
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
+    assert.deepEqual(inlineTags().map((chip) => chip.props.name), token ? [token] : []);
+    assert.match(input.props.value, /unknown_keyword tag:fake_filter sort:score$/);
+    assert.ok(lookupRequests.every((request) => request.source === source.id));
+    assert.equal(lookupRequests.some((request) => request.text === 'sort:score'), false);
+    await act(async () => input.props.onSubmitEditing());
+    assert.deepEqual(Array.from(requests[0].filter.tags), [token, 'unknown_keyword', 'tag:fake_filter', 'sort:score'].filter(Boolean));
+    assert.deepEqual(inlineTags().map((chip) => chip.props.name), token ? [token] : []);
+  });
+}
+
+test('switching sources discards a pending exact tag lookup for the old source', async () => {
+  const oldLookups = [];
+  const { Screen } = setup({}, {
+    searchTags: (_text, _limit, source) => source.id === 'first'
+      ? new Promise((resolve) => { oldLookups.push(resolve); })
+      : Promise.resolve([]),
+  });
+  const first = AVAILABLE_SOURCES.find((source) => source.id === 'gelbooru');
+  const second = AVAILABLE_SOURCES.find((source) => source.id === 'danbooru');
+  await act(async () => { root = create(React.createElement(Screen, { activeSource: { ...first, id: 'first' } })); });
+  const input = root.root.findByType('TextInput');
+  await act(async () => input.props.onChangeText('landscape elsewhere'));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
+  assert.equal(oldLookups.length, 2);
+  await act(async () => root.update(React.createElement(Screen, { activeSource: second })));
+  await act(async () => {
+    for (const resolve of oldLookups) resolve([{ name: 'landscape', category: 'general', postCount: 10 }]);
+  });
+  assert.equal(input.props.value, 'landscape elsewhere');
+  assert.equal(root.root.findAllByType('TagChip').some((chip) => chip.props.inline), false);
+});
+
+const creatorFixture = { id: '17', service: 'patreon', name: 'studio_name', displayName: 'Studio Name', postCount: 8 };
+
+test('Cum.st opens a creator profile for a full-name suggestion or an exact typed handle', async () => {
+  const lookupTerms = [];
+  const source = AVAILABLE_SOURCES.find((entry) => entry.id === 'cumst');
+  const suggestion = { name: creatorFixture.name, category: 'artist', isTag: false, cumstCreator: creatorFixture };
+  const { Screen, requests, detailNavigations } = setup(source, {
+    searchTags: async (term, _limit, _source, type) => {
+      lookupTerms.push([term, type]);
+      return type === 'creator' && term === 'Studio Na' ? [suggestion] : [];
+    },
+    findCumStCreator: async (_source, term) => term === '@studio_name' ? creatorFixture : undefined,
+  });
+  await act(async () => { root = create(React.createElement(Screen)); });
+  const input = root.root.findByType('TextInput');
+  await act(async () => input.props.onChangeText('Studio Na'));
+  await act(async () => new Promise((resolve) => setTimeout(resolve, 300)));
+  assert.ok(lookupTerms.some(([term, type]) => term === 'Studio Na' && type === 'creator'));
+  const dropdown = root.root.findAllByType('FlatList').find((node) => node.props.data?.[0] === suggestion);
+  const row = dropdown.props.renderItem({ item: suggestion });
+  assert.match(row.props.accessibilityLabel, /Open creator Studio Name/);
+  await act(async () => row.props.onPress());
+  assert.equal(detailNavigations[0][1].cumstCreator.id, '17');
+  assert.equal(detailNavigations[0][2].id, 'cumst');
+  assert.equal(requests.length, 0);
+
+  await act(async () => input.props.onChangeText('@studio_name'));
+  await act(async () => input.props.onSubmitEditing());
+  assert.equal(detailNavigations[1][1].cumstCreator.id, '17');
+  assert.equal(requests.length, 0);
+
+  await act(async () => input.props.onChangeText('ordinary keyword'));
+  await act(async () => input.props.onSubmitEditing());
+  assert.deepEqual(Array.from(requests[0].filter.tags), ['ordinary', 'keyword']);
+  assert.equal(detailNavigations.length, 2);
+});
+
+test('Cum.st profile header and searches keep the same creator scope', async () => {
+  const source = AVAILABLE_SOURCES.find((entry) => entry.id === 'cumst');
+  const { Screen, defaults, requests } = setup(source);
+  await act(async () => {
+    root = create(React.createElement(Screen, {
+      initialFilter: { ...defaults, cumstCreator: creatorFixture },
+      onBackPress() {},
+    }));
+  });
+  assert.equal(root.root.findByProps({ accessibilityRole: 'header' }).props.children, 'Studio Name');
+  assert.equal(requests[0].filter.cumstCreator.id, '17');
+  const input = root.root.findByProps({ accessibilityLabel: 'Search creator posts' });
+  await act(async () => input.props.onChangeText('preview'));
+  await act(async () => input.props.onSubmitEditing());
+  assert.equal(requests[1].filter.cumstCreator.id, '17');
+  assert.deepEqual(Array.from(requests[1].filter.tags), ['preview']);
 });
 
 test('stale search rejection/finally cannot replace a newer search or clear its loader', async () => {
@@ -276,7 +448,7 @@ test('SearchDetail bottom padding includes safe-area bottom inset and suggestion
     '../components/PostCard': { PostCard: 'PostCard' }, '../components/TagChip': { TagChip: 'TagChip' },
     '../components/SearchFilterModal': { SearchFilterModal: 'SearchFilterModal' },
     '../components/SourceSheet': { SourceSheet: 'SourceSheet' },
-    '../navigation/rootNavigation': { pushViewer() {} }, '../theme/colors': { Colors: { dark: {} } },
+    '../navigation/rootNavigation': { pushViewer() {} },
     '../utils/media': { getMediaUrl: (url) => url, getMediaHeaders: () => ({}), isVideoPost: () => false, isImageMediaUrl: () => true },
     '../utils/gridVisibility': {
       useVisibleIds: () => [new Set(), () => {}],
@@ -302,4 +474,20 @@ test('SearchDetail bottom padding includes safe-area bottom inset and suggestion
   const resultsScroll = root.root.findAllByType('ScrollView').find((n) => n.props.onScroll);
   const bottomStyle = resultsScroll.props.contentContainerStyle.filter((s) => s && typeof s.paddingBottom === 'number').at(-1);
   assert.equal(bottomStyle.paddingBottom, 64);
+});
+
+test('inline search query aligns tag chips and normal search input on the same 28px vertical centerline', async () => {
+  const { Screen } = setup();
+  await act(async () => { root = create(React.createElement(Screen)); });
+  const inlineScroll = root.root.findAllByType('ScrollView').find((node) => node.findAllByType('TextInput').length);
+  assert.equal(inlineScroll.props.style.height, '100%');
+  assert.equal(inlineScroll.props.contentContainerStyle.alignItems, 'center');
+  assert.equal(inlineScroll.props.contentContainerStyle.flexDirection, 'row');
+  const input = inlineScroll.findByType('TextInput');
+  const inputStyles = Object.assign({}, ...input.props.style.filter(Boolean));
+  assert.equal(inputStyles.lineHeight, undefined);
+  assert.equal(inputStyles.textAlignVertical, 'center');
+  const editorView = inlineScroll.findAllByType('View').find((node) => node.findAllByType('TextInput').length);
+  const editorStyles = Object.assign({}, ...editorView.props.style.filter(Boolean));
+  assert.equal(editorStyles.height, 28);
 });

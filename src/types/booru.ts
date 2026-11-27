@@ -66,6 +66,17 @@ export interface BooruTagSuggestion {
   category: TagCategory;
   postCount: number;
   query?: string;
+  /** Set by sources whose suggestions also contain people or free-text searches. */
+  isTag?: boolean;
+  cumstCreator?: CumstCreator;
+}
+
+export interface CumstCreator {
+  id: string;
+  service: string;
+  name: string;
+  displayName?: string;
+  postCount: number;
 }
 
 export interface RedGifsNiche {
@@ -113,6 +124,7 @@ export interface SearchFilterConfig {
   user?: string;
   cumstService?: CumstServiceOption;
   cumstMediaType?: CumstMediaTypeOption;
+  cumstCreator?: CumstCreator;
   leaderboardDate?: string;
   jumpToPage: number;
   includeBlacklisted: boolean;

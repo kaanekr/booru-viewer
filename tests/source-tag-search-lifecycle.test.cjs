@@ -8,7 +8,7 @@ const XH_INITIALS = (data) => `<script id="initials-script">window.initials=${JS
 const XH_LISTING = '<div data-video-id="42"><a href="/videos/test-42" data-role="thumb-link"></a><img src="https://img.test/preview.jpg"></div>';
 
 function setup(fetchWithFallback) {
-  const proxyService = { fetchWithFallback };
+  const proxyService = { fetchWithFallback, ensureInitialized: async () => {}, isEnabled: () => false };
   const load = createLoader({
     './proxyService': { proxyService },
     '../services/proxyService': { proxyService },
@@ -61,6 +61,80 @@ test('Realbooru preserves compound listing tags and searches the native undersco
 
   await api.fetchPostsWithFilter(filter([sourceTagQuery(rb.type, post.tags.general[0], 'general')]), 1, 24, rb);
   assert.equal(requests.at(-1).searchParams.get('tags'), 'brown_eyes');
+});
+
+test('Cum.st distinguishes creator suggestions from real tags', async () => {
+  const { api, source } = setup(async (url) => {
+    if (new URL(url).pathname === '/api/v1/creators') {
+      return Response.json({ creators: [{ id: '17', service: 'patreon', name: 'costumeartist', displayName: 'Costume Artist', postCount: 10 }] });
+    }
+    assert.equal(new URL(url).pathname, '/api/v1/tags');
+    return Response.json({ tags: [{ slug: 'costume', label: 'Costume', posts: 5 }] });
+  });
+  const tags = await api.searchTags('costume', 12, source('cumst'));
+  assert.deepEqual(Array.from(tags, ({ name, isTag }) => [name, isTag]), [
+    ['costume', undefined],
+    ['costumeartist', false],
+  ]);
+  assert.equal(tags[1].cumstCreator.id, '17');
+  assert.equal((await api.searchTags('costume', 1, source('cumst')))[0].name, 'costume');
+});
+
+test('Cum.st resolves exact creators and paginates their own post feed by platform and ID', async () => {
+  const calls = [];
+  const { api, source, filter } = setup(async (url) => {
+    const parsed = new URL(url);
+    calls.push(parsed);
+    if (parsed.pathname === '/api/v1/creators') {
+      return Response.json({ creators: [
+        { id: '17', service: 'patreon', name: 'studio_name', displayName: 'Studio Name', postCount: 2 },
+        { id: '32', service: 'fansly', name: 'studio_name_alt', displayName: 'Other Studio', postCount: 5 },
+      ] });
+    }
+    return Response.json({
+      posts: [{
+        id: '456',
+        service: 'patreon',
+        attachments: [{ sha256: 'abc123', kind: 'image', variants: [{ name: 'original.jpg' }] }],
+      }],
+    });
+  });
+  const cumst = source('cumst');
+  const creator = await api.findCumStCreator(cumst, '@studio_name');
+  assert.equal(creator.id, '17');
+  assert.equal(calls[0].searchParams.get('q'), 'studio_name');
+  assert.equal((await api.findCumStCreator(cumst, 'Studio Name')).id, '17');
+  assert.equal(await api.findCumStCreator(cumst, 'studio'), undefined);
+
+  const [post] = await api.fetchPostsWithFilter(filter(['creator:"Studio Name"']), 1, 50, cumst);
+  assert.equal(calls.at(-1).pathname, '/api/v1/patreon/user/17/posts');
+  assert.equal(calls.at(-1).searchParams.has('q'), false);
+  assert.equal(post.sourceLink, 'https://cum.st/creators/patreon/17/post/456');
+  assert.deepEqual(Array.from(post.tags.artist), ['studio_name']);
+
+  const before = calls.length;
+  await api.fetchPostsWithFilter({ ...filter(['"costume preview"']), cumstCreator: creator, cumstMediaType: 'videos' }, 2, 50, cumst);
+  assert.equal(calls.length, before + 1);
+  assert.equal(calls.at(-1).pathname, '/api/v1/patreon/user/17/posts');
+  assert.equal(calls.at(-1).searchParams.get('o'), '50');
+  assert.equal(calls.at(-1).searchParams.get('q'), 'costume preview');
+  assert.equal(calls.at(-1).searchParams.get('type'), 'videos');
+});
+
+test('RedGifs only identifies tag-type API suggestions as tags', async () => {
+  const { api, source } = setup(async (url) => {
+    if (new URL(url).pathname === '/v2/auth/temporary') return Response.json({ token: 'test-token' });
+    assert.equal(new URL(url).pathname, '/v2/search/suggest');
+    return Response.json([
+      { text: 'Example Tag', type: 'tag', gifs: 5 },
+      { text: 'Example User', type: 'user', gifs: 2 },
+    ]);
+  });
+  const tags = await api.searchTags('example', 12, source('redgifs'));
+  assert.deepEqual(Array.from(tags, ({ name, isTag }) => [name, isTag]), [
+    ['example_tag', true],
+    ['example_user', false],
+  ]);
 });
 
 test('XHamster uses its related searches and keeps the multiword term on later pages', async () => {

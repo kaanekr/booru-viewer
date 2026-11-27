@@ -500,7 +500,7 @@ export const PostInfoModal: React.FC<PostInfoModalProps> = React.memo(({
       !post.width ||
       !post.height ||
       !post.fileSize;
-    if (!looksPlaceholder || !post.sourceLink) return;
+    if (!looksPlaceholder || (!post.sourceLink && post.sourceId !== 'gelbooru')) return;
     let mounted = true;
     resolveRealDimensions(post).then((dims) => {
       if (!mounted) return;

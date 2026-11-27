@@ -15,6 +15,23 @@ const NEGATIVE_RESOLVE_TTL_MS = 60_000;
 const DIMS_CACHE = new LruCache<string, { w: number; h: number; bytes?: number }>(RESOLVE_CACHE_MAX);
 const DIMS_IN_FLIGHT = new Map<string, Promise<{ w: number; h: number; bytes?: number } | null>>();
 const NON_IMAGE_DETAIL_SOURCES = new Set(['pornhub', 'xvideos', 'xhamster', 'sexcom', 'redgifs', 'hentaihaven', 'nhentai']);
+const GELBOORU_ORIGIN = 'https://gelbooru.com';
+
+function getImagePostPageUrl(post: { id?: string; sourceId?: string; sourceLink?: string }): string | undefined {
+  if (post.sourceId !== 'gelbooru') return post.sourceLink;
+
+  // The API's source field is artist attribution and can point to an external site.
+  const id = post.id?.match(/^(?:gelbooru_)?(\d+)$/)?.[1];
+  if (id) return `${GELBOORU_ORIGIN}/index.php?page=post&s=view&id=${id}`;
+
+  const query = post.sourceLink?.match(/^https?:\/\/(?:www\.)?gelbooru\.com\/index\.php\?([^#]+)/i)?.[1];
+  if (!query) return undefined;
+  const params = new URLSearchParams(query.replace(/&amp;/gi, '&'));
+  const linkedId = params.get('id');
+  if (params.get('page') === 'post' && params.get('s') === 'view' && linkedId && /^\d+$/.test(linkedId)) {
+    return `${GELBOORU_ORIGIN}/index.php?page=post&s=view&id=${linkedId}`;
+  }
+}
 
 function readImageFileSize(html: string): number | undefined {
   const whitespace = /\s/;
@@ -61,7 +78,7 @@ export async function resolveRealDimensions(post: {
     ? getPostKey({ sourceId: post.sourceId, id: post.id })
     : post.sourceLink || post.originalUrl || '';
   if (cacheKey && DIMS_CACHE.has(cacheKey)) return DIMS_CACHE.get(cacheKey)!;
-  const pageUrl = post.sourceLink;
+  const pageUrl = getImagePostPageUrl(post);
   if (!pageUrl || typeof pageUrl !== 'string' || !/^https?:\/\//i.test(pageUrl)) return null;
   const dedupKey = cacheKey || pageUrl;
   return getOrDedup(DIMS_IN_FLIGHT, dedupKey, async () => {
@@ -303,6 +320,24 @@ export function getImageCacheKey(url: string | undefined): string {
 const ORIGINAL_RESOLVE_CACHE = new LruCache<string, string | null>(RESOLVE_CACHE_MAX);
 const ORIGINAL_IN_FLIGHT = new Map<string, Promise<string | null>>();
 
+function resolveGelbooruPageImage(html: string): string | null {
+  const originalPath = /^(?:https?:\/\/(?:[a-z0-9-]+\.)*gelbooru\.com)?\/+images\/[^\s<>]+$/i;
+  const links = Array.from(html.matchAll(/<a\b[^>]*\shref=["']([^"']+)["']/gi), (match) => match[1]);
+  const ogImage = html.match(/<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i)?.[1];
+  const imageTag = html.match(/<img\b[^>]*\sid=["']image["'][^>]*>/i)?.[0];
+  const mainImage = imageTag?.match(/\ssrc=["']([^"']+)["']/i)?.[1];
+
+  for (const raw of [...links, ogImage, mainImage]) {
+    if (!raw) continue;
+    const url = raw.trim().replace(/&amp;/gi, '&');
+    const absolute = url.startsWith('//') ? `https:${url}` : url;
+    if (originalPath.test(absolute)) {
+      return absolute.startsWith('/') ? `${GELBOORU_ORIGIN}${absolute}` : absolute;
+    }
+  }
+  return null;
+}
+
 export async function resolveGelbooruOriginalUrl(
   post: {
     id?: string;
@@ -317,9 +352,10 @@ export async function resolveGelbooruOriginalUrl(
   if (post.originalUrl && post.originalUrl !== post.sampleUrl) {
     return post.originalUrl;
   }
-  if (!post.sourceLink) return post.originalUrl || null;
+  const pageUrl = getImagePostPageUrl(post);
+  if (!pageUrl) return post.originalUrl || null;
 
-  const cacheKey = post.sourceLink;
+  const cacheKey = pageUrl;
   if (ORIGINAL_RESOLVE_CACHE.has(cacheKey)) {
     return ORIGINAL_RESOLVE_CACHE.get(cacheKey) ?? null;
   }
@@ -333,13 +369,19 @@ export async function resolveGelbooruOriginalUrl(
     }
 
     try {
-      const response = await proxyService.fetchWithFallback(post.sourceLink!, {
-        headers: getMediaHeaders(post.sourceLink!),
+      const response = await proxyService.fetchWithFallback(pageUrl, {
+        headers: getMediaHeaders(pageUrl),
         signal: ctrl.signal,
       });
       clearTimeout(timeout);
       if (!response.ok) throw new Error(`Post view status ${response.status}`);
       const html = await response.text();
+
+      if (post.sourceId === 'gelbooru') {
+        const resolved = resolveGelbooruPageImage(html);
+        ORIGINAL_RESOLVE_CACHE.set(cacheKey, resolved, resolved ? undefined : NEGATIVE_RESOLVE_TTL_MS);
+        return resolved;
+      }
 
       // 1) Look for the "Original image" or "View larger size" link
       const originalLinkMatch =
@@ -374,8 +416,8 @@ export async function resolveGelbooruOriginalUrl(
         if (resolved.startsWith('//')) {
           resolved = `https:${resolved}`;
         } else if (resolved.startsWith('/')) {
-          const baseMatch = post.sourceLink!.match(/^https?:\/\/[^/]+/i);
-          const base = baseMatch ? baseMatch[0] : 'https://gelbooru.com';
+          const baseMatch = pageUrl.match(/^https?:\/\/[^/]+/i);
+          const base = baseMatch ? baseMatch[0] : GELBOORU_ORIGIN;
           resolved = `${base}${resolved}`;
         }
         ORIGINAL_RESOLVE_CACHE.set(cacheKey, resolved);
