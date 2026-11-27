@@ -7,6 +7,14 @@ import type { BooruSource } from '../types/booru';
 import { useSource } from '../context/SourceContext';
 import { SourceCatalog, SourceMark, sourcePresentation } from '../components/SourceCatalog';
 import { PasscodeModal } from '../components/PasscodeModal';
+import { SiteLoginModal } from '../components/SiteLoginModal';
+import {
+  clearSiteSession,
+  hasSiteSession,
+  initSiteSessions,
+  subscribeSiteSessions,
+  supportsSiteAccount,
+} from '../services/siteSession';
 import { SettingsButton, SettingsRow, SettingsSection, settingsStyles as ui } from './settings/SettingsUI';
 import { useSettings } from './settings/useSettings';
 import { CACHE_LIMIT_PRESETS_MB, MIN_CACHE_LIMIT_MB } from '../services/storage';
@@ -49,6 +57,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: pr
   const insets = useSafeAreaInsets();
   const [pages, setPages] = useState<Page[]>(['home']);
   const [configuringSource, setConfiguringSource] = useState<BooruSource>(activeSource);
+  const [siteLoginSource, setSiteLoginSource] = useState<BooruSource | null>(null);
+  const [, setSiteSessionTick] = useState(0);
+  useEffect(() => {
+    void initSiteSessions();
+    return subscribeSiteSessions(() => setSiteSessionTick((n) => n + 1));
+  }, []);
   const page = pages[pages.length - 1];
   const open = useCallback(
     (next: Page) =>
@@ -179,11 +193,53 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: pr
           {isSaved && <Text accessibilityLiveRegion="polite" style={ui.status}>Saved — {source.id === 'rule34' ? 'Rule34' : 'Gelbooru'} requests use your key</Text>}
         </View>
       </SettingsSection>}
+      {supportsSiteAccount(source) && (() => {
+        const isSignedIn = hasSiteSession(source.id);
+        return (
+          <SettingsSection
+            title="Account"
+            hint={`Sessions are stored locally on this device. Your ${source.name} Recommended feed, searches, and watched videos use this account.`}
+          >
+            <View style={ui.form}>
+              <View style={styles.authHeading}>
+                <KeyRound size={18} color="#A0A7F5" />
+                <Text style={styles.formTitle}>
+                  {isSignedIn ? `Connected to ${source.name}` : `Sign in to ${source.name}`}
+                </Text>
+              </View>
+              <Text style={ui.hint}>
+                {isSignedIn
+                  ? `Your ${source.name} session is active. Tap Manage Account to refresh your login or Sign Out to disconnect.`
+                  : `Sign in once to enable your ${source.name} Recommended feed, authenticated search, and watch history.`}
+              </Text>
+              <View style={ui.actions}>
+                <SettingsButton
+                  title={isSignedIn ? 'Manage Account' : `Sign In to ${source.name}`}
+                  onPress={() => setSiteLoginSource(source)}
+                />
+                {isSignedIn ? (
+                  <SettingsButton
+                    title="Sign Out"
+                    secondary
+                    danger
+                    onPress={() => { void clearSiteSession(source); }}
+                  />
+                ) : null}
+              </View>
+              {isSignedIn && (
+                <Text accessibilityLiveRegion="polite" style={ui.status}>
+                  Signed in — {source.name} uses your account
+                </Text>
+              )}
+            </View>
+          </SettingsSection>
+        );
+      })()}
       <SettingsSection title="Source details">
         <SettingsRow title="Website" subtitle={source.baseUrl.replace(/^https?:\/\//, '')} onPress={() => openWebsite(source.id === 'rule34' ? 'https://rule34.xxx' : source.baseUrl)} />
         <SettingsRow title="Connection settings" subtitle="App-wide relay & connection diagnostics" icon={icon(Radio)} onPress={() => open('network')} last />
       </SettingsSection>
-      {!authId && <View style={ui.note}><Text style={ui.hint}>No manual API key is needed for this source. Connection preferences apply across all sources.</Text></View>}
+      {!authId && !supportsSiteAccount(source) && <View style={ui.note}><Text style={ui.hint}>No manual API key is needed for this source. Connection preferences apply across all sources.</Text></View>}
     </>;
   };
 
@@ -353,6 +409,14 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ activeSource: pr
       </AnimatedView>
     </ScrollView>}
     <PasscodeModal visible={settings.passcodeModalVisible} mode={settings.passcodeModalMode} onClose={settings.closePasscode} onSuccess={settings.refreshSecurity} />
+    {siteLoginSource && (
+      <SiteLoginModal
+        visible={!!siteLoginSource}
+        source={siteLoginSource}
+        onClose={() => setSiteLoginSource(null)}
+        onSessionChanged={() => setSiteLoginSource(null)}
+      />
+    )}
   </KeyboardAvoidingView>;
 };
 

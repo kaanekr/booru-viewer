@@ -36,6 +36,8 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebView>(null);
   const capturedTokenRef = useRef<string>('');
+  const capturedFeedUrlRef = useRef<string>('');
+  const [tokenCaptured, setTokenCaptured] = useState(false);
   const [loadError, setLoadError] = useState<{ code?: number; description?: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const loginUrl = useMemo(() => getSiteLoginUrl(source), [source]);
@@ -45,9 +47,78 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
     if (visible) {
       setLoadError(null);
       setSaving(false);
+      setTokenCaptured(false);
       capturedTokenRef.current = '';
+      capturedFeedUrlRef.current = '';
     }
   }, [visible, loginUrl]);
+
+  const redgifsHookBefore = useMemo(() => {
+    if (source.type !== 'redgifs') return undefined;
+    return `(function(){
+      if (window.__rgLoginHooked) return;
+      window.__rgLoginHooked = true;
+      function isUserJwt(tok) {
+        try {
+          if (!tok || tok.split('.').length !== 3) return false;
+          var p = JSON.parse(atob(tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+          if (!p) return false;
+          var sub = String(p.sub || '').toLowerCase();
+          if (sub === 'temporary' || sub.indexOf('temp') === 0 || sub === 'guest') return false;
+          return Boolean(sub || p.uid || p.user || p.userId || p.addr);
+        } catch (e) { return false; }
+      }
+      function report(tok, feedUrl) {
+        try {
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            rgToken: tok || '',
+            rgFeedUrl: feedUrl || ''
+          }));
+        } catch (e) {}
+      }
+      function inspectReq(reqUrl, authHeader) {
+        var tok = String(authHeader || '').replace(/^Bearer\\s+/i, '').trim();
+        var userTok = isUserJwt(tok) ? tok : '';
+        var isFeed = typeof reqUrl === 'string' && reqUrl.indexOf('api.redgifs.com/v2/') >= 0 &&
+          (reqUrl.indexOf('/feeds/') >= 0 || reqUrl.indexOf('/gifs/search') >= 0 || reqUrl.indexOf('/explore') >= 0);
+        if (userTok || isFeed) {
+          report(userTok, isFeed ? reqUrl : '');
+        }
+      }
+      var origFetch = window.fetch;
+      if (typeof origFetch === 'function') {
+        window.fetch = function(input, init) {
+          try {
+            var reqUrl = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+            var auth = '';
+            var hdrs = init && init.headers;
+            if (hdrs) {
+              if (typeof hdrs.get === 'function') auth = hdrs.get('Authorization') || hdrs.get('authorization') || '';
+              else auth = hdrs.Authorization || hdrs.authorization || '';
+            } else if (input && input.headers && typeof input.headers.get === 'function') {
+              auth = input.headers.get('Authorization') || input.headers.get('authorization') || '';
+            }
+            if (reqUrl && reqUrl.indexOf('api.redgifs.com') >= 0) inspectReq(reqUrl, auth);
+          } catch (e) {}
+          return origFetch.apply(this, arguments);
+        };
+      }
+      if (window.XMLHttpRequest) {
+        var origOpen = XMLHttpRequest.prototype.open;
+        var origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+        XMLHttpRequest.prototype.open = function(m, u) {
+          this.__rgU = String(u || '');
+          return origOpen.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
+          if (String(k || '').toLowerCase() === 'authorization' && this.__rgU && this.__rgU.indexOf('api.redgifs.com') >= 0) {
+            inspectReq(this.__rgU, v);
+          }
+          return origSetHeader.apply(this, arguments);
+        };
+      }
+    })(); true;`;
+  }, [source.type]);
 
   const tokenProbeScript = useMemo(() => {
     if (source.type !== 'redgifs') return '';
@@ -62,7 +133,8 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
             var m = v.match(/eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}/);
             if (m) {
               var p = JSON.parse(atob(m[0].split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-              if (p && p.sub && !/^temp/i.test(String(p.sub))) {
+              var sub = String((p && p.sub) || '').toLowerCase();
+              if (p && sub !== 'temporary' && sub.indexOf('temp') !== 0 && sub !== 'guest') {
                 window.ReactNativeWebView.postMessage(JSON.stringify({ rgToken: m[0] }));
                 return;
               }
@@ -80,11 +152,14 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
       if (tokenProbeScript) {
         try {
           webViewRef.current?.injectJavaScript(tokenProbeScript);
-          await new Promise((r) => setTimeout(r, 150));
+          await new Promise((r) => setTimeout(r, 180));
         } catch {}
       }
-      if (capturedTokenRef.current) {
-        await saveSiteSession(source.id, { bearerToken: capturedTokenRef.current });
+      if (capturedTokenRef.current || capturedFeedUrlRef.current) {
+        await saveSiteSession(source.id, {
+          ...(capturedTokenRef.current ? { bearerToken: capturedTokenRef.current } : {}),
+          ...(capturedFeedUrlRef.current ? { feedUrl: capturedFeedUrlRef.current } : {}),
+        });
       }
       await captureNativeSiteCookies(source);
     } finally {
@@ -119,7 +194,7 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
           </TouchableOpacity>
           <View style={styles.modalTitleGroup}>
             <Text style={styles.modalTitle} numberOfLines={1}>
-              {source.name}
+              {tokenCaptured ? `${source.name} · Connected` : source.name}
             </Text>
           </View>
           {signedIn && (
@@ -155,11 +230,16 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
             automaticallyAdjustContentInsets={false}
             contentInsetAdjustmentBehavior="never"
             setSupportMultipleWindows={false}
+            injectedJavaScriptBeforeContentLoaded={redgifsHookBefore}
             onMessage={(e) => {
               try {
                 const parsed = JSON.parse(e.nativeEvent.data);
                 if (typeof parsed?.rgToken === 'string' && parsed.rgToken) {
                   capturedTokenRef.current = parsed.rgToken;
+                  setTokenCaptured(true);
+                }
+                if (typeof parsed?.rgFeedUrl === 'string' && parsed.rgFeedUrl) {
+                  capturedFeedUrlRef.current = parsed.rgFeedUrl;
                 }
               } catch {}
             }}

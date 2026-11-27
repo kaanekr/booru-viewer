@@ -1430,14 +1430,30 @@ export class BooruApiService {
     const sess = getSiteSession();
     await sess?.initSiteSessions?.();
     const searchUsername = filter?.user?.trim() || tokenUsername;
-    const usePersonalizedHome =
-      filter?.sortBy === 'recommended' && !searchUsername && !nicheId && !includeTags && Boolean(sess?.getSiteBearerToken?.('redgifs'));
+    const redgifsUserToken = sess?.getSiteBearerToken?.('redgifs') || '';
+    const redgifsFeedUrl = sess?.getSiteFeedUrl?.('redgifs') || '';
+    const isRecommendedFeed = filter?.sortBy === 'recommended' && !searchUsername && !nicheId && !includeTags;
+    if (isRecommendedFeed && !redgifsUserToken) {
+      throw new Error('Sign in to RedGifs in Settings → Sources to load your personalized feed.');
+    }
+    const buildCapturedFeedPageUrl = (rawUrl: string, targetPage: number, targetCount: number): string => {
+      try {
+        const u = new URL(rawUrl);
+        u.searchParams.set('page', String(targetPage));
+        if (!u.searchParams.has('count')) u.searchParams.set('count', String(targetCount));
+        return u.toString();
+      } catch {
+        return `https://api.redgifs.com/v2/feeds/home?page=${targetPage}&count=${targetCount}`;
+      }
+    };
     const searchUrl = searchUsername
       ? `https://api.redgifs.com/v2/users/${encodeURIComponent(searchUsername)}/search?page=${page}&count=${count}&order=latest&type=g`
       : nicheId
       ? `https://api.redgifs.com/v2/niches/${encodeURIComponent(nicheId)}/gifs?count=${count}&page=${page}`
-      : usePersonalizedHome
-      ? `https://api.redgifs.com/v2/feeds/home?page=${page}&count=${count}`
+      : isRecommendedFeed
+      ? (redgifsFeedUrl
+          ? buildCapturedFeedPageUrl(redgifsFeedUrl, page, count)
+          : `https://api.redgifs.com/v2/feeds/home?page=${page}&count=${count}`)
       : includeTags
       ? `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}&tags=${encodeURIComponent(includeTags)}`
       : `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}`;

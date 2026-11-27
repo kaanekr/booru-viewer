@@ -33,8 +33,13 @@ test('siteSession stores and clears cookies/bearer tokens and reads native WKHTT
   assert.equal(session.hasSiteSession('pornhub'), true);
   assert.equal(session.getSiteCookieHeader('pornhub'), 'ss=abc; platform=mobile');
 
-  await session.saveSiteSession('redgifs', { bearerToken: 'eyJuser.token.sig' });
+  await session.saveSiteSession('redgifs', {
+    bearerToken: 'eyJuser.token.sig',
+    feedUrl: 'https://api.redgifs.com/v2/feeds/home?sexuality=gay&page=1',
+  });
+  assert.equal(session.hasSiteSession('redgifs'), true);
   assert.equal(session.getSiteBearerToken('redgifs'), 'eyJuser.token.sig');
+  assert.equal(session.getSiteFeedUrl('redgifs'), 'https://api.redgifs.com/v2/feeds/home?sexuality=gay&page=1');
 
   await session.clearSiteSession(ph);
   assert.equal(session.hasSiteSession('pornhub'), false);
@@ -80,6 +85,7 @@ test('booruApi uses pure fetch with saved session Cookie for Pornhub/XHamster Re
       initSiteSessions: async () => {},
       getSiteCookieHeader: (id) => (id === 'pornhub' ? 'ss=my_session' : ''),
       getSiteBearerToken: (id) => (id === 'redgifs' ? 'my_rg_jwt' : ''),
+      getSiteFeedUrl: (id) => (id === 'redgifs' ? 'https://api.redgifs.com/v2/feeds/home?sexuality=gay&page=1' : ''),
       saveSiteSession: async () => {},
     },
   });
@@ -95,9 +101,9 @@ test('booruApi uses pure fetch with saved session Cookie for Pornhub/XHamster Re
   assert.match(requests[0].headers.Cookie, /ss=my_session/);
 
   const rgSource = AVAILABLE_SOURCES.find((s) => s.id === 'redgifs');
-  const rgPosts = await api.fetchPosts(1, 24, '', { ...DEFAULT_FILTER_CONFIG, sortBy: 'recommended' }, rgSource);
+  const rgPosts = await api.fetchPosts(2, 24, '', { ...DEFAULT_FILTER_CONFIG, sortBy: 'recommended' }, rgSource);
   assert.equal(rgPosts.length, 1);
   assert.equal(rgPosts[0].id, 'rg_rg1');
-  assert.equal(requests[1].url, 'https://api.redgifs.com/v2/feeds/home?page=1&count=24');
+  assert.equal(requests[1].url, 'https://api.redgifs.com/v2/feeds/home?sexuality=gay&page=2&count=24');
   assert.equal(requests[1].headers.Authorization, 'Bearer my_rg_jwt');
 });

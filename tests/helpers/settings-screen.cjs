@@ -67,6 +67,7 @@ exports.setupSettings = function setupSettings({ saved = { userId: '', apiKey: '
     '../../services/securityService': security,
     '../../services/networkDiagnostics': { testProxyConnection: async () => [] },
     '../components/PasscodeModal': { PasscodeModal: 'PasscodeModal' },
+    '../components/SiteLoginModal': { SiteLoginModal: 'SiteLoginModal' },
     '../../navigation/postsCache': { clearCachedPosts: () => { cacheClears.push('posts'); } },
     '../../navigation/rootNavigation': { navigationRef: { isReady: () => false } },
     '../context/SourceContext': { useSource: () => {

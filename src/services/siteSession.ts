@@ -20,6 +20,7 @@ function getAsyncStorage(): {
 export interface SiteSessionRecord {
   cookie?: string;
   bearerToken?: string;
+  feedUrl?: string;
   updatedAt: number;
 }
 
@@ -116,6 +117,7 @@ export async function initSiteSessions(): Promise<void> {
                   sessions.set(k, {
                     cookie: typeof rec.cookie === 'string' && rec.cookie ? rec.cookie : undefined,
                     bearerToken: typeof rec.bearerToken === 'string' && rec.bearerToken ? rec.bearerToken : undefined,
+                    feedUrl: typeof rec.feedUrl === 'string' && rec.feedUrl ? rec.feedUrl : undefined,
                     updatedAt: Number(rec.updatedAt) || Date.now(),
                   });
                 }
@@ -137,7 +139,9 @@ export async function initSiteSessions(): Promise<void> {
 export function hasSiteSession(sourceId: string | undefined): boolean {
   if (!sourceId) return false;
   const rec = sessions.get(sourceId);
-  return Boolean(rec && (rec.cookie || rec.bearerToken));
+  if (!rec) return false;
+  if (sourceId === 'redgifs') return Boolean(rec.bearerToken);
+  return Boolean(rec.cookie || rec.bearerToken);
 }
 
 export function getSiteCookieHeader(sourceId: string | undefined): string {
@@ -150,18 +154,24 @@ export function getSiteBearerToken(sourceId: string | undefined): string {
   return sessions.get(sourceId)?.bearerToken || '';
 }
 
+export function getSiteFeedUrl(sourceId: string | undefined): string {
+  if (!sourceId) return '';
+  return sessions.get(sourceId)?.feedUrl || '';
+}
+
 export async function saveSiteSession(
   sourceId: string,
-  patch: { cookie?: string; bearerToken?: string }
+  patch: { cookie?: string; bearerToken?: string; feedUrl?: string }
 ): Promise<void> {
   await initSiteSessions();
   const prev = sessions.get(sourceId);
   const next: SiteSessionRecord = {
     cookie: patch.cookie !== undefined ? (patch.cookie.trim() || undefined) : prev?.cookie,
     bearerToken: patch.bearerToken !== undefined ? (patch.bearerToken.trim() || undefined) : prev?.bearerToken,
+    feedUrl: patch.feedUrl !== undefined ? (patch.feedUrl.trim() || undefined) : prev?.feedUrl,
     updatedAt: Date.now(),
   };
-  if (next.cookie || next.bearerToken) {
+  if (next.cookie || next.bearerToken || next.feedUrl) {
     sessions.set(sourceId, next);
   } else {
     sessions.delete(sourceId);
