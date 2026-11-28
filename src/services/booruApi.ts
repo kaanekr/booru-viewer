@@ -1458,10 +1458,16 @@ export class BooruApiService {
       ? `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}&tags=${encodeURIComponent(includeTags)}`
       : `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}`;
 
-    const response = await this.fetchAuthenticatedRedGifs(searchUrl);
+    const response = isRecommendedFeed
+      ? await this.fetchRedGifsApi(searchUrl, redgifsUserToken)
+      : await this.fetchAuthenticatedRedGifs(searchUrl);
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
+      if (isRecommendedFeed && (response.status === 401 || /UserTokenRequired/i.test(errText))) {
+        void sess?.saveSiteSession?.('redgifs', { bearerToken: '', feedUrl: '' });
+        throw new Error('RedGifs session expired or requires user login. Sign in to RedGifs in Settings → Sources.');
+      }
       if (response.status === 404 && searchUsername) {
         throw new Error(`RedGifs user not found: ${searchUsername}`);
       }

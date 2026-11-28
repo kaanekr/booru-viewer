@@ -62,10 +62,11 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
         try {
           if (!tok || tok.split('.').length !== 3) return false;
           var p = JSON.parse(atob(tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-          if (!p) return false;
-          var sub = String(p.sub || '').toLowerCase();
-          if (sub === 'temporary' || sub.indexOf('temp') === 0 || sub === 'guest') return false;
-          return Boolean(sub || p.uid || p.user || p.userId || p.addr);
+          if (!p || typeof p !== 'object') return false;
+          var sub = String(p.sub || p.uid || p.user || p.userId || p.username || '').trim();
+          if (!sub) return false;
+          if (/^(anon|anonymous|temp|temporary|guest|public)/i.test(sub)) return false;
+          return true;
         } catch (e) { return false; }
       }
       function report(tok, feedUrl) {
@@ -88,8 +89,9 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
       var origFetch = window.fetch;
       if (typeof origFetch === 'function') {
         window.fetch = function(input, init) {
+          var reqUrl = '';
           try {
-            var reqUrl = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+            reqUrl = typeof input === 'string' ? input : (input && input.url ? input.url : '');
             var auth = '';
             var hdrs = init && init.headers;
             if (hdrs) {
@@ -100,7 +102,17 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
             }
             if (reqUrl && reqUrl.indexOf('api.redgifs.com') >= 0) inspectReq(reqUrl, auth);
           } catch (e) {}
-          return origFetch.apply(this, arguments);
+          var p = origFetch.apply(this, arguments);
+          if (reqUrl && reqUrl.indexOf('api.redgifs.com/v2/auth') >= 0 && reqUrl.indexOf('temporary') < 0) {
+            p.then(function(res) {
+              if (!res || !res.ok) return;
+              res.clone().json().then(function(data) {
+                var t = data && (data.token || data.accessToken || data.access_token);
+                if (typeof t === 'string' && isUserJwt(t)) report(t, '');
+              }).catch(function(){});
+            }).catch(function(){});
+          }
+          return p;
         };
       }
       if (window.XMLHttpRequest) {
@@ -133,8 +145,8 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
             var m = v.match(/eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}/);
             if (m) {
               var p = JSON.parse(atob(m[0].split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
-              var sub = String((p && p.sub) || '').toLowerCase();
-              if (p && sub !== 'temporary' && sub.indexOf('temp') !== 0 && sub !== 'guest') {
+              var sub = String((p && (p.sub || p.uid || p.user || p.userId || p.username)) || '').trim();
+              if (sub && !/^(anon|anonymous|temp|temporary|guest|public)/i.test(sub)) {
                 window.ReactNativeWebView.postMessage(JSON.stringify({ rgToken: m[0] }));
                 return;
               }
