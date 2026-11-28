@@ -21,6 +21,7 @@ export interface SiteSessionRecord {
   cookie?: string;
   bearerToken?: string;
   feedUrl?: string;
+  userAgent?: string;
   updatedAt: number;
 }
 
@@ -118,6 +119,7 @@ export async function initSiteSessions(): Promise<void> {
                     cookie: typeof rec.cookie === 'string' && rec.cookie ? rec.cookie : undefined,
                     bearerToken: typeof rec.bearerToken === 'string' && rec.bearerToken ? rec.bearerToken : undefined,
                     feedUrl: typeof rec.feedUrl === 'string' && rec.feedUrl ? rec.feedUrl : undefined,
+                    userAgent: typeof rec.userAgent === 'string' && rec.userAgent ? rec.userAgent : undefined,
                     updatedAt: Number(rec.updatedAt) || Date.now(),
                   });
                 }
@@ -159,9 +161,14 @@ export function getSiteFeedUrl(sourceId: string | undefined): string {
   return sessions.get(sourceId)?.feedUrl || '';
 }
 
+export function getSiteUserAgent(sourceId: string | undefined): string {
+  if (!sourceId) return '';
+  return sessions.get(sourceId)?.userAgent || '';
+}
+
 export async function saveSiteSession(
   sourceId: string,
-  patch: { cookie?: string; bearerToken?: string; feedUrl?: string }
+  patch: { cookie?: string; bearerToken?: string; feedUrl?: string; userAgent?: string }
 ): Promise<void> {
   await initSiteSessions();
   const prev = sessions.get(sourceId);
@@ -169,6 +176,7 @@ export async function saveSiteSession(
     cookie: patch.cookie !== undefined ? (patch.cookie.trim() || undefined) : prev?.cookie,
     bearerToken: patch.bearerToken !== undefined ? (patch.bearerToken.trim() || undefined) : prev?.bearerToken,
     feedUrl: patch.feedUrl !== undefined ? (patch.feedUrl.trim() || undefined) : prev?.feedUrl,
+    userAgent: patch.userAgent !== undefined ? (patch.userAgent.trim() || undefined) : prev?.userAgent,
     updatedAt: Date.now(),
   };
   if (next.cookie || next.bearerToken || next.feedUrl) {

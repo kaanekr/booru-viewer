@@ -37,6 +37,7 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
   const webViewRef = useRef<WebView>(null);
   const capturedTokenRef = useRef<string>('');
   const capturedFeedUrlRef = useRef<string>('');
+  const capturedUserAgentRef = useRef<string>('');
   const [tokenCaptured, setTokenCaptured] = useState(false);
   const [loadError, setLoadError] = useState<{ code?: number; description?: string } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -50,6 +51,7 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
       setTokenCaptured(false);
       capturedTokenRef.current = '';
       capturedFeedUrlRef.current = '';
+      capturedUserAgentRef.current = '';
     }
   }, [visible, loginUrl]);
 
@@ -61,11 +63,13 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
       function isUserJwt(tok) {
         try {
           if (!tok || tok.split('.').length !== 3) return false;
-          var p = JSON.parse(atob(tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+          var b64 = tok.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+          while (b64.length % 4) b64 += '=';
+          var p = JSON.parse(atob(b64));
           if (!p || typeof p !== 'object') return false;
           var sub = String(p.sub || p.uid || p.user || p.userId || p.username || '').trim();
           if (!sub) return false;
-          if (/^(anon|anonymous|temp|temporary|guest|public)/i.test(sub)) return false;
+          if (/^(client\\/|anon|anonymous|temp|temporary|guest|public)/i.test(sub)) return false;
           return true;
         } catch (e) { return false; }
       }
@@ -73,18 +77,18 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
         try {
           window.ReactNativeWebView.postMessage(JSON.stringify({
             rgToken: tok || '',
-            rgFeedUrl: feedUrl || ''
+            rgFeedUrl: feedUrl || '',
+            rgUserAgent: (navigator && navigator.userAgent) ? navigator.userAgent : ''
           }));
         } catch (e) {}
       }
       function inspectReq(reqUrl, authHeader) {
         var tok = String(authHeader || '').replace(/^Bearer\\s+/i, '').trim();
         var userTok = isUserJwt(tok) ? tok : '';
+        if (!userTok) return;
         var isFeed = typeof reqUrl === 'string' && reqUrl.indexOf('api.redgifs.com/v2/') >= 0 &&
           (reqUrl.indexOf('/feeds/') >= 0 || reqUrl.indexOf('/gifs/search') >= 0 || reqUrl.indexOf('/explore') >= 0);
-        if (userTok || isFeed) {
-          report(userTok, isFeed ? reqUrl : '');
-        }
+        report(userTok, isFeed ? reqUrl : '');
       }
       var origFetch = window.fetch;
       if (typeof origFetch === 'function') {
@@ -118,6 +122,7 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
       if (window.XMLHttpRequest) {
         var origOpen = XMLHttpRequest.prototype.open;
         var origSetHeader = XMLHttpRequest.prototype.setRequestHeader;
+        var origSend = XMLHttpRequest.prototype.send;
         XMLHttpRequest.prototype.open = function(m, u) {
           this.__rgU = String(u || '');
           return origOpen.apply(this, arguments);
@@ -127,6 +132,19 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
             inspectReq(this.__rgU, v);
           }
           return origSetHeader.apply(this, arguments);
+        };
+        XMLHttpRequest.prototype.send = function() {
+          var self = this;
+          if (self.__rgU && self.__rgU.indexOf('api.redgifs.com/v2/auth') >= 0 && self.__rgU.indexOf('temporary') < 0) {
+            self.addEventListener('load', function() {
+              try {
+                var data = JSON.parse(self.responseText || '{}');
+                var t = data && (data.token || data.accessToken || data.access_token);
+                if (typeof t === 'string' && isUserJwt(t)) report(t, '');
+              } catch (e) {}
+            });
+          }
+          return origSend.apply(this, arguments);
         };
       }
     })(); true;`;
@@ -144,10 +162,15 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
             var v = st.getItem(st.key(i)) || '';
             var m = v.match(/eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}/);
             if (m) {
-              var p = JSON.parse(atob(m[0].split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+              var b64 = m[0].split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+              while (b64.length % 4) b64 += '=';
+              var p = JSON.parse(atob(b64));
               var sub = String((p && (p.sub || p.uid || p.user || p.userId || p.username)) || '').trim();
-              if (sub && !/^(anon|anonymous|temp|temporary|guest|public)/i.test(sub)) {
-                window.ReactNativeWebView.postMessage(JSON.stringify({ rgToken: m[0] }));
+              if (sub && !/^(client\\/|anon|anonymous|temp|temporary|guest|public)/i.test(sub)) {
+                window.ReactNativeWebView.postMessage(JSON.stringify({
+                  rgToken: m[0],
+                  rgUserAgent: (navigator && navigator.userAgent) ? navigator.userAgent : ''
+                }));
                 return;
               }
             }
@@ -171,6 +194,7 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
         await saveSiteSession(source.id, {
           ...(capturedTokenRef.current ? { bearerToken: capturedTokenRef.current } : {}),
           ...(capturedFeedUrlRef.current ? { feedUrl: capturedFeedUrlRef.current } : {}),
+          ...(capturedUserAgentRef.current ? { userAgent: capturedUserAgentRef.current } : {}),
         });
       }
       await captureNativeSiteCookies(source);
@@ -252,6 +276,9 @@ export const SiteLoginModal: React.FC<SiteLoginModalProps> = ({
                 }
                 if (typeof parsed?.rgFeedUrl === 'string' && parsed.rgFeedUrl) {
                   capturedFeedUrlRef.current = parsed.rgFeedUrl;
+                }
+                if (typeof parsed?.rgUserAgent === 'string' && parsed.rgUserAgent) {
+                  capturedUserAgentRef.current = parsed.rgUserAgent;
                 }
               } catch {}
             }}

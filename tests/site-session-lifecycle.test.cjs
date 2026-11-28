@@ -46,8 +46,18 @@ test('siteSession stores and clears cookies/bearer tokens and reads native WKHTT
   assert.equal(clearedDomain, 'pornhub.com');
 });
 
-test('booruApi uses pure fetch with saved session Cookie for Pornhub/XHamster Recommended and Bearer for RedGifs', async () => {
+function makeJwt(payload) {
+  const hdr = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  return `${hdr}.${body}.sig`;
+}
+
+test('booruApi uses pure fetch with saved session Cookie for Pornhub/XHamster Recommended and Bearer+valid_agent for RedGifs', async () => {
   const requests = [];
+  const validUserJwt = makeJwt({
+    sub: 'user/realuser',
+    valid_agent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0) Version/18.0 Safari/604.1',
+  });
   const load = createLoader({
     './storage': { StorageService: { getBlacklistedTags: async () => [] } },
     './proxyService': {
@@ -84,8 +94,9 @@ test('booruApi uses pure fetch with saved session Cookie for Pornhub/XHamster Re
     './siteSession': {
       initSiteSessions: async () => {},
       getSiteCookieHeader: (id) => (id === 'pornhub' ? 'ss=my_session' : ''),
-      getSiteBearerToken: (id) => (id === 'redgifs' ? 'my_rg_jwt' : ''),
+      getSiteBearerToken: (id) => (id === 'redgifs' ? validUserJwt : ''),
       getSiteFeedUrl: (id) => (id === 'redgifs' ? 'https://api.redgifs.com/v2/feeds/home?sexuality=gay&page=1' : ''),
+      getSiteUserAgent: () => '',
       saveSiteSession: async () => {},
     },
   });
@@ -105,5 +116,45 @@ test('booruApi uses pure fetch with saved session Cookie for Pornhub/XHamster Re
   assert.equal(rgPosts.length, 1);
   assert.equal(rgPosts[0].id, 'rg_rg1');
   assert.equal(requests[1].url, 'https://api.redgifs.com/v2/feeds/home?sexuality=gay&page=2&count=24');
-  assert.equal(requests[1].headers.Authorization, 'Bearer my_rg_jwt');
+  assert.equal(requests[1].headers.Authorization, `Bearer ${validUserJwt}`);
+  assert.equal(requests[1].headers['User-Agent'], 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0) Version/18.0 Safari/604.1');
+});
+
+test('booruApi rejects RedGifs temporary client/ JWTs on Recommended instead of calling feeds/home', async () => {
+  let cleared = false;
+  const tempGuestJwt = makeJwt({
+    sub: 'client/1823c31f7d3-745a-6589-0005-d8e8fe0a44c2',
+    scopes: 'read',
+    valid_addr: '1.2.3.4',
+  });
+  const load = createLoader({
+    './storage': { StorageService: { getBlacklistedTags: async () => [] } },
+    './proxyService': {
+      proxyService: {
+        ensureInitialized: async () => {},
+        isEnabled: () => false,
+        getWorkerUrl: () => '',
+        fetchWithFallback: async () => { throw new Error('Should not hit network with temporary guest token'); },
+      },
+    },
+    './siteSession': {
+      initSiteSessions: async () => {},
+      getSiteCookieHeader: () => '',
+      getSiteBearerToken: () => tempGuestJwt,
+      getSiteFeedUrl: () => '',
+      getSiteUserAgent: () => '',
+      saveSiteSession: async (_id, patch) => { if (patch.bearerToken === '') cleared = true; },
+    },
+  });
+  const { BooruApiService } = load(path.resolve(__dirname, '../src/services/booruApi.ts'));
+  const { AVAILABLE_SOURCES } = load(path.resolve(__dirname, '../src/services/sources.ts'));
+  const { DEFAULT_FILTER_CONFIG } = load(path.resolve(__dirname, '../src/types/booru.ts'));
+  const api = new BooruApiService();
+  const rgSource = AVAILABLE_SOURCES.find((s) => s.id === 'redgifs');
+
+  await assert.rejects(
+    api.fetchPosts(1, 24, '', { ...DEFAULT_FILTER_CONFIG, sortBy: 'recommended' }, rgSource),
+    /Sign in to RedGifs/
+  );
+  assert.equal(cleared, true);
 });

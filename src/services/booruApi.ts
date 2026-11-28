@@ -1266,9 +1266,55 @@ export class BooruApiService {
   private redGifsTokenScope = '';
   private redGifsTokenRequest: { scope: string; id: symbol; promise: Promise<string> } | null = null;
 
-  private async fetchRedGifsApi(url: string, token?: string): Promise<Response> {
+  private decodeRedGifsJwtPayload(token: string): Record<string, any> | null {
+    try {
+      const parts = token.split('.');
+      if (parts.length !== 3 || !parts[1]) return null;
+      const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/').replace(/=+$/, '');
+      const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      let bits = 0;
+      let bitLen = 0;
+      let jsonStr = '';
+      for (let i = 0; i < b64.length; i++) {
+        const val = alphabet.indexOf(b64[i]);
+        if (val < 0) return null;
+        bits = (bits << 6) | val;
+        bitLen += 6;
+        if (bitLen >= 8) {
+          bitLen -= 8;
+          jsonStr += String.fromCharCode((bits >> bitLen) & 0xff);
+        }
+      }
+      if (!jsonStr) return null;
+      const parsed = JSON.parse(jsonStr);
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private isRedGifsUserToken(token: string): boolean {
+    if (!token) return false;
+    const payload = this.decodeRedGifsJwtPayload(token);
+    if (!payload) return false;
+    const sub = String(payload.sub || payload.uid || payload.user || payload.userId || payload.username || '').trim();
+    if (!sub) return false;
+    if (/^(client\/|anon|anonymous|temp|temporary|guest|public)/i.test(sub)) return false;
+    return true;
+  }
+
+  private async fetchRedGifsApi(
+    url: string,
+    token?: string,
+    options?: { direct?: boolean; userAgent?: string }
+  ): Promise<Response> {
+    const jwtPayload = token ? this.decodeRedGifsJwtPayload(token) : null;
+    const boundAgent =
+      (typeof jwtPayload?.valid_agent === 'string' && jwtPayload.valid_agent.trim()) ||
+      (options?.userAgent && options.userAgent.trim()) ||
+      USER_AGENT;
     const headers: Record<string, string> = {
-      'User-Agent': USER_AGENT,
+      'User-Agent': boundAgent,
       Origin: 'https://www.redgifs.com',
       Referer: 'https://www.redgifs.com/',
       Accept: 'application/json',
@@ -1279,18 +1325,19 @@ export class BooruApiService {
       // looked like a workaround trying to break the WAF.
       headers['Authorization'] = `Bearer ${token}`;
     }
+    if (options?.direct) {
+      await proxyService.ensureInitialized();
+      if (proxyService.isEnabled()) {
+        // User JWTs captured in the login WebView are bound to the device's direct IP
+        // (valid_addr). Routing them through a Cloudflare Worker changes the egress IP
+        // and triggers 401 WrongSender, so send direct first.
+        return await withHardTimeout(fetch(url, { headers }), 10000, 'redgifs direct');
+      }
+    }
     return await this.fetchWithRetry(url, { headers }, 0, 10000);
   }
 
   private async getRedGifsToken(rejectedToken?: string): Promise<string> {
-    const sess = getSiteSession();
-    await sess?.initSiteSessions?.();
-    const userToken = sess?.getSiteBearerToken?.('redgifs') || '';
-    if (rejectedToken && userToken && rejectedToken === userToken) {
-      void sess?.saveSiteSession?.('redgifs', { bearerToken: '' });
-    } else if (userToken) {
-      return userToken;
-    }
     await proxyService.ensureInitialized();
     const scope = proxyService.isEnabled() ? proxyService.getWorkerUrl() : 'direct';
     // A late-arriving 401 from another request must not wipe a newer, valid token.
@@ -1432,8 +1479,12 @@ export class BooruApiService {
     const searchUsername = filter?.user?.trim() || tokenUsername;
     const redgifsUserToken = sess?.getSiteBearerToken?.('redgifs') || '';
     const redgifsFeedUrl = sess?.getSiteFeedUrl?.('redgifs') || '';
+    const redgifsUserAgent = sess?.getSiteUserAgent?.('redgifs') || '';
     const isRecommendedFeed = filter?.sortBy === 'recommended' && !searchUsername && !nicheId && !includeTags;
-    if (isRecommendedFeed && !redgifsUserToken) {
+    if (isRecommendedFeed && (!redgifsUserToken || !this.isRedGifsUserToken(redgifsUserToken))) {
+      if (redgifsUserToken) {
+        void sess?.saveSiteSession?.('redgifs', { bearerToken: '', feedUrl: '' });
+      }
       throw new Error('Sign in to RedGifs in Settings → Sources to load your personalized feed.');
     }
     const buildCapturedFeedPageUrl = (rawUrl: string, targetPage: number, targetCount: number): string => {
@@ -1459,12 +1510,15 @@ export class BooruApiService {
       : `https://api.redgifs.com/v2/gifs/search?type=g&order=${order}&count=${count}&page=${page}`;
 
     const response = isRecommendedFeed
-      ? await this.fetchRedGifsApi(searchUrl, redgifsUserToken)
+      ? await this.fetchRedGifsApi(searchUrl, redgifsUserToken, { direct: true, userAgent: redgifsUserAgent })
       : await this.fetchAuthenticatedRedGifs(searchUrl);
 
     if (!response.ok) {
       const errText = await response.text().catch(() => '');
-      if (isRecommendedFeed && (response.status === 401 || /UserTokenRequired/i.test(errText))) {
+      if (isRecommendedFeed && response.status === 401) {
+        if (/WrongSender/i.test(errText)) {
+          throw new Error('RedGifs rejected the token for this network/IP (WrongSender). Keep the same VPN/network as login or sign in again in Settings → Sources.');
+        }
         void sess?.saveSiteSession?.('redgifs', { bearerToken: '', feedUrl: '' });
         throw new Error('RedGifs session expired or requires user login. Sign in to RedGifs in Settings → Sources.');
       }
